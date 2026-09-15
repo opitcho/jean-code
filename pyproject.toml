@@ -1,0 +1,15 @@
+[project]
+name = "min-agent"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "opitcho", email = "oscar.pitcho@live.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.3.0",
+    "jupyter>=1.1.1",
+    "ollama>=0.6.2",
+    "pydantic>=2.13.5",
+    "tornado<6.5",
+]
