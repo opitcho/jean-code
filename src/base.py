@@ -47,5 +47,5 @@ class BaseAgent:
 
 
 if __name__ == "__main__":
-    agent = BaseAgent(model="qwen3:8b")
+    agent = BaseAgent(model="qwen3")
     agent.run()
