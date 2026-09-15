@@ -8,20 +8,36 @@ class BaseAgent:
     whole transcript to Ollama, appends the model's reply, and returns it.
     """
 
-    def __init__(self, model: str, system_prompt: str = "", client: ollama.Client | None = None):
+    def __init__(
+        self,
+        model: str,
+        system_prompt: str = "",
+        tools: list | None = None,
+        client: ollama.Client | None = None,
+    ):
         self.model = model
         self.system_prompt = system_prompt
+        self.tools = tools
         self.client = client or ollama.Client()
 
         self.messages: list[dict] = []
         if self.system_prompt:
             self.messages.append({"role": "system", "content": self.system_prompt})
 
+        self.last_request: dict | None = None
+        self.last_response = None
+
     def step(self, user_input: str) -> str:
         """Send one user message, return the assistant's reply, updating history."""
         self.messages.append({"role": "user", "content": user_input})
 
-        response = self.client.chat(model=self.model, messages=self.messages)
+        request = {"model": self.model, "messages": self.messages}
+        if self.tools:
+            request["tools"] = self.tools
+        self.last_request = request
+
+        response = self.client.chat(**request)
+        self.last_response = response
         message = response["message"]
         self.messages.append(message)
 
