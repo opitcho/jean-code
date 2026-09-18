@@ -1,5 +1,5 @@
 [project]
-name = "min-agent"
+name = "jean-code"
 version = "0.1.0"
 description = "Add your description here"
 authors = [
@@ -7,10 +7,14 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "ddgs>=9.16.0",
+    "httpx>=0.28.1",
     "ipykernel>=7.3.0",
     "jupyter>=1.1.1",
     "ollama>=0.6.2",
     "pydantic>=2.13.5",
+    "pyyaml>=6.0.3",
     "streamlit>=1.63.0",
     "tornado<6.5",
 ]
