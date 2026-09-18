@@ -1,6 +1,6 @@
-"""Streamlit UI for BaseAgent: a live, clickable timeline of turns plus an inspector.
+"""Streamlit UI for the agent: a live, clickable timeline of turns plus an inspector.
 
-Run with: uv run streamlit run src/app.py
+Run with: uv run --env-file .env streamlit run src/app.py
 
 The agent stays UI-agnostic: `run_turn` runs in a background thread and this UI polls
 `agent.messages`. The timeline is the UI's own history of every message it has seen,
@@ -12,15 +12,20 @@ import html
 import json
 import re
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 import streamlit as st
 
-from base import CodingAgent
-from shell import DockerShell, LocalShell
+from agent import DEFAULT_MODEL
+from coding import coding_agent
+from config import USAGE_LOG
+from usage import append_log, human, record, usage_line
 
-MODEL = "qwen3.6"
+MODEL = DEFAULT_MODEL
 POLL_SECONDS = 0.5
+CSS_PATH = Path(__file__).with_name("app.css")
 
 # kind -> (label, icon, accent color)
 KINDS = {
@@ -33,6 +38,21 @@ KINDS = {
     "approval": ("APPROVAL", "⚠", "#FB923C"),
 }
 MONO_KINDS = {"tool_call", "tool_result"}
+ERROR_PREFIXES = ("Error", "Denied by user", "Not run")  # results the agent writes when a call didn't succeed
+EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash result, see shell.format_result
+LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
+STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
+STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage",  # shown elsewhere
+                "needs_approval", "loaded_skills", *STATE_CONFIG}
+USAGE_COLUMNS = {
+    "time": st.column_config.TextColumn("time"),
+    "provider": st.column_config.TextColumn("provider"),
+    "prompt_tokens": st.column_config.NumberColumn("in"),
+    "cached_tokens": st.column_config.NumberColumn("cached"),
+    "completion_tokens": st.column_config.NumberColumn("out"),
+    "reasoning_tokens": st.column_config.NumberColumn("reasoning"),
+    "cost": st.column_config.NumberColumn("cost", format="$%.5f"),
+}
 
 
 @dataclass
@@ -48,7 +68,7 @@ def to_jsonable(value):
     """Best-effort conversion of arbitrary agent state into something st.json can render."""
     if isinstance(value, dict):
         return {k: to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set)):
         return [to_jsonable(v) for v in value]
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -73,33 +93,71 @@ def turn_kind(msg) -> str:
     role = mget(msg, "role")
     if mget(msg, "tool_calls"):
         return "tool_call"
-    if mget(msg, "thinking") and not mget(msg, "content"):
+    if mget(msg, "reasoning") and not mget(msg, "content"):
         return "thinking"
     if role in ("tool", "user", "system"):
         return {"tool": "tool_result"}.get(role, role)
     return "agent"
 
 
-def format_call(call) -> str:
-    fn = call["function"]
-    args = ", ".join(f"{k}={json.dumps(v)}" for k, v in fn["arguments"].items())
-    return f"{fn['name']}({args})"
+def parse_args(call) -> dict:
+    """A tool call's arguments: the agent stores them as the model sent them, a JSON string."""
+    try:
+        value = json.loads(call["function"].get("arguments") or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
-def preview(msg, kind: str, limit: int = 90) -> str:
+def is_error(msg) -> bool:
+    """A tool result that reports a failure: a tool error, a denial, a skipped call or a non-zero exit code."""
+    content = str(mget(msg, "content") or "")
+    exit_code = EXIT_CODE.match(content)
+    return content.startswith(ERROR_PREFIXES) or (exit_code is not None and exit_code.group(1) != "0")
+
+
+def one_line(text) -> str:
+    return " ".join(str(text).split())
+
+
+def clip(text, limit: int) -> str:
+    text = one_line(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def call_summary(call) -> str:
+    """`name · first argument`, e.g. `bash · ls -la`."""
+    args = parse_args(call)
+    first = next(iter(args.values()), None)
+    if first is None:
+        return call["function"]["name"]
+    return f"{call['function']['name']} · {first if isinstance(first, str) else json.dumps(first)}"
+
+
+def result_summary(msg, name: str) -> str:
+    """`name → first line of output`, with the exit code when a command failed."""
+    content = str(mget(msg, "content") or "")
+    exit_code = EXIT_CODE.match(content)
+    if exit_code:
+        content = content[exit_code.end():]
+    first = next((line for line in content.splitlines() if line.strip()), "(no output)")
+    failed = f"exit {exit_code.group(1)} · " if exit_code and exit_code.group(1) != "0" else ""
+    return f"{name} → {failed}{first}"
+
+
+def preview(msg, kind: str, names: dict, limit: int = 90) -> str:
     """One-line summary of a message for its timeline block."""
     if kind == "tool_call":
-        text = "; ".join(format_call(c) for c in mget(msg, "tool_calls"))
+        text = "; ".join(call_summary(c) for c in mget(msg, "tool_calls"))
     elif kind == "tool_result":
-        text = f"→ {mget(msg, 'content')}"
+        text = result_summary(msg, names.get(mget(msg, "tool_call_id"), "tool"))
     elif kind == "thinking":
-        text = mget(msg, "thinking")
+        text = mget(msg, "reasoning")
     else:
         text = mget(msg, "content") or "(no content)"
     if kind in ("agent", "user"):
         text = re.sub(r"[*_`#>]+", "", str(text))  # drop markdown markers from the one-liner
-    text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return clip(text, limit)
 
 
 def sync_history(entries: list[Entry], ctx: list) -> None:
@@ -139,6 +197,11 @@ def call_of(entries: list[Entry], pos: int) -> Entry | None:
     return None
 
 
+def call_names(entries: list[Entry]) -> dict[str, str]:
+    """Tool name of every call seen, by call id, so a result can be matched to its tool by `tool_call_id`."""
+    return {call.get("id"): call["function"]["name"] for e in entries for call in mget(e.msg, "tool_calls") or []}
+
+
 # ---------------------------------------------------------------- background run
 
 
@@ -148,14 +211,20 @@ def is_running() -> bool:
 
 
 def start_run(fn, *args) -> None:
-    """Run an agent method (`run_turn`, `approve`, `deny`) off the script thread; the UI polls the agent's state."""
-    run = st.session_state.run
+    """Run an agent method (`run_turn`, `approve`, `deny`) off the script thread; the UI polls the agent's state.
+
+    The model calls it made are appended to the usage log when it ends.
+    """
+    run, agent = st.session_state.run, st.session_state.agent
+    first_call = len(agent.usage)
 
     def target():
         try:
             fn(*args)
         except Exception as e:  # surfaced in the header; never call st.* from here
             run["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            append_log(USAGE_LOG, agent.usage[first_call:])
 
     run["error"] = None
     run["thread"] = threading.Thread(target=target, daemon=True)
@@ -165,11 +234,10 @@ def start_run(fn, *args) -> None:
 
 
 def new_chat() -> None:
-    """A fresh agent; the sidebar toggle picks where its shell runs. The old shell's jobs/container are closed."""
+    """A fresh agent; the sidebar toggle picks where its shell runs. The old agent's jobs/container are closed."""
     if old := st.session_state.get("agent"):
-        old.shell.close()
-    shell = DockerShell() if st.session_state.get("sandbox", False) else LocalShell()
-    st.session_state.agent = CodingAgent(model=MODEL, shell=shell)
+        old.close()
+    st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False))
     st.session_state.entries = []
     st.session_state.selected_uid = None
     st.session_state.run = {"thread": None, "error": None}
@@ -179,121 +247,112 @@ def select(uid: int | None) -> None:
     st.session_state.selected_uid = uid
 
 
-def live_status(agent) -> tuple[str, str]:
-    """(kind, text) for the live block; requests aren't streamed, so we only know one is running."""
-    return "thinking", "waiting for model…"
+# ---------------------------------------------------------------- html snippets (styles in app.css)
 
 
-# ---------------------------------------------------------------- styling
+def kind_css() -> str:
+    """Each kind's accent as `--c`, on its timeline block and on anything tagged `k-<kind>`; errors override it."""
+    rules = "".join(f'[class*="st-key-blk-{k}-"], .k-{k} {{ --c:{c}; }}\n' for k, (_, _, c) in KINDS.items())
+    return f'<style>{rules}[class*="st-key-blk-"][class*="-err-"], .err {{ --c:var(--err); }}</style>'
 
-CSS = """
-<style>
-.block-container { padding-top: 3rem; padding-bottom: 1rem; max-width: 1500px; }
-header[data-testid="stHeader"] { background: transparent; }
 
-/* header */
-.hdr { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
-.hdr-title { font-size:1.45rem; font-weight:700; letter-spacing:-.02em; margin-right:.3rem;
-  background: linear-gradient(90deg,#E5E7EB,#A78BFA 60%,#F472B6);
-  -webkit-background-clip:text; background-clip:text; color:transparent; }
-.pill { display:inline-flex; align-items:center; gap:.4rem; padding:.18rem .65rem; border-radius:999px;
-  border:1px solid #1F2430; background:#12151C; color:#8B93A7; font-size:.78rem; white-space:nowrap; }
-.pill b { color:#E5E7EB; font-weight:600; }
-.pill.model { font-family:'JetBrains Mono',monospace; color:#C4B5FD; border-color:#2E2A4A; }
-.dot { width:8px; height:8px; border-radius:50%; background:#4B5563; }
-.dot.run { background:#34D399; box-shadow:0 0 0 0 #34D39988; animation: ping 1.4s infinite; }
-@keyframes ping { 0% { box-shadow:0 0 0 0 #34D39988; } 100% { box-shadow:0 0 0 8px #34D39900; } }
-.section { font-size:.7rem; font-weight:600; letter-spacing:.14em; color:#6B7280; margin:.2rem 0 .1rem; }
+def pill(text, *, bold=None, cls: str = "", dot: str | None = None) -> str:
+    """A rounded label: an optional status dot, an optional bold value, then the text."""
+    dot_html = f'<span class="dot {dot}"></span>' if dot is not None else ""
+    bold_html = f"<b>{html.escape(str(bold))}</b> " if bold is not None else ""
+    return f'<span class="pill {cls}">{dot_html}{bold_html}{html.escape(str(text))}</span>'
 
-/* timeline rail */
-.st-key-rail { position:relative; padding-left:26px; gap:.55rem; }
-.st-key-rail::before { content:""; position:absolute; left:9px; top:10px; bottom:10px; width:2px;
-  background: linear-gradient(#1F2430, #2A3040 50%, #1F2430); border-radius:2px; }
-[class*="st-key-blk-"] { position:relative; gap:0; }
-[class*="st-key-blk-"]::before { content:""; position:absolute; left:-21px; top:15px; width:10px; height:10px;
-  border-radius:50%; background:var(--c); box-shadow:0 0 0 3px #0B0D12; z-index:1; }
-""" + "".join(
-    f'[class*="st-key-blk-{k}-"], .k-{k} {{ --c:{c}; }}\n' for k, (_, _, c) in KINDS.items()
-) + """
-/* timeline card */
-.tl-card { border:1px solid #1F2430; border-left:3px solid var(--c); border-radius:10px;
-  padding:.5rem .8rem .55rem; background: color-mix(in srgb, var(--c) 7%, #12151C);
-  transition: transform .14s ease, background .14s ease, box-shadow .14s ease; }
-[class*="st-key-blk-"]:hover .tl-card { transform: translateX(3px);
-  background: color-mix(in srgb, var(--c) 13%, #12151C); }
-.tl-card.sel { border-color: color-mix(in srgb, var(--c) 70%, #1F2430);
-  box-shadow: 0 0 0 1px var(--c), 0 0 26px -6px var(--c);
-  background: color-mix(in srgb, var(--c) 15%, #12151C); }
-.tl-card.out { opacity:.42; filter:saturate(.35); }
-.tl-head { display:flex; align-items:center; gap:.45rem; font-size:.68rem; font-weight:700;
-  letter-spacing:.12em; color:var(--c); }
-.tl-num { margin-left:auto; color:#6B7280; font-weight:500; letter-spacing:0; font-family:'JetBrains Mono',monospace; }
-.tl-prev { margin-top:.2rem; color:#D1D5DB; font-size:.86rem; line-height:1.35;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.k-thinking .tl-prev { color:#A1A1AA; font-style:italic; }
-.tl-prev.mono { font-family:'JetBrains Mono',monospace; font-size:.8rem; }
 
-/* invisible hit-area button stretched over each card */
-[class*="st-key-hit-"] { position:absolute !important; inset:0; z-index:3; margin:0 !important; }
-[class*="st-key-hit-"] div, [class*="st-key-hit-"] button { width:100% !important; height:100% !important; }
-[class*="st-key-hit-"] button { opacity:0; cursor:pointer; }
+def chips(items, *, on=(), empty_text: str = "none") -> str:
+    """A wrapping row of pills; items in `on` are highlighted."""
+    if not items:
+        return f'<div class="row">{pill(empty_text)}</div>'
+    return '<div class="row">' + "".join(pill(i, cls="mono on" if i in on else "mono") for i in items) + "</div>"
 
-/* live ghost block + compaction divider */
-.tl-card.ghost { border-style:dashed; border-left-style:solid; position:relative; overflow:hidden; }
-.tl-card.ghost::after { content:""; position:absolute; inset:0;
-  background: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--c) 22%, transparent) 50%, transparent 80%);
-  background-size:200% 100%; animation: shimmer 1.3s linear infinite; }
-@keyframes shimmer { 0% { background-position:150% 0; } 100% { background-position:-50% 0; } }
-[class*="st-key-blk-"][class*="-live"]::before { animation: pulse 1.1s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity:.35; transform:scale(.75); } }
-.divider { display:flex; align-items:center; gap:.6rem; color:#6B7280; font-size:.72rem;
-  letter-spacing:.08em; margin:.15rem 0; }
-.divider::before, .divider::after { content:""; flex:1; height:1px;
-  background: repeating-linear-gradient(90deg,#2A3040 0 6px,transparent 6px 10px); }
 
-/* inspector */
-.insp-head { display:flex; align-items:center; gap:.6rem; margin:.2rem 0 .6rem; }
-.badge { display:inline-flex; align-items:center; gap:.45rem; padding:.28rem .7rem; border-radius:8px;
-  font-size:.74rem; font-weight:700; letter-spacing:.12em; color:var(--c);
-  background: color-mix(in srgb, var(--c) 14%, #12151C); border:1px solid color-mix(in srgb, var(--c) 35%, #1F2430); }
-.insp-meta { margin-left:auto; color:#6B7280; font-size:.78rem; }
-.insp-meta.out { color:#FBBF24; }
-.fn-name { font-family:'JetBrains Mono',monospace; font-size:1.25rem; color:#FBBF24; margin:.1rem 0 .6rem; }
-.kv { display:grid; grid-template-columns: max-content 1fr; border:1px solid #1F2430; border-radius:10px; overflow:hidden; }
-.kv div { padding:.4rem .8rem; border-top:1px solid #1F2430; font-family:'JetBrains Mono',monospace; font-size:.84rem; }
-.kv div:nth-child(-n+2) { border-top:none; }
-.kv .k { color:#8B93A7; background:#12151C; }
-.sub { font-size:.7rem; font-weight:600; letter-spacing:.14em; color:#6B7280; margin:1rem 0 .35rem; }
-.st-key-thought { border-left:2px solid #A78BFA; padding-left:1rem; color:#A1A1AA; font-style:italic; }
-.empty { text-align:center; color:#6B7280; padding:4rem 1rem; border:1px dashed #1F2430; border-radius:12px; }
-.empty .big { font-size:2rem; margin-bottom:.4rem; }
-</style>
-"""
+def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mono: bool = False) -> str:
+    """A timeline card: kind label and icon, optional #number, and a one-line preview."""
+    label, icon, _ = KINDS[kind]
+    num_html = f'<span class="tl-num">#{num}</span>' if num is not None else ""
+    return (
+        f'<div class="tl-card k-{kind} {classes}"><div class="tl-head"><span>{icon}</span><span>{label}</span>'
+        f'{num_html}</div><div class="tl-prev{" mono" if mono else ""}">{html.escape(text)}</div></div>'
+    )
+
+
+def kv_grid(rows: dict, fmt=json.dumps) -> str:
+    """A two-column key/value table; values go through `fmt` (JSON by default, so strings show quoted)."""
+    cells = "".join(
+        f'<div class="k">{html.escape(str(k))}</div><div>{html.escape(fmt(v))}</div>' for k, v in rows.items()
+    ) or '<div class="k">—</div><div>none</div>'
+    return f'<div class="kv">{cells}</div>'
+
+
+def eyebrow(text: str) -> str:
+    """Small uppercase section label."""
+    return f'<div class="eyebrow">{html.escape(text)}</div>'
+
+
+def empty(icon: str, text: str) -> None:
+    st.html(f'<div class="empty"><div class="big">{icon}</div>{text}</div>')
+
+
+def show_reasoning(text: str) -> None:
+    st.html(eyebrow("REASONING"))
+    with st.container(key="thought"):
+        st.markdown(text)
 
 
 # ---------------------------------------------------------------- rendering
+
+
+def render_sidebar_top() -> None:
+    """Brand and the sandbox toggle; drawn before the agent exists, since the toggle decides its shell."""
+    with st.sidebar:
+        st.html(
+            '<div class="brand"><div class="brand-mark">🧮</div>'
+            '<div><div class="brand-name">jean-code</div><div class="brand-sub">agent inspector</div></div></div>'
+        )
+        st.html(eyebrow("ENVIRONMENT"))
+        st.toggle("Run bash in Docker sandbox", key="sandbox", on_change=new_chat,
+                  help="Off: commands run on this machine in the directory the app was started from, and need "
+                       "approval. On: they run in the jean-code-sandbox container without asking. Starts a new chat.")
+
+
+def render_sidebar(agent) -> None:
+    if st.session_state.get("sandbox", False):
+        note = "<b>Docker sandbox</b> — commands run without asking"
+    else:
+        note = "<b>Local shell</b> — each command needs approval"
+    with st.sidebar:
+        st.html(f'<div class="shell-note">{note}</div>')
+        st.html(eyebrow(f"SKILLS · {len(agent.skills)}"))
+        st.html(chips(sorted(agent.skills), on=agent.loaded_skills, empty_text="no skills found"))
+        st.html(eyebrow("SESSION"))
+        st.html('<div class="row">' + pill(agent.model, cls="model")
+                + pill("reasoning", bold=agent.reasoning or "off") + "</div>")
+        if agent.max_cost:
+            st.progress(min(agent.total_cost / agent.max_cost, 1.0),
+                        text=f"${agent.total_cost:.4f} of ${agent.max_cost:.2f} budget")
 
 
 def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None:
     tool_calls = sum(turn_kind(e.msg) == "tool_call" for e in entries)
     compacted = sum(not e.in_context for e in entries)
     if running:
-        status = '<span class="dot run"></span><b>running</b>'
+        status = pill("running", dot="run", cls="status-run")
     elif agent.pending_calls:
-        status = '<span class="dot" style="background:#FB923C"></span><b>awaiting approval</b>'
+        status = pill("awaiting approval", dot="wait", cls="status-wait")
     else:
-        status = '<span class="dot"></span>idle'
-    pills = [
-        f'<span class="pill model">{html.escape(agent.model)}</span>',
-        f'<span class="pill">{status}</span>',
-        f'<span class="pill"><b>{len(entries)}</b> turns</span>',
-        f'<span class="pill"><b>{tool_calls}</b> tool calls</span>',
-        f'<span class="pill"><b>{len(ctx)}</b> in context</span>',
-    ]
-    if compacted:
-        pills.append(f'<span class="pill"><b>{compacted}</b> compacted</span>')
+        status = pill("idle", dot="")
+    pills = [pill(agent.model, cls="model"), status]
+    pills += [pill(label, bold=n) for n, label in
+              ((len(entries), "turns"), (tool_calls, "tool calls"), (len(ctx), "in context"), (compacted, "compacted"))
+              if n]
+    if agent.usage:
+        pills.append(pill(usage_line(agent.usage), cls="mono"))
 
-    with st.container(horizontal=True, vertical_alignment="center"):
+    with st.container(horizontal=True, vertical_alignment="center", wrap=False):
         st.html(f'<div class="hdr"><span class="hdr-title">jean-code</span>{"".join(pills)}</div>')
         if running:
             st.button("Stop", icon=":material/stop_circle:", on_click=agent.interrupt, type="primary")
@@ -305,12 +364,10 @@ def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None
 
 
 def render_timeline(entries: list[Entry], selected: Entry | None, running: bool, agent) -> None:
-    with st.container(height=640, autoscroll=True, border=False):
+    names = call_names(entries)
+    with st.container(height=640, autoscroll=True, border=False, key="timeline"):
         if not entries and not running:
-            st.html(
-                '<div class="empty"><div class="big">✦</div>'
-                "Ask something below — every thought, tool call and answer<br>shows up here as a block.</div>"
-            )
+            empty("✦", "Ask something below — every thought, tool call and answer<br>shows up here as a block.")
         with st.container(key="rail"):
             compacted_run = 0
             for e in entries:
@@ -319,27 +376,16 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
                 compacted_run = 0 if e.in_context else compacted_run + 1
 
                 kind = turn_kind(e.msg)
-                label, icon, _ = KINDS[kind]
-                classes = f"tl-card k-{kind}"
-                classes += " sel" if selected is e else ""
-                classes += "" if e.in_context else " out"
-                mono = " mono" if kind in MONO_KINDS else ""
-                with st.container(key=f"blk-{kind}-{e.uid}"):
-                    st.html(
-                        f'<div class="{classes}"><div class="tl-head"><span>{icon}</span>'
-                        f'<span>{label}</span><span class="tl-num">#{e.uid}</span></div>'
-                        f'<div class="tl-prev{mono}">{html.escape(preview(e.msg, kind))}</div></div>'
-                    )
+                err = kind == "tool_result" and is_error(e.msg)
+                classes = " ".join(c for c, on in (("sel", selected is e), ("out", not e.in_context), ("err", err)) if on)
+                with st.container(key=f"blk-{kind}-{'err-' if err else ''}{e.uid}"):
+                    st.html(card(kind, preview(e.msg, kind, names), num=e.uid, classes=classes,
+                                 mono=kind in MONO_KINDS))
                     st.button(" ", key=f"hit-{e.uid}", on_click=select, args=(e.uid,), width="stretch")
 
             if running:
-                kind, status = live_status(agent)
-                label, icon, _ = KINDS[kind]
-                with st.container(key=f"blk-{kind}-live"):
-                    st.html(
-                        f'<div class="tl-card ghost k-{kind}"><div class="tl-head"><span>{icon}</span>'
-                        f'<span>{label}</span></div><div class="tl-prev">{status}</div></div>'
-                    )
+                with st.container(key="blk-thinking-live"):
+                    st.html(card("thinking", "waiting for model…", classes="ghost"))
             elif agent.pending_calls:
                 render_approval(agent)
 
@@ -347,12 +393,8 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
 def render_approval(agent) -> None:
     """The first call waiting for approval, with Approve / Deny. Sending a message instead also answers it."""
     name, arguments = agent.pending_calls[0]
-    label, icon, _ = KINDS["approval"]
     with st.container(key="blk-approval-pending"):
-        st.html(
-            f'<div class="tl-card k-approval"><div class="tl-head"><span>{icon}</span><span>{label}</span></div>'
-            f'<div class="tl-prev mono">{html.escape(name)}() wants to run:</div></div>'
-        )
+        st.html(card("approval", f"{name}() wants to run:", mono=True))
         command = arguments.get("command") if name == "bash" else None
         st.code(command or json.dumps(arguments, indent=2), language="bash" if command else "json", wrap_lines=True)
         reason = st.text_input("Reason", key="deny_reason", placeholder="optional reason, sent to the model on deny",
@@ -366,14 +408,90 @@ def render_approval(agent) -> None:
                 st.rerun()
 
 
+def render_args(args: dict) -> None:
+    """Short arguments in a key/value table; commands and long or multi-line strings as code blocks."""
+    def is_long(k, v):
+        return isinstance(v, str) and (k == "command" or "\n" in v or len(v) > LONG_ARG)
+
+    short = {k: v for k, v in args.items() if not is_long(k, v)}
+    if short or not args:
+        st.html(kv_grid(short))
+    for k, v in args.items():
+        if is_long(k, v):
+            st.html(eyebrow(k))
+            st.code(v, language="bash" if k == "command" else None, wrap_lines=True)
+
+
+def render_output(result: Entry) -> None:
+    """A tool result's content: pretty JSON when it parses as JSON, height-capped when long, red when it failed."""
+    content, language = str(mget(result.msg, "content")), None
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, (dict, list)):
+            content, language = json.dumps(parsed, indent=2), "json"
+    except ValueError:
+        pass
+    height = 420 if content.count("\n") > 20 else "content"
+    with st.container(key=f"errout-{result.uid}") if is_error(result.msg) else nullcontext():
+        st.code(content, language=language, wrap_lines=True, height=height)
+
+
+def render_tool_call(entries: list[Entry], pos: int, running: bool, pending: bool) -> None:
+    msg = entries[pos].msg
+    if mget(msg, "reasoning"):
+        show_reasoning(mget(msg, "reasoning"))
+    if mget(msg, "content"):
+        st.markdown(mget(msg, "content"))
+    results = {mget(e.msg, "tool_call_id"): e for e in results_of(entries, pos)}
+    is_last = pos + len(results) == len(entries) - 1
+    for call in mget(msg, "tool_calls"):
+        st.html(f'<div class="fn-name">{html.escape(call["function"]["name"])}()</div>')
+        render_args(parse_args(call))
+        result = results.get(call.get("id"))
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.html(eyebrow("↳ RESULT"))
+            if result is not None:
+                st.button("Jump to result", icon=":material/arrow_downward:", on_click=select, args=(result.uid,),
+                          key=f"jump-result-{result.uid}", type="tertiary")
+        if result is not None:
+            render_output(result)
+        elif running and is_last:
+            st.caption("running…")
+        elif pending and is_last:
+            st.caption("waiting for approval")
+        else:
+            st.caption("no result")
+
+
+def render_tool_result(entries: list[Entry], pos: int) -> None:
+    result = entries[pos]
+    name = call_names(entries).get(mget(result.msg, "tool_call_id"), "tool")
+    err = " err" if is_error(result.msg) else ""
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.html(f'{eyebrow("FROM")}<div class="fn-name{err}">{html.escape(name)}()</div>')
+        if call := call_of(entries, pos):
+            st.button("Jump to call", icon=":material/arrow_upward:", on_click=select, args=(call.uid,),
+                      type="tertiary")
+    render_output(result)
+
+
+def render_text(msg, kind: str) -> None:
+    """User, system, agent and thinking messages: the reasoning, then the markdown content."""
+    if mget(msg, "reasoning"):
+        show_reasoning(mget(msg, "reasoning"))
+    if kind != "thinking":
+        st.markdown(mget(msg, "content") or "*(no content)*")
+
+
 def render_turn(entries: list[Entry], selected: Entry | None, ctx: list, running: bool, pending: bool) -> None:
     if selected is None:
-        st.html('<div class="empty"><div class="big">◇</div>Click a block in the timeline to inspect it.</div>')
+        empty("◇", "Click a block in the timeline to inspect it.")
         return
 
     pos = entries.index(selected)
     msg, kind = selected.msg, turn_kind(selected.msg)
     label, icon, _ = KINDS[kind]
+    err = " err" if kind == "tool_result" and is_error(msg) else ""
     if selected.in_context:
         where = next(i for i, m in enumerate(ctx) if m is msg)
         meta = f'<span class="insp-meta">context message {where + 1} of {len(ctx)}</span>'
@@ -381,53 +499,19 @@ def render_turn(entries: list[Entry], selected: Entry | None, ctx: list, running
         meta = '<span class="insp-meta out">⟲ compacted — no longer in context</span>'
 
     with st.container(horizontal=True, vertical_alignment="center"):
-        st.html(f'<div class="insp-head k-{kind}"><span class="badge">{icon} {label} #{selected.uid}</span>{meta}</div>')
+        st.html(f'<div class="insp-head k-{kind}{err}"><span class="badge">{icon} {label} #{selected.uid}</span>{meta}</div>')
         if st.session_state.selected_uid is None:
-            st.html('<span class="pill">⤓ following latest</span>', width="content")
+            st.html(pill("⤓ following latest"), width="content")
         else:
             st.button("Follow latest", icon=":material/vertical_align_bottom:", on_click=select, args=(None,),
                       type="tertiary")
 
     if kind == "tool_call":
-        if mget(msg, "thinking"):
-            with st.container(key="thought"):
-                st.markdown(mget(msg, "thinking"))
-        if mget(msg, "content"):
-            st.markdown(mget(msg, "content"))
-        results = results_of(entries, pos)
-        for i, call in enumerate(mget(msg, "tool_calls")):
-            fn = call["function"]
-            st.html(f'<div class="fn-name">{html.escape(fn["name"])}()</div>')
-            cells = "".join(
-                f'<div class="k">{html.escape(str(k))}</div><div>{html.escape(json.dumps(v))}</div>'
-                for k, v in fn["arguments"].items()
-            ) or '<div class="k">—</div><div>no arguments</div>'
-            st.html(f'<div class="kv">{cells}</div>')
-            st.html('<div class="sub">↳ RESULT</div>')
-            if i < len(results):
-                result = results[i]
-                st.code(str(mget(result.msg, "content")), language=None, wrap_lines=True)
-                st.button("Jump to result", icon=":material/arrow_downward:", on_click=select, args=(result.uid,),
-                          key=f"jump-result-{result.uid}")
-            elif running and pos + len(results) == len(entries) - 1:
-                st.caption("running…")
-            elif pending and pos + len(results) == len(entries) - 1:
-                st.caption("waiting for approval")
-            else:
-                st.caption("no result")
+        render_tool_call(entries, pos, running, pending)
     elif kind == "tool_result":
-        st.html(f'<div class="sub">FROM</div><div class="fn-name">{html.escape(str(mget(msg, "tool_name")))}()</div>')
-        st.code(str(mget(msg, "content")), language=None, wrap_lines=True)
-        if call := call_of(entries, pos):
-            st.button("Jump to call", icon=":material/arrow_upward:", on_click=select, args=(call.uid,))
-    elif kind == "thinking":
-        with st.container(key="thought"):
-            st.markdown(mget(msg, "thinking"))
+        render_tool_result(entries, pos)
     else:
-        if mget(msg, "thinking"):
-            with st.container(key="thought"):
-                st.markdown(mget(msg, "thinking"))
-        st.markdown(mget(msg, "content") or "*(no content)*")
+        render_text(msg, kind)
 
     with st.expander("Raw message", icon=":material/data_object:"):
         st.json(to_jsonable(msg))
@@ -436,17 +520,36 @@ def render_turn(entries: list[Entry], selected: Entry | None, ctx: list, running
 def render_request(agent) -> None:
     req = agent.last_request
     if not req:
-        st.html('<div class="empty"><div class="big">⇅</div>No request sent yet.</div>')
+        empty("⇅", "No request sent yet.")
         return
-    tools = ", ".join(getattr(t, "__name__", str(t)) for t in req.get("tools", [])) or "none"
+    tools = [
+        (t.get("function") or {}).get("name", "?") if isinstance(t, dict) else getattr(t, "__name__", str(t))
+        for t in req.get("tools", [])
+    ]
+    reasoning = req.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, dict) else reasoning
     st.html(
-        '<div class="hdr">'
-        f'<span class="pill model">{html.escape(str(req.get("model")))}</span>'
-        f'<span class="pill">think <b>{html.escape(str(req.get("think")))}</b></span>'
-        f'<span class="pill">stream <b>{html.escape(str(req.get("stream")))}</b></span>'
-        f'<span class="pill">tools <b>{html.escape(tools)}</b></span>'
-        f'<span class="pill"><b>{len(req.get("messages", []))}</b> messages</span></div>'
+        '<div class="hdr">' + pill(req.get("model"), cls="model") + pill("reasoning", bold=effort or "none")
+        + pill("messages", bold=len(req.get("messages", []))) + "</div>"
     )
+    st.html(eyebrow(f"TOOLS · {len(tools)}") + chips(tools))
+
+    if agent.usage:
+        records = [record(raw) for raw in agent.usage]
+        last = records[-1]
+        cost = "—" if last["cost"] is None else f"${last['cost']:.5f}"
+        st.html(eyebrow("LAST CALL") + kv_grid({
+            "provider": last["provider"] or "—",
+            "tokens in": f"{human(last['prompt_tokens'])} ({human(last['cached_tokens'])} cached)",
+            "tokens out": f"{human(last['completion_tokens'])} ({human(last['reasoning_tokens'])} reasoning)",
+            "cost": cost,
+        }, fmt=str))
+        st.html(eyebrow(f"USAGE · {len(agent.usage)} CALLS · {usage_line(agent.usage)}"))
+        rows = [{**r, "time": (r["time"] or "")[11:19]} for r in reversed(records)]  # ISO time -> HH:MM:SS
+        st.dataframe(rows, hide_index=True, column_order=list(USAGE_COLUMNS),
+                     column_config=USAGE_COLUMNS, height=min(38 + 35 * len(agent.usage), 280))
+
+    st.html(eyebrow("PAYLOAD"))
     with st.expander("Messages sent", icon=":material/forum:"):
         st.json(to_jsonable(req.get("messages", [])), expanded=1)
     with st.expander("Full request", icon=":material/data_object:"):
@@ -454,33 +557,35 @@ def render_request(agent) -> None:
 
 
 def render_state(agent) -> None:
-    attrs = {k: to_jsonable(v) for k, v in vars(agent).items()
-             if k not in ("client", "messages", "last_request")}  # shown elsewhere / not interesting
-    scalars = {k: v for k, v in attrs.items() if not isinstance(v, (dict, list))}
-    cells = "".join(
-        f'<div class="k">{html.escape(k)}</div><div>{html.escape(json.dumps(v))}</div>' for k, v in scalars.items()
-    )
-    if cells:
-        st.html(f'<div class="kv">{cells}</div>')
+    config = {k: to_jsonable(getattr(agent, k)) for k in STATE_CONFIG if hasattr(agent, k)}
+    st.html(eyebrow("CONFIG") + kv_grid(config))
+    st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(agent.needs_approval)))
+    st.html(eyebrow("LOADED SKILLS") + chips(agent.loaded_skills))
+
+    attrs = {k: to_jsonable(v) for k, v in vars(agent).items() if k not in STATE_HIDDEN}
+    short = {k: v for k, v in attrs.items() if not isinstance(v, (dict, list)) and len(json.dumps(v)) <= LONG_ARG}
+    st.html(eyebrow("OTHER") + kv_grid(short))
     for attr, value in attrs.items():
-        if attr not in scalars:
+        if attr not in short:
             with st.expander(attr, icon=":material/data_object:"):
-                st.json(value, expanded=1)
+                if isinstance(value, str):
+                    st.code(value, language=None, wrap_lines=True)
+                else:
+                    st.json(value, expanded=1)
 
 
 # ---------------------------------------------------------------- app
 
 st.set_page_config(page_title="jean-code", page_icon="🧮", layout="wide")
-st.html(CSS)
+st.html(CSS_PATH)
+st.html(kind_css())
 
-st.sidebar.toggle("Run bash in Docker sandbox", key="sandbox", on_change=new_chat,
-                  help="Off: commands run on this machine in workspace/ and need approval. "
-                       "On: they run in the jean-code-sandbox container without asking. Starts a new chat.")
-
+render_sidebar_top()
 if "agent" not in st.session_state:
     new_chat()
     st.session_state.next_uid = 0
     st.session_state.was_running = False
+render_sidebar(st.session_state.agent)
 
 
 @st.fragment(run_every=POLL_SECONDS if is_running() else None)
@@ -489,7 +594,7 @@ def live_view() -> None:
     running = is_running()
     if st.session_state.was_running and not running:
         st.session_state.was_running = False
-        st.rerun()  # full rerun: stop polling and re-enable the input
+        st.rerun()  # full rerun: stop polling, re-enable the input and refresh the sidebar
 
     ctx = list(agent.messages)  # snapshot: the run thread appends concurrently
     sync_history(entries, ctx)
@@ -500,7 +605,7 @@ def live_view() -> None:
     timeline_col, inspector_col = st.columns([2, 3], gap="large")
 
     with timeline_col:
-        st.html('<div class="section">TIMELINE</div>')
+        st.html(eyebrow("TIMELINE"))
         render_timeline(entries, selected, running, agent)
         prompt = st.chat_input("Agent is working…" if running else "Message the agent…", disabled=running)
         if prompt:

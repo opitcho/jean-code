@@ -3,19 +3,25 @@
 Both backends share the tool methods and differ only in how a command is started:
 `_exec` runs one to completion and captures its output, `_spawn` starts one detached.
 Commands are non-interactive (no TTY, stdin closed) and stateless: each call is a fresh
-`bash -c` in the workspace, so `cd` and `export` don't carry over but files do.
+`bash -c` in the working directory, so `cd` and `export` don't carry over but files do.
 
-Background jobs write `.jobs/<id>.pid`, `.log` and `.exit` into the workspace. The workspace
-is a host folder (mounted into the container for Docker), so `job` reads those files directly.
+On the host, commands run in the directory the agent was started from, with no sandboxing.
+In Docker, they run in the `workspace/` folder, mounted into the container.
+
+Background jobs write `<id>.pid`, `.log` and `.exit` into a jobs folder on the host, so `job`
+reads those files directly: a temp folder for the host shell (to keep them out of the user's
+project), and `workspace/.jobs` for Docker (so the container can write them).
 """
 
-import atexit
 import os
 import shlex
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import uuid
+import weakref
 from pathlib import Path
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent / "workspace"
@@ -46,17 +52,18 @@ class Shell:
 
     requires_approval = True
 
-    def __init__(self, workdir: str | Path = WORKSPACE_DIR, max_timeout: int = 600):
+    def __init__(self, workdir: str | Path, jobs_dir: str | Path, max_timeout: int = 600):
         self.workdir = Path(workdir).resolve()
-        (self.workdir / JOBS_DIR).mkdir(parents=True, exist_ok=True)
+        self.jobs_dir = Path(jobs_dir).resolve()
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.max_timeout = max_timeout
         self.jobs: dict[str, int] = {}  # job id -> how much of its log was already returned
 
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
-        """Run a shell command in the workspace and return its exit code and output.
+        """Run a shell command in the working directory and return its exit code and output.
 
         Commands are not interactive: there is no terminal and no stdin, so use flags like -y
-        and avoid pagers and editors. Each call starts a fresh shell in the workspace, so `cd`
+        and avoid pagers and editors. Each call starts a fresh shell in the working directory, so `cd`
         and `export` don't carry over to the next call; files do.
 
         Args:
@@ -74,7 +81,7 @@ class Shell:
                 self._job_file(job_id, kind).unlink(missing_ok=True)
             self._spawn(self._job_script(job_id, command))
             self.jobs[job_id] = 0
-            return f"started job {job_id} (output in {JOBS_DIR}/{job_id}.log); check it with job('{job_id}')"
+            return f"started job {job_id} (output in {self._jobs_path()}/{job_id}.log); check it with job('{job_id}')"
 
         timeout = max(1, min(timeout, self.max_timeout))
         code, output, timed_out = self._exec(command, timeout)
@@ -128,11 +135,15 @@ class Shell:
         raise NotImplementedError
 
     def _job_file(self, job_id: str, kind: str) -> Path:
-        return self.workdir / JOBS_DIR / f"{job_id}.{kind}"
+        return self.jobs_dir / f"{job_id}.{kind}"
+
+    def _jobs_path(self) -> str:
+        """The jobs folder as commands see it."""
+        return str(self.jobs_dir)
 
     def _job_script(self, job_id: str, command: str) -> str:
         """Run `command` as the leader of its own process group, recording its pid, output and exit code."""
-        base = f"{JOBS_DIR}/{job_id}"
+        base = shlex.quote(f"{self._jobs_path()}/{job_id}")
         # a subshell, so an `exit` in the command still lets the exit code be recorded
         inner = f"echo $$ > {base}.pid; ( {command}\n) > {base}.log 2>&1 < /dev/null; echo $? > {base}.exit"
         return f"setsid bash -c {shlex.quote(inner)}"
@@ -155,9 +166,20 @@ class Shell:
 
 
 class LocalShell(Shell):
-    """Runs commands on the host, in the workspace. Asks for approval by default."""
+    """Runs commands on the host, in the directory the agent was started from. Asks for approval by default.
+
+    There is no sandboxing: commands can `cd` anywhere, so approval is the only safety net.
+    """
 
     requires_approval = True
+
+    def __init__(self, workdir: str | Path | None = None, max_timeout: int = 600):
+        super().__init__(workdir or Path.cwd(), tempfile.mkdtemp(prefix="jean-code-jobs-"), max_timeout)
+
+    def close(self) -> None:
+        """Kill background jobs that are still running, and remove their files."""
+        super().close()
+        shutil.rmtree(self.jobs_dir, ignore_errors=True)
 
     def describe(self) -> str:
         return (
@@ -200,12 +222,20 @@ class LocalShell(Shell):
         )
 
 
+def _remove_container(name: str, process: subprocess.Popen) -> None:
+    """Remove a sandbox container and reap the `docker run` that started it."""
+    subprocess.run(["docker", "rm", "--force", name], capture_output=True)
+    process.communicate()
+
+
 class DockerShell(Shell):
     """Runs commands in a long-lived Docker container with only the workspace mounted.
 
     The container starts on the first command and lives until `close()`, so installed
-    packages persist. It runs as the host user, so files it writes to the workspace are
-    yours. Commands run without approval by default: the sandbox is the safety net.
+    packages persist. It also dies with this object or this process, even on a crash:
+    its main process reads a pipe only we hold, and exits when that pipe closes. It runs
+    as the host user, so files it writes to the workspace are yours. Commands run without
+    approval by default: the sandbox is the safety net.
     """
 
     requires_approval = False
@@ -217,10 +247,11 @@ class DockerShell(Shell):
         network: bool = True,
         max_timeout: int = 600,
     ):
-        super().__init__(workdir, max_timeout)
+        super().__init__(workdir, Path(workdir) / JOBS_DIR, max_timeout)
         self.image = image
         self.network = network
         self.container: str | None = None
+        self._remove: weakref.finalize | None = None
 
     def describe(self) -> str:
         return (
@@ -242,23 +273,28 @@ class DockerShell(Shell):
             )
         name = f"jean-code-{uuid.uuid4().hex[:8]}"
         command = [
-            "docker", "run", "--detach", "--rm", "--init", "--name", name,
+            "docker", "run", "--interactive", "--rm", "--init", "--name", name,
             "--user", f"{os.getuid()}:{os.getgid()}",
             "--volume", f"{self.workdir}:/workspace", "--workdir", "/workspace",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", "2g", "--cpus", "2", "--pids-limit", "256",
             *[arg for key, value in ENV.items() for arg in ("--env", f"{key}={value}")],
             *(self._proxy_env(info.stdout) if self.network else ["--network", "none"]),
-            self.image, "sleep", "infinity",
+            self.image, "bash", "-c", "echo ready && exec cat > /dev/null",
         ]  # fmt: skip
-        started = subprocess.run(command, capture_output=True, text=True)
-        if started.returncode != 0:
-            error = started.stderr.strip()
+        # The container lives as long as `cat` reads our end of its stdin: when this process
+        # exits, however it exits, the OS closes the pipe and the container stops and is removed.
+        process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if process.stdout.readline().strip() != "ready":
+            error = process.communicate()[1].strip()
             if "Unable to find image" in error or "pull access denied" in error:
                 error += f"\n(build the image with `docker build -t {self.image} sandbox/`)"
             raise RuntimeError(f"couldn't start the sandbox: {error}")
         self.container = name
-        atexit.register(self.close)
+        # also on garbage collection (a dropped Streamlit session) and at interpreter exit
+        self._remove = weakref.finalize(self, _remove_container, name, process)
 
     @staticmethod
     def _proxy_env(info: str) -> list[str]:
@@ -276,11 +312,14 @@ class DockerShell(Shell):
                 flags += ["--env", f"{key}={value}", "--env", f"{key.lower()}={value}"]
         return flags
 
+    def _jobs_path(self) -> str:
+        return f"/workspace/{JOBS_DIR}"
+
     def close(self) -> None:
         """Remove the container, which also ends its background jobs."""
-        if self.container:
-            subprocess.run(["docker", "rm", "--force", self.container], capture_output=True)
-            self.container = None
+        if self._remove:
+            self._remove()
+            self.container = self._remove = None
 
     def __enter__(self):
         self.start()

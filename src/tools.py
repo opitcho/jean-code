@@ -1,38 +1,12 @@
-"""Tools an agent can register in its `tool_map`.
+"""Tools to pass to an agent in `tools`.
 
-Ollama builds each tool's schema from its type hints and Google-style docstring,
+`llm.tool_schema` builds each tool's schema from its type hints and Google-style docstring,
 so every tool here is fully typed and documents its arguments.
 """
 
 import httpx
 from bs4 import BeautifulSoup
 from ddgs import DDGS
-
-
-def add(a: int, b: int) -> int:
-    """Add two integers.
-
-    Args:
-        a: First number to add.
-        b: Second number to add.
-
-    Returns:
-        The sum of a and b.
-    """
-    return a + b
-
-
-def sub(a: int, b: int) -> int:
-    """Subtract one integer from another.
-
-    Args:
-        a: Number to subtract from.
-        b: Number to subtract.
-
-    Returns:
-        The difference a - b.
-    """
-    return a - b
 
 
 def web_search(query: str, max_results: int = 5) -> str:
