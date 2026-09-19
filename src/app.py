@@ -21,7 +21,9 @@ import streamlit as st
 from agent import DEFAULT_MODEL
 from coding import coding_agent
 from config import USAGE_LOG
-from usage import append_log, human, record, usage_line
+from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
+from repl import compaction_line
+from usage import COST_UNKNOWN, human, logged_calls, record, usage_line
 
 MODEL = DEFAULT_MODEL
 POLL_SECONDS = 0.5
@@ -36,14 +38,17 @@ KINDS = {
     "tool_result": ("TOOL RESULT", "↳", "#34D399"),
     "agent": ("AGENT", "◆", "#F472B6"),
     "approval": ("APPROVAL", "⚠", "#FB923C"),
+    "marker": ("HEAD END", "┄", "#94A3B8"),
+    "summary": ("SUMMARY", "≡", "#2DD4BF"),
 }
 MONO_KINDS = {"tool_call", "tool_result"}
 ERROR_PREFIXES = ("Error", "Denied by user", "Not run")  # results the agent writes when a call didn't succeed
 EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash result, see shell.format_result
 LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
 STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
-STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage",  # shown elsewhere
-                "needs_approval", "loaded_skills", *STATE_CONFIG}
+CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window", "head_end")
+STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage", "compactions",  # shown elsewhere
+                "needs_approval", "loaded_skills", *STATE_CONFIG, *CONTEXT_CONFIG}
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
     "provider": st.column_config.TextColumn("provider"),
@@ -95,6 +100,11 @@ def turn_kind(msg) -> str:
         return "tool_call"
     if mget(msg, "reasoning") and not mget(msg, "content"):
         return "thinking"
+    content = mget(msg, "content")
+    if role == "user" and isinstance(content, str) and content.startswith(HEAD_MARKER_TAG):
+        return "marker"
+    if role == "user" and isinstance(content, str) and content.startswith(SUMMARY_TAG):
+        return "summary"
     if role in ("tool", "user", "system"):
         return {"tool": "tool_result"}.get(role, role)
     return "agent"
@@ -161,19 +171,27 @@ def preview(msg, kind: str, names: dict, limit: int = 90) -> str:
 
 
 def sync_history(entries: list[Entry], ctx: list) -> None:
-    """Mark which seen messages are still in the context, and append unseen ones in order.
+    """Mark which seen messages are still in the context, and add unseen ones after the message before them.
 
+    A compaction's summary thus lands where it sits in the context, after the messages it replaced.
     Entries hold references to their messages, so `id()` can't be reused while they exist.
     """
     ctx_ids = {id(m) for m in ctx}
-    known = set()
-    for e in entries:
+    position = {}
+    for i, e in enumerate(entries):
         e.in_context = id(e.msg) in ctx_ids
-        known.add(id(e.msg))
+        position[id(e.msg)] = i
+    start = 0  # where the next unseen message may go: after the previous context message
     for m in ctx:
-        if id(m) not in known:
-            st.session_state.next_uid += 1
-            entries.append(Entry(st.session_state.next_uid, m))
+        if id(m) in position:
+            start = position[id(m)] + 1
+            continue
+        # before the next entry still in context, so it follows the compacted entries it replaced
+        at = next((j for j in range(start, len(entries)) if entries[j].in_context), len(entries))
+        st.session_state.next_uid += 1
+        entries.insert(at, Entry(st.session_state.next_uid, m))
+        position = {id(e.msg): i for i, e in enumerate(entries)}
+        start = at + 1
 
 
 def results_of(entries: list[Entry], pos: int) -> list[Entry]:
@@ -202,6 +220,22 @@ def call_names(entries: list[Entry]) -> dict[str, str]:
     return {call.get("id"): call["function"]["name"] for e in entries for call in mget(e.msg, "tool_calls") or []}
 
 
+def compaction_of(agent, msg) -> dict | None:
+    """The compaction record whose summary is `msg`, if any."""
+    return next((c for c in agent.compactions if c.get("summary") is msg), None)
+
+
+def compaction_cost(rec: dict) -> str:
+    cost = ((rec.get("response") or {}).get("usage") or {}).get("cost")
+    return "—" if cost is None else f"${cost:.5f}"
+
+
+def context_size(agent) -> str:
+    """`~24.0k / 256.0k`: the context's size against the compaction threshold."""
+    size = f"~{human(agent.context_tokens)}"
+    return f"{size} / {human(agent.compact_at)}" if agent.compact_at else size
+
+
 # ---------------------------------------------------------------- background run
 
 
@@ -216,21 +250,30 @@ def start_run(fn, *args) -> None:
     The model calls it made are appended to the usage log when it ends.
     """
     run, agent = st.session_state.run, st.session_state.agent
-    first_call = len(agent.usage)
 
     def target():
-        try:
-            fn(*args)
-        except Exception as e:  # surfaced in the header; never call st.* from here
-            run["error"] = f"{type(e).__name__}: {e}"
-        finally:
-            append_log(USAGE_LOG, agent.usage[first_call:])
+        with logged_calls(agent.usage, USAGE_LOG):
+            try:
+                fn(*args)
+            except Exception as e:  # surfaced in the header; never call st.* from here
+                run["error"] = f"{type(e).__name__}: {e}"
 
-    run["error"] = None
+    run["error"] = run["notice"] = None
     run["thread"] = threading.Thread(target=target, daemon=True)
     run["thread"].start()
     st.session_state.was_running = True
     st.session_state.selected_uid = None  # follow the live turn
+
+
+def compact_now(agent, run: dict) -> None:
+    """`/compact`: compact regardless of the threshold. An outcome that leaves no record in `agent.compactions`
+    (refused, nothing to compact) is kept as the run's notice; recorded ones are toasted from the records.
+
+    Runs on the background thread, so it gets the agent and run as arguments: no `st.session_state` there."""
+    before = len(agent.compactions)
+    status = agent.compact(force=True)
+    if len(agent.compactions) == before:
+        run["notice"] = f"[compaction {status}]"
 
 
 def new_chat() -> None:
@@ -240,7 +283,8 @@ def new_chat() -> None:
     st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False))
     st.session_state.entries = []
     st.session_state.selected_uid = None
-    st.session_state.run = {"thread": None, "error": None}
+    st.session_state.run = {"thread": None, "error": None, "notice": None}
+    st.session_state.compactions_seen = 0
 
 
 def select(uid: int | None) -> None:
@@ -349,6 +393,7 @@ def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None
     pills += [pill(label, bold=n) for n, label in
               ((len(entries), "turns"), (tool_calls, "tool calls"), (len(ctx), "in context"), (compacted, "compacted"))
               if n]
+    pills.append(pill("context", bold=context_size(agent), cls="mono"))
     if agent.usage:
         pills.append(pill(usage_line(agent.usage), cls="mono"))
 
@@ -361,6 +406,10 @@ def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None
 
     if error := st.session_state.run["error"]:
         st.error(error, icon=":material/error:")
+    if not running and agent.interrupted and agent.last_cost_unknown and not agent.over_budget:
+        st.warning(COST_UNKNOWN, icon=":material/warning:")
+    if not running and agent.interrupted and agent.stop_reason:
+        st.warning(agent.stop_reason, icon=":material/warning:")
 
 
 def render_timeline(entries: list[Entry], selected: Entry | None, running: bool, agent) -> None:
@@ -372,7 +421,10 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
             compacted_run = 0
             for e in entries:
                 if e.in_context and compacted_run:
-                    st.html(f'<div class="divider">⟲ {compacted_run} turns compacted</div>')
+                    text = f"⟲ {compacted_run} messages compacted"
+                    if rec := compaction_of(agent, e.msg):
+                        text += f" · ~{human(rec['tokens_before'])} → ~{human(rec['tokens_after'])} tokens"
+                    st.html(f'<div class="divider">{text}</div>')
                 compacted_run = 0 if e.in_context else compacted_run + 1
 
                 kind = turn_kind(e.msg)
@@ -483,7 +535,7 @@ def render_text(msg, kind: str) -> None:
         st.markdown(mget(msg, "content") or "*(no content)*")
 
 
-def render_turn(entries: list[Entry], selected: Entry | None, ctx: list, running: bool, pending: bool) -> None:
+def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, running: bool, pending: bool) -> None:
     if selected is None:
         empty("◇", "Click a block in the timeline to inspect it.")
         return
@@ -511,6 +563,12 @@ def render_turn(entries: list[Entry], selected: Entry | None, ctx: list, running
     elif kind == "tool_result":
         render_tool_result(entries, pos)
     else:
+        if kind == "summary" and (rec := compaction_of(agent, msg)):
+            st.html(eyebrow("COMPACTION") + kv_grid({
+                "messages removed": rec["removed"],
+                "tokens": f"~{human(rec['tokens_before'])} → ~{human(rec['tokens_after'])}",
+                "summary call": compaction_cost(rec),
+            }, fmt=str))
         render_text(msg, kind)
 
     with st.expander("Raw message", icon=":material/data_object:"):
@@ -556,6 +614,34 @@ def render_request(agent) -> None:
         st.json(to_jsonable(req), expanded=1)
 
 
+def render_context(agent) -> None:
+    """The context's size against the compaction threshold, the settings, and every compaction attempt."""
+    if agent.compact_at:
+        st.progress(min(agent.context_tokens / agent.compact_at, 1.0),
+                    text=f"context {context_size(agent)} tokens (compacts after a turn ending over the threshold)")
+    else:
+        st.html(pill("context", bold=context_size(agent), cls="mono") + pill("automatic compaction off"))
+    st.html(eyebrow("SETTINGS") + kv_grid({k: getattr(agent, k) for k in CONTEXT_CONFIG}))
+
+    st.html(eyebrow(f"COMPACTIONS · {len(agent.compactions)}"))
+    if not agent.compactions:
+        st.caption("None yet. Type /compact to compact now.")
+        return
+    rows = [{
+        "#": i + 1,
+        "status": rec["status"] or "running…",
+        "removed": rec["removed"],
+        "before": human(rec["tokens_before"]),
+        "after": human(rec["tokens_after"]) if "tokens_after" in rec else "—",
+        "cost": compaction_cost(rec),
+    } for i, rec in enumerate(agent.compactions)]
+    st.dataframe(rows, hide_index=True)
+    for i, rec in enumerate(agent.compactions):
+        if rec.get("summary"):
+            with st.expander(f"Summary #{i + 1}", icon=":material/summarize:"):
+                st.markdown(rec["summary"]["content"])
+
+
 def render_state(agent) -> None:
     config = {k: to_jsonable(getattr(agent, k)) for k in STATE_CONFIG if hasattr(agent, k)}
     st.html(eyebrow("CONFIG") + kv_grid(config))
@@ -574,6 +660,19 @@ def render_state(agent) -> None:
                     st.json(value, expanded=1)
 
 
+def announce_compactions(agent) -> None:
+    """Toast each compaction attempt that finished since the last full rerun, and a `/compact` notice.
+
+    Runs in the full script, which reruns when a run ends, so a compaction at the end of a turn is noticed.
+    """
+    records = agent.compactions
+    while st.session_state.compactions_seen < len(records) and records[st.session_state.compactions_seen]["status"]:
+        st.toast(compaction_line(records[st.session_state.compactions_seen]), icon=":material/compress:")
+        st.session_state.compactions_seen += 1
+    if notice := st.session_state.run.pop("notice", None):
+        st.toast(notice, icon=":material/compress:")
+
+
 # ---------------------------------------------------------------- app
 
 st.set_page_config(page_title="jean-code", page_icon="🧮", layout="wide")
@@ -586,6 +685,7 @@ if "agent" not in st.session_state:
     st.session_state.next_uid = 0
     st.session_state.was_running = False
 render_sidebar(st.session_state.agent)
+announce_compactions(st.session_state.agent)
 
 
 @st.fragment(run_every=POLL_SECONDS if is_running() else None)
@@ -609,15 +709,20 @@ def live_view() -> None:
         render_timeline(entries, selected, running, agent)
         prompt = st.chat_input("Agent is working…" if running else "Message the agent…", disabled=running)
         if prompt:
-            start_run(agent.run_turn, prompt)
+            if prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
+                start_run(compact_now, agent, st.session_state.run)
+            else:
+                start_run(agent.run_turn, prompt)
             st.rerun()
 
     with inspector_col:
-        turn_tab, request_tab, state_tab = st.tabs(["Turn", "Request", "Agent state"])
+        turn_tab, request_tab, context_tab, state_tab = st.tabs(["Turn", "Request", "Context", "Agent state"])
         with turn_tab:
-            render_turn(entries, selected, ctx, running, bool(agent.pending_calls))
+            render_turn(agent, entries, selected, ctx, running, bool(agent.pending_calls))
         with request_tab:
             render_request(agent)
+        with context_tab:
+            render_context(agent)
         with state_tab:
             render_state(agent)
 

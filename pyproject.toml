@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "ddgs>=9.16.0",
+    "griffelib>=2.3.0",
     "httpx>=0.28.1",
     "ipykernel>=7.3.0",
     "jupyter>=1.1.1",
@@ -17,3 +18,12 @@ dependencies = [
     "streamlit>=1.63.0",
     "tornado<6.5",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

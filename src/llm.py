@@ -7,11 +7,11 @@ what the agent stores and shows. Findings behind the details are in
 
 import inspect
 import os
-import re
 import time
 from typing import Any, Callable, get_type_hints
 
 import httpx
+from griffe import Docstring, DocstringSectionKind
 from pydantic import Field, create_model
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
@@ -67,34 +67,26 @@ def openrouter(api_key: str | None = None) -> ChatClient:
     return ChatClient(OPENROUTER_URL, api_key, extra=OPENROUTER_ROUTING)
 
 
-SECTION = re.compile(r"^(Args|Arguments|Returns|Raises|Yields|Examples?|Notes?):\s*$")
-ARG_LINE = re.compile(r"^(\w+)(?:\s*\(.*?\))?:\s*(.*)$")
+ARG_SECTIONS = (DocstringSectionKind.parameters, DocstringSectionKind.other_parameters)  # Args, Keyword Args, …
+DATA_KEYWORDS = {"default", "examples", "const", "enum"}  # schema keywords whose values are data, not schemas
 
 
 def parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
-    """Split a Google-style docstring into its description and its `Args:` descriptions by name."""
-    description, args = [], {}
-    section, current, arg_indent = None, None, None
-    for line in inspect.cleandoc(doc or "").splitlines():
-        if SECTION.match(line):
-            section, current = SECTION.match(line).group(1), None
-        elif section is None:
-            description.append(line)
-        elif section in ("Args", "Arguments") and line.strip():
-            indent = len(line) - len(line.lstrip())
-            match = ARG_LINE.match(line.strip())
-            if match and (arg_indent is None or indent <= arg_indent):
-                arg_indent, current = indent, match.group(1)
-                args[current] = match.group(2)
-            elif current:  # a continuation line of the current argument
-                args[current] += " " + line.strip()
-    return "\n".join(description).strip(), args
+    """Split a Google-style docstring into its description and its argument descriptions by name.
+
+    Arguments come from `Args:` and `Keyword Args:`; other sections (Returns, Raises, Note, …) are left out.
+    """
+    sections = Docstring(inspect.cleandoc(doc or ""), lineno=1).parse("google", warnings=False)
+    description = [s.value for s in sections if s.kind is DocstringSectionKind.text]
+    args = {p.name: " ".join(p.description.split()) for s in sections if s.kind in ARG_SECTIONS for p in s.value}
+    return "\n\n".join(description).strip(), args
 
 
 def drop_titles(schema: Any) -> Any:
     """Remove the `title` strings pydantic adds; they only cost tokens. Properties named `title` are kept."""
     if isinstance(schema, dict):
-        return {k: drop_titles(v) for k, v in schema.items() if not (k == "title" and isinstance(v, str))}
+        return {k: v if k in DATA_KEYWORDS else drop_titles(v)
+                for k, v in schema.items() if not (k == "title" and isinstance(v, str))}
     if isinstance(schema, list):
         return [drop_titles(v) for v in schema]
     return schema
@@ -104,15 +96,21 @@ def tool_schema(name: str, fn: Callable) -> dict:
     """The OpenAI tool definition for `fn`, from its type hints and Google-style docstring.
 
     Arguments with defaults are optional and show their default. Pass bound methods, so `self` is not an argument.
+    `*args` and `**kwargs` are left out; positional-only parameters are refused, since tools are called by keyword.
     """
     description, arg_docs = parse_docstring(inspect.getdoc(fn))
-    hints = get_type_hints(fn)
+    hints = get_type_hints(fn, include_extras=True)  # keeps Annotated[..., Field(...)] constraints
     fields = {}
-    for param in inspect.signature(fn).parameters.values():
+    for i, param in enumerate(inspect.signature(fn).parameters.values()):
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
+        if param.kind is param.POSITIONAL_ONLY:
+            raise ValueError(f"tool {name!r}: parameter {param.name!r} is positional-only, but tools are called by keyword")
         default = ... if param.default is param.empty else param.default
-        fields[param.name] = (hints.get(param.name, Any), Field(default, description=arg_docs.get(param.name)))
+        # Passing description=None would erase one given in Annotated[..., Field(description=...)].
+        docs = {"description": arg_docs[param.name]} if arg_docs.get(param.name) else {}
+        # A neutral field name with the real name as alias: pydantic refuses names like `_x` and warns on ones like `json`.
+        fields[f"arg{i}"] = (hints.get(param.name, Any), Field(default, alias=param.name, **docs))
     parameters = create_model(f"{name}_args", **fields).model_json_schema()
     return {"type": "function", "function": {"name": name, "description": description,
                                              "parameters": drop_titles(parameters)}}

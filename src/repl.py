@@ -12,7 +12,7 @@ from typing import Callable
 from agent import Agent, DEFAULT_MODEL
 from coding import coding_agent
 from config import USAGE_LOG
-from usage import append_log, usage_line
+from usage import COST_UNKNOWN, human, logged_calls, usage_line
 
 
 def dim(text: str) -> str:
@@ -20,17 +20,27 @@ def dim(text: str) -> str:
 
 
 class TurnPrinter:
-    """Prints a turn for the REPL as it happens, by polling the agent's `messages`."""
+    """Prints a turn for the REPL as it happens, by polling the agent's `messages` and `compactions`.
 
-    def __init__(self, agent: Agent, start: int):
+    Messages are matched by identity, not position, because a compaction replaces the list.
+    """
+
+    def __init__(self, agent: Agent):
         self.agent = agent
-        self.next = start  # index of the next message to print
+        self.seen = list(agent.messages)  # references keep the ids from being reused
+        self.seen_ids = {id(m) for m in self.seen}
+        self.compactions = len(agent.compactions)
 
     def poll(self) -> None:
-        messages = self.agent.messages
-        while self.next < len(messages):
-            self._print_message(messages[self.next])
-            self.next += 1
+        for msg in list(self.agent.messages):
+            if id(msg) not in self.seen_ids:
+                self.seen.append(msg)
+                self.seen_ids.add(id(msg))
+                self._print_message(msg)
+        compactions = self.agent.compactions
+        while self.compactions < len(compactions) and compactions[self.compactions]["status"]:
+            print(dim(compaction_line(compactions[self.compactions])))
+            self.compactions += 1
 
     def _print_message(self, msg: dict) -> None:
         if msg["role"] == "tool":
@@ -42,7 +52,15 @@ class TurnPrinter:
                 print(f"agent> {msg['content']}")
             for call in msg.get("tool_calls", []):
                 print(f"tool> {call['function']['name']}({call['function']['arguments']})")
-        # user messages: the user just typed them
+        # user messages: the user just typed them; the marker and summaries show as compaction lines
+
+
+def compaction_line(record: dict) -> str:
+    """`[compacted 38 messages · ~210.0k → ~24.0k tokens]`, or why a compaction didn't happen."""
+    if record["status"] == "compacted":
+        return (f"[compacted {record['removed']} messages · ~{human(record['tokens_before'])} → "
+                f"~{human(record['tokens_after'])} tokens]")
+    return f"[compaction {record['status']}]"
 
 
 def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
@@ -83,8 +101,7 @@ def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
 
 def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *args) -> None:
     """Run `fn` in a thread with Ctrl+C mapped to interrupt(), printing each message as it lands."""
-    printer = TurnPrinter(agent, start=len(agent.messages))
-    first_call = len(agent.usage)
+    printer = TurnPrinter(agent)
     errors: list[Exception] = []
 
     def target():
@@ -93,26 +110,31 @@ def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *arg
         except Exception as e:
             errors.append(e)
 
-    worker = threading.Thread(target=target, daemon=True)
-    previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
-    try:
-        worker.start()
-        while worker.is_alive():
-            printer.poll()
-            worker.join(0.05)
-    finally:
-        signal.signal(signal.SIGINT, previous)
+    with logged_calls(agent.usage, usage_log) as calls:
+        worker = threading.Thread(target=target, daemon=True)
+        previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
+        try:
+            worker.start()
+            while worker.is_alive():
+                printer.poll()
+                worker.join(0.05)
+        finally:
+            signal.signal(signal.SIGINT, previous)
     printer.poll()
 
     for e in errors:
         print(f"[error] {type(e).__name__}: {e}")
     if agent.interrupted:
-        print(f"[budget of ${agent.max_cost} reached]" if agent.over_budget else "[interrupted]")
-    calls = agent.usage[first_call:]
+        if agent.over_budget:
+            print(f"[budget of ${agent.max_cost} reached]")
+        elif agent.last_cost_unknown:
+            print(COST_UNKNOWN)
+        elif agent.stop_reason:
+            print(f"[{agent.stop_reason}]")
+        else:
+            print("[interrupted]")
     if calls:
-        print(dim(usage_line(calls)))
-        if usage_log:
-            append_log(usage_log, calls)
+        print(dim(f"{usage_line(calls)} · context ~{human(agent.context_tokens)}"))
 
 
 def print_cost(agent: Agent) -> None:
@@ -135,10 +157,12 @@ if __name__ == "__main__":
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenRouter model id")
     parser.add_argument("--reasoning", default="medium", help="reasoning effort: low, medium or high")
     parser.add_argument("--max-cost", type=float, default=None, help="stop once the session has spent this many USD")
+    parser.add_argument("--compact-at", type=int, default=256_000, help="compact the context after a turn that ends over this many tokens")
     cli = parser.parse_args()
 
     agent = coding_agent(
-        cli.model, sandbox=cli.sandbox, network=not cli.no_network, reasoning=cli.reasoning, max_cost=cli.max_cost
+        cli.model, sandbox=cli.sandbox, network=not cli.no_network, reasoning=cli.reasoning, max_cost=cli.max_cost,
+        compact_at=cli.compact_at,
     )
     try:
         repl(agent)
