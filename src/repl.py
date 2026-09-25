@@ -12,7 +12,7 @@ from typing import Callable
 from agent import Agent, DEFAULT_MODEL
 from coding import coding_agent
 from config import USAGE_LOG
-from usage import COST_UNKNOWN, human, logged_calls, usage_line
+from usage import COST_UNKNOWN, breakdown_lines, human, logged_calls, usage_line
 
 
 def dim(text: str) -> str:
@@ -110,7 +110,7 @@ def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *arg
         except Exception as e:
             errors.append(e)
 
-    with logged_calls(agent.usage, usage_log) as calls:
+    with logged_calls(agent.budget.journal, usage_log) as calls:  # the whole tree's calls, subagents included
         worker = threading.Thread(target=target, daemon=True)
         previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
         try:
@@ -138,7 +138,12 @@ def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *arg
 
 
 def print_cost(agent: Agent) -> None:
-    print(f"session: ${agent.total_cost:.4f} over {len(agent.usage)} model calls")
+    """The session's spend (the agent and any subagents), where it went once there are several agents, and the key's credits."""
+    budget = agent.budget
+    print(f"session: ${budget.spent:.4f} over {len(budget.journal)} model calls")
+    if len(budget.nodes()) > 1:
+        for line in breakdown_lines(budget.breakdown()):
+            print(dim(line))
     try:
         key = agent.client.credits()
     except Exception as e:

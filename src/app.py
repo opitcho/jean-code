@@ -252,7 +252,7 @@ def start_run(fn, *args) -> None:
     run, agent = st.session_state.run, st.session_state.agent
 
     def target():
-        with logged_calls(agent.usage, USAGE_LOG):
+        with logged_calls(agent.budget.journal, USAGE_LOG):  # the whole tree's calls, subagents included
             try:
                 fn(*args)
             except Exception as e:  # surfaced in the header; never call st.* from here
@@ -375,9 +375,10 @@ def render_sidebar(agent) -> None:
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(agent.model, cls="model")
                 + pill("reasoning", bold=agent.reasoning or "off") + "</div>")
-        if agent.max_cost:
-            st.progress(min(agent.total_cost / agent.max_cost, 1.0),
-                        text=f"${agent.total_cost:.4f} of ${agent.max_cost:.2f} budget")
+        budget = agent.budget  # the agent and any subagents
+        if budget.limit:
+            st.progress(min(budget.spent / budget.limit, 1.0),
+                        text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget")
 
 
 def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None:

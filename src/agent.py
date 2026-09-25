@@ -9,6 +9,7 @@ import skills
 from llm import ChatClient, openrouter, tool_schema
 from prompts import (COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE,
                      SUMMARY_TAG)
+from usage import Budget
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
@@ -65,9 +66,11 @@ class Agent:
     are the ones the model calls. `self.commands` maps a name to a function of the rest of the
     line; its output goes into the user's message, so the model sees what the command did.
 
-    Each model call appends the API's usage to `self.usage`. Once `total_cost` reaches
-    `max_cost`, turns stop as if interrupted. With a budget, a call whose cost is unknown also
-    stops the turn, since the budget can't be enforced past it. `close()` runs `cleanup`, releasing what the tools hold.
+    Each model call appends the API's usage to `self.usage` (this agent's own calls) and charges it to
+    `self.budget`, the agent's node in a tree of budgets that mirrors its subagents. Once this node or an
+    ancestor has spent its limit (`max_cost` is this node's), turns stop as if interrupted. With a limit, a
+    call whose cost is unknown also stops the turn, since the budget can't be enforced past it. `close()`
+    runs `cleanup`, releasing what the tools hold.
 
     Context compaction: `context_tokens` is the size of the context, measured by the last call plus an
     estimate for what came after it. When a turn ends with the context at `compact_at` tokens or more,
@@ -90,6 +93,7 @@ class Agent:
         client: ChatClient | None = None,
         skills_dir: str | Path | None = None,
         max_cost: float | None = None,
+        budget: Budget | None = None,
         compact_at: int | None = 256_000,
         keep_first: int = 1,
         keep_last: int = 2,
@@ -118,7 +122,9 @@ class Agent:
 
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
-        self.max_cost = max_cost
+        if max_cost is not None and budget is not None:
+            raise ValueError("pass max_cost or budget, not both: a given budget carries its own limit")
+        self.budget = budget or Budget(max_cost)  # this agent's node; a new root unless a parent's tree is given
         self.usage: list[dict] = []  # per model call: the API's usage, plus the response's id, provider, model, created
 
         if compact_at is not None and compact_at > context_window // 2:
@@ -168,8 +174,18 @@ class Agent:
         return sum(entry.get("cost") or 0 for entry in self.usage)
 
     @property
+    def max_cost(self) -> float | None:
+        """This agent's limit in USD: its budget node's. Settable, e.g. to raise it mid-session."""
+        return self.budget.limit
+
+    @max_cost.setter
+    def max_cost(self, value: float | None) -> None:
+        self.budget.limit = value
+
+    @property
     def over_budget(self) -> bool:
-        return self.max_cost is not None and self.total_cost >= self.max_cost
+        """True once this agent's budget node, or any ancestor's, has spent its limit."""
+        return self.budget.exhausted
 
     @property
     def last_cost_unknown(self) -> bool:
@@ -372,7 +388,8 @@ class Agent:
         return self.head_end, end
 
     def _record_usage(self, response: dict, kind: str | None = None) -> dict:
-        """Append the response's usage to `self.usage` and return it (empty if the response had none).
+        """Append the response's usage to `self.usage`, charge it to `self.budget`, and return it (empty if the
+        response had none).
 
         Called before the reply is read, so a paid call counts even if its reply is malformed.
         Without usage the entry still marks the call, with `cost: None`.
@@ -382,6 +399,7 @@ class Agent:
         if kind:
             entry["kind"] = kind
         self.usage.append(entry)
+        self.budget.charge(entry)
         return usage
 
     def _get_skill(self, name: str) -> skills.Skill:
