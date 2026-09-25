@@ -5,9 +5,9 @@ Two layers. The Python API is for code: a `Profile` is the spec of one kind of s
 is a future. `Subagents` is the boundary with a model: the `spawn` and `subagent` tools, which give runs small
 ids and turn results into text, plus the methods the agent and UIs use to manage those runs.
 
-A run's result is the text its agent last replied (or a profile's report). A run that ended before its agent
-answered (budget spent, cancelled, context full, cost unknown, out of tool rounds) completes with `Stopped`
-instead, so a mid-task remark is never mistaken for an answer.
+A run ends with an `Outcome`: "done" with the text its agent last replied (or a profile's report); "stopped" when
+it ended before its agent answered (budget spent, cancelled, context full, cost unknown, out of tool rounds), with
+why and what it last said, so a mid-task remark is never mistaken for an answer; or "failed" with the error.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import threading
 import time
 from concurrent import futures
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
 from usage import Budget
 
@@ -56,28 +56,32 @@ def agent_profile(description: str, build: Callable[[str, Budget], Agent], max_c
     return Profile(description, lambda task, budget: Run.start(build(task, budget), task), max_cost, max_cost_cap)
 
 
-class Stopped(Exception):
-    """A run ended before its agent answered. `reason` says why; `text` is what it last said (or its report),
-    which may be incomplete but can still help."""
+@dataclass(frozen=True)
+class Outcome:
+    """How a run ended.
 
-    def __init__(self, reason: str, text: str | None):
-        super().__init__(reason)
-        self.reason = reason
-        self.text = text
+    - "done": the agent answered; `text` is its answer (or the profile's report).
+    - "stopped": it ended before answering; `reason` says why, and `text` is what it last said (or the report),
+      which may be incomplete but can still help.
+    - "failed": the agent, its report or its cleanup raised; `text` is the error.
+    """
+
+    status: Literal["done", "stopped", "failed"]
+    text: str
+    reason: str | None = None  # why it stopped
 
 
 @dataclass(frozen=True, eq=False)
 class Run:
-    """One subagent working on one task: the running agent and the future of its result.
+    """One subagent working on one task: the running agent and the future of its `Outcome`.
 
     Only `Run.start` creates one, and it starts the run's thread. Nothing about a Run changes afterwards except its
-    future, which the standard library completes exactly once: with the text to hand back, with `Stopped`, or with
-    the exception that ended the run.
+    future, which the standard library completes exactly once, always with an `Outcome`: errors are part of it.
     """
 
     agent: Agent
     task: str
-    _future: futures.Future = field(default_factory=futures.Future, repr=False)
+    _future: futures.Future[Outcome] = field(default_factory=futures.Future, repr=False)
 
     @classmethod
     def start(cls, agent: Agent, task: str, report: Callable[[], str] | None = None) -> Run:
@@ -94,28 +98,29 @@ class Run:
         return run
 
     def _work(self, report: Callable[[], str] | None) -> None:
-        """The run's own thread: get the outcome, close the agent, then publish the outcome."""
+        """The run's own thread: run the agent, close it, then publish how the run ended.
+
+        The one place a run's errors are caught: whatever the agent, its report or its cleanup raises (code this
+        module doesn't control) becomes a "failed" outcome, so the future is always completed, with a value.
+        """
         try:
-            outcome: str | BaseException = self._outcome(report)
+            outcome = self._finish(report)
         except BaseException as e:
-            outcome = e
+            outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         try:
             self.agent.close()  # before publishing: a finished run leaves nothing running below it
         except BaseException as e:
-            if not isinstance(outcome, BaseException):  # keep the first error if there are two
-                outcome = e
-        if isinstance(outcome, BaseException):  # always completed, so a run never looks "running" forever
-            self._future.set_exception(outcome)
-        else:
-            self._future.set_result(outcome)
+            if outcome.status != "failed":  # keep the first error if there are two
+                outcome = Outcome("failed", f"{type(e).__name__}: {e}")
+        self._future.set_result(outcome)
 
-    def _outcome(self, report: Callable[[], str] | None) -> str | Stopped:
+    def _finish(self, report: Callable[[], str] | None) -> Outcome:
         self.agent.run_turn(self.task)
         reason = why_stopped(self.agent)  # read now: a cancel() after the turn mustn't relabel a finished run
         text = report() if report else last_reply(self.agent)
         if reason:
-            return Stopped(reason, text)
-        return text or "(the subagent's final reply was empty)"
+            return Outcome("stopped", text or "(no reply)", reason)
+        return Outcome("done", text or "(the subagent's final reply was empty)")
 
     @property
     def path(self) -> str:
@@ -130,9 +135,9 @@ class Run:
         futures.wait([self._future], timeout=timeout)
         return self.done()
 
-    def result(self, timeout: float | None = None) -> str:
-        """The agent's answer, waiting for it. Raises `Stopped` if it ended before answering, or the run's error."""
-        return self._future.result(timeout)
+    def outcome(self, timeout: float | None = None) -> Outcome | None:
+        """How the run ended, waiting up to `timeout` seconds (None: until it ends); None while it's still running."""
+        return self._future.result() if self.wait(timeout) else None
 
     def cancel(self) -> None:
         """No more model calls in this run or below it: it stops after the call in flight. Can't be lost or undone."""
@@ -163,25 +168,12 @@ def last_reply(agent: Agent) -> str | None:
     return None
 
 
-def run_status(run: Run) -> tuple[str, str | None, str]:
-    """(status, reason, text) of a run: "running"; "done" with its answer; "stopped" with why and what it last said;
-    or "failed" with the error."""
-    if not run.done():
-        return "running", None, ""
-    try:
-        return "done", None, run.result(timeout=0)
-    except Stopped as s:
-        return "stopped", s.reason, s.text or "(no reply)"
-    except BaseException as e:
-        return "failed", None, f"{type(e).__name__}: {e}"
-
-
-def result_block(id: int, profile: str, run: Run) -> str:
-    """A finished run's result as text for the model: done (its answer), stopped (why, and what it last said) or
-    failed (the error)."""
-    status, reason, text = run_status(run)
-    attrs = f'run="{id}" profile="{profile}" status="{status}"' + (f' reason="{reason}"' if reason else "")
-    return f"<subagent-result {attrs}>\n{text}\n</subagent-result>"
+def result_block(id: int, profile: str, outcome: Outcome) -> str:
+    """How a run ended, as text for the model: its status, why it stopped if it did, and the text."""
+    attrs = f'run="{id}" profile="{profile}" status="{outcome.status}"'
+    if outcome.reason:
+        attrs += f' reason="{outcome.reason}"'
+    return f"<subagent-result {attrs}>\n{outcome.text}\n</subagent-result>"
 
 
 def subagents_prompt(profiles: dict[str, Profile]) -> str:
@@ -291,10 +283,9 @@ class Subagents:
                 self._background.add(id)
         if background:
             return f"started run {id} with ${node.remaining:.2f}"
-        if not self._wait(run, None):  # interrupted: stop the run, then wait for the call it's making
+        if not self._wait(run, None):  # interrupted: stop the run; it ends after the call it's making
             run.cancel()
-            run.wait()
-        return result_block(id, profile, run)
+        return result_block(id, profile, run.outcome())
 
     def subagent(self, run_id: int, wait: int = 0, cancel: bool = False) -> str:
         """Check on a subagent you started with spawn: how far it has got, or its result once it has finished.
@@ -322,11 +313,13 @@ class Subagents:
         profile, run = entry
         if cancel:
             run.cancel()
-        if not self._wait(run, min(max(wait, 0), MAX_WAIT)):
+        self._wait(run, min(max(wait, 0), MAX_WAIT))
+        outcome = run.outcome(0)
+        if outcome is None:
             return (f"run {run_id} is still running: {len(run.agent.usage)} model calls, "
                     f"${run.agent.budget.spent:.4f} spent so far")
         self.claim(run_id)
-        return result_block(run_id, profile, run)
+        return result_block(run_id, profile, outcome)
 
     def _wait(self, run: Run, timeout: float | None) -> bool:
         """Wait until the run is done, the parent is interrupted, or `timeout` seconds pass (None: no timeout).

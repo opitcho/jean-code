@@ -252,7 +252,7 @@ class Agent:
         content = self._run_command(user_input)
         claimed = self.subagents.claim() if self.subagents else []  # each result is taken, so delivered, once
         if claimed:
-            blocks = "\n\n".join(result_block(id, profile, run) for id, profile, run in claimed)
+            blocks = "\n\n".join(result_block(id, profile, run.outcome(0)) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
         self.stop_reason = None

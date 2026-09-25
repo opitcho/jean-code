@@ -23,7 +23,6 @@ from coding import coding_agent
 from config import USAGE_LOG
 from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
 from repl import compaction_line
-from subagents import run_status
 from usage import COST_UNKNOWN, human, record, usage_line
 
 MODEL = DEFAULT_MODEL
@@ -399,8 +398,9 @@ def render_subagents(subagents) -> None:
     if not runs:
         st.caption("none started")
     for id, profile, run in runs:
-        status, reason, _ = run_status(run)
-        detail = f" ({reason})" if reason else ""
+        outcome = run.outcome(0)  # None while it runs
+        status = outcome.status if outcome else "running"
+        detail = f" ({outcome.reason})" if outcome and outcome.reason else ""
         st.caption(f"**#{id}** {profile} · {status}{detail} · ${run.agent.budget.spent:.4f} · {clip(one_line(run.task), 60)}")
     if pending := subagents.pending:
         st.info(f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "

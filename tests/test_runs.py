@@ -1,4 +1,4 @@
-"""Tests for the subagents' Python API: `Profile`, `Run`, `Stopped` and why a run stopped. No tools involved,
+"""Tests for the subagents' Python API: `Profile`, `Run` and the `Outcome` a run ends with. No tools involved,
 except where a run's own subagents are the point.
 
 Each test names the bug it would catch.
@@ -11,7 +11,7 @@ import pytest
 
 from agent import Agent
 from conftest import FakeClient, call, response, usage
-from subagents import Profile, Run, Stopped, agent_profile
+from subagents import Outcome, Profile, Run, agent_profile
 from usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -48,13 +48,11 @@ def gated(agent: Agent) -> threading.Event:
     return gate
 
 
-def stopped(run: Run) -> Stopped:
-    with pytest.raises(Stopped) as info:
-        run.result(TIMEOUT)
-    return info.value
+def done(text: str) -> Outcome:
+    return Outcome("done", text)
 
 
-# ---------------------------------------------------------------- profiles and results
+# ---------------------------------------------------------------- profiles and outcomes
 
 
 def test_each_start_is_a_new_run():
@@ -69,17 +67,26 @@ def test_each_start_is_a_new_run():
     root = Budget()
     a = profile.start("a", root.child(1.0, "1"))
     b = profile.start("b", root.child(1.0, "2"))
-    assert (a.result(TIMEOUT), b.result(TIMEOUT)) == ("answer to a", "answer to b")
+    assert (a.outcome(TIMEOUT), b.outcome(TIMEOUT)) == (done("answer to a"), done("answer to b"))
     assert a.agent is not b.agent and len(built) == 2
     assert (a.path, b.path) == ("main/1", "main/2")
 
 
-def test_the_result_is_the_last_reply_or_the_report():
+def test_the_answer_is_the_last_reply_or_the_report():
     # Catches a report being ignored, or the default handing back the wrong message.
     plain = Run.start(make_agent([tool_reply(content="let me add"), response("it's 3")]), "add 1 and 2")
-    assert plain.result(TIMEOUT) == "it's 3"
+    assert plain.outcome(TIMEOUT) == done("it's 3")
     reported = Run.start(make_agent([response("done, see the notebook")]), "go", report=lambda: "the notebook")
-    assert reported.result(TIMEOUT) == "the notebook"
+    assert reported.outcome(TIMEOUT) == done("the notebook")
+
+
+def test_no_outcome_while_running():
+    agent = make_agent([response("later")])
+    gate = gated(agent)
+    run = Run.start(agent, "/gate go")
+    assert run.outcome(0) is None and not run.done()
+    gate.set()
+    assert run.outcome(TIMEOUT) == done("later")
 
 
 def test_profile_limits_are_checked():
@@ -105,45 +112,44 @@ def test_a_subagent_that_would_need_approval_is_refused():
 def test_budget_spent_is_stopped_with_the_last_remark():
     # Catches a mid-task remark handed back as the answer after the budget ran out.
     run = Run.start(make_agent([tool_reply(cost=0.004, content="let me check"), response("never")], Budget(0.004)), "go")
-    s = stopped(run)
-    assert (s.reason, s.text) == ("budget spent", "let me check")
+    assert run.outcome(TIMEOUT) == Outcome("stopped", "let me check", "budget spent")
 
 
 def test_an_answer_that_spends_the_last_of_the_budget_is_done():
     # Catches a finished answer labelled "budget spent" because the answering call used the budget up.
     run = Run.start(make_agent([response("the answer", usage=usage(cost=0.004))], Budget(0.004)), "go")
-    assert run.result(TIMEOUT) == "the answer"
+    assert run.outcome(TIMEOUT) == done("the answer")
 
 
 def test_unknown_cost_is_stopped():
     run = Run.start(make_agent([response(tool_calls=[call("add", a=1, b=2)], no_usage=True)]), "go")
-    assert stopped(run).reason.startswith("a call's cost was unknown")
+    outcome = run.outcome(TIMEOUT)
+    assert outcome.status == "stopped" and outcome.reason.startswith("a call's cost was unknown")
 
 
 def test_a_full_context_is_stopped():
-    run = Run.start(make_agent([], context_window=10, compact_at=None), "go")
-    assert stopped(run).reason.startswith("the context is nearly full")
+    outcome = Run.start(make_agent([], context_window=10, compact_at=None), "go").outcome(TIMEOUT)
+    assert outcome.status == "stopped" and outcome.reason.startswith("the context is nearly full")
 
 
 def test_running_out_of_tool_rounds_is_stopped():
     # Catches the tool-round limit, which never interrupts, reported as an answer.
     run = Run.start(make_agent([tool_reply(), tool_reply()], max_tool_rounds=1), "go")
-    s = stopped(run)
-    assert s.reason == "out of tool rounds (1)" and s.text is None
+    assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "out of tool rounds (1)")
+
+
+# ---------------------------------------------------------------- failed
 
 
 def test_a_crash_fails_the_run():
-    # Catches a crashed run that stays "running" forever.
+    # Catches a crashed run that stays "running" forever, or whose error escapes as an exception.
     run = Run.start(make_agent([RuntimeError("HTTP 500")]), "go")
-    with pytest.raises(RuntimeError, match="HTTP 500"):
-        run.result(TIMEOUT)
-    assert run.done()
+    assert run.outcome(TIMEOUT) == Outcome("failed", "RuntimeError: HTTP 500")
 
 
 def test_a_failing_report_fails_the_run():
     run = Run.start(make_agent([response("hi")]), "go", report=lambda: 1 / 0)
-    with pytest.raises(ZeroDivisionError):
-        run.result(TIMEOUT)
+    assert run.outcome(TIMEOUT) == Outcome("failed", "ZeroDivisionError: division by zero")
 
 
 def test_a_failing_cleanup_still_completes_the_run():
@@ -152,8 +158,7 @@ def test_a_failing_cleanup_still_completes_the_run():
         raise OSError("container already gone")
 
     run = Run.start(make_agent([response("hi")], cleanup=[boom]), "go")
-    with pytest.raises(OSError, match="container already gone"):
-        run.result(TIMEOUT)
+    assert run.outcome(TIMEOUT) == Outcome("failed", "OSError: container already gone")
 
 
 # ---------------------------------------------------------------- cancelling
@@ -166,7 +171,7 @@ def test_a_cancel_before_the_turn_starts_is_not_lost():
     run = Run.start(agent, "/gate go")  # held just before run_turn clears the flag
     run.cancel()
     gate.set()
-    assert stopped(run).reason == "cancelled"
+    assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "cancelled")
     assert agent.client.requests == []
 
 
@@ -177,15 +182,15 @@ def test_the_gate_reaches_the_window_an_interrupt_would_lose():
     run = Run.start(agent, "/gate go")
     agent.interrupt()
     gate.set()
-    assert run.result(TIMEOUT) == "answered anyway"
+    assert run.outcome(TIMEOUT) == done("answered anyway")
 
 
 def test_a_cancel_after_the_run_finished_changes_nothing():
     # Catches a finished run relabelled "cancelled" by a cancel that came too late.
     run = Run.start(make_agent([response("the answer")]), "go")
-    assert run.result(TIMEOUT) == "the answer"
+    assert run.outcome(TIMEOUT) == done("the answer")
     run.cancel()
-    assert run.result(TIMEOUT) == "the answer"
+    assert run.outcome(TIMEOUT) == done("the answer")
 
 
 def test_a_finished_run_stops_the_runs_it_started():
@@ -198,8 +203,8 @@ def test_a_finished_run_stops_the_runs_it_started():
                            response("handed off")]),
         budget=Budget(1.0), subagent_profiles={"digger": grandchild})
     run = Run.start(child, "go")
-    assert run.result(TIMEOUT) == "handed off"
+    assert run.outcome(TIMEOUT) == done("handed off")
     (_, _, dig), = child.subagents.snapshot()
     assert dig.done()  # closed before the run completed: nothing below it still running
-    assert stopped(dig).reason == "cancelled"
+    assert (dig.outcome(0).status, dig.outcome(0).reason) == ("stopped", "cancelled")
     assert len(grandchild_client.requests) < 21
