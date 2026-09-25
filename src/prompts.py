@@ -28,6 +28,21 @@ Some calls wait for the user's approval. If the user denies one, don't retry the
 reason, then adjust your approach or ask what they would prefer.
 """
 
+# Subagents (coding.subagent_profiles): the task another agent gave them is their only user message.
+SUBAGENT_NOTE = """\
+## You are a subagent
+Another agent started you on one task: the user message below. Nobody reads your messages until you finish, \
+and nobody can answer a question, so don't ask any: make a reasonable assumption and say what it was. Your \
+final reply is the only thing handed back, so make it complete on its own: what you did, what you found, and \
+the paths of any files you wrote.
+"""
+
+SEARCHER_PROMPT = """\
+You look things up on the web for another agent, one question at a time: the user message below. Search, read \
+the most relevant pages, then answer. Nobody can answer a question from you. Your final reply is the only thing \
+handed back: the answer first, then the URL each fact came from, and what you couldn't confirm. Keep it short.
+"""
+
 # Context compaction (see Agent.compact). The marker and the summary are user messages the agent writes;
 # their opening tags tell them apart from the user's own messages.
 HEAD_MARKER_TAG = "<head-end/>"

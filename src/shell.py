@@ -10,7 +10,7 @@ In Docker, they run in the `workspace/` folder, mounted into the container.
 
 Background jobs write `<id>.pid`, `.log` and `.exit` into a jobs folder on the host, so `job`
 reads those files directly: a temp folder for the host shell (to keep them out of the user's
-project), and `workspace/.jobs` for Docker (so the container can write them).
+project), and `workspace/.jobs/<shell id>` for Docker (so the container can write them).
 """
 
 import os
@@ -236,6 +236,9 @@ class DockerShell(Shell):
     its main process reads a pipe only we hold, and exits when that pipe closes. It runs
     as the host user, so files it writes to the workspace are yours. Commands run without
     approval by default: the sandbox is the safety net.
+
+    Several can share one workspace (an agent and its subagents), each in its own container, so each keeps
+    its jobs in its own folder: job ids count from 1 per shell, and would otherwise overwrite each other's files.
     """
 
     requires_approval = False
@@ -247,7 +250,8 @@ class DockerShell(Shell):
         network: bool = True,
         max_timeout: int = 600,
     ):
-        super().__init__(workdir, Path(workdir) / JOBS_DIR, max_timeout)
+        self._jobs_folder = f"{JOBS_DIR}/{uuid.uuid4().hex[:8]}"  # relative to the workspace
+        super().__init__(workdir, Path(workdir) / self._jobs_folder, max_timeout)
         self.image = image
         self.network = network
         self.container: str | None = None
@@ -313,13 +317,14 @@ class DockerShell(Shell):
         return flags
 
     def _jobs_path(self) -> str:
-        return f"/workspace/{JOBS_DIR}"
+        return f"/workspace/{self._jobs_folder}"
 
     def close(self) -> None:
-        """Remove the container, which also ends its background jobs."""
+        """Remove the container, which also ends its background jobs, and their files."""
         if self._remove:
             self._remove()
             self.container = self._remove = None
+        shutil.rmtree(self.jobs_dir, ignore_errors=True)
 
     def __enter__(self):
         self.start()
