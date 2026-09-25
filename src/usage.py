@@ -1,22 +1,36 @@
-"""Accounting for model calls: turns the usage the agent keeps (`agent.usage`) into records, lines and a log,
-and keeps a `Budget` per agent, arranged as a tree, that limits spend and shows where it went."""
+"""Accounting for model calls: what each call used and cost, shown to the user and saved to a log.
+
+The agent appends one raw entry per model call to `agent.usage` (see `Agent._record_usage`): the API's
+`usage` object (token counts, `cost`) plus the response's `id`, `provider`, `model` and `created`, and a
+`kind` for calls that aren't normal steps, such as "compaction". This module turns those raw entries into
+flat records, writes them to a JSON Lines log (`config.USAGE_LOG`) so spend can be summed across sessions,
+and sums them into the one-line summary the REPL prints after each turn.
+"""
 
 import json
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 COST_UNKNOWN = "[stopped: cost of the last call is unknown, so the budget can't be enforced]"
 
 
 def record(raw: dict) -> dict:
-    """One flat record from an entry of `agent.usage` (the API's usage plus the response's id, provider, model, created).
+    """Flatten one raw entry of `agent.usage` into the record written to the log.
 
-    Token counts that are missing or null read as 0; a missing cost stays None, meaning unknown.
-    A call that wasn't a normal step (`kind`, e.g. "compaction") keeps its kind, and a call charged to a
-    `Budget` keeps the path of the node it was charged to (`budget`, e.g. "main/1").
+    Token counts that are missing or null read as 0. A missing cost stays None, meaning unknown,
+    so it is never mistaken for a free call.
+
+    Args:
+        raw: One entry of `agent.usage`: the API's usage object plus the response's `id`, `provider`,
+            `model` and `created` (Unix seconds), and `kind` if the call wasn't a normal step.
+
+    Returns:
+        A flat dict with `time` (local ISO 8601, or None), `generation_id`, `provider`, `model`,
+        `prompt_tokens`, `cached_tokens`, `completion_tokens`, `reasoning_tokens` and `cost`
+        (dollars, or None if unknown), plus `kind` when the entry has one.
     """
     created = raw.get("created")
     tags = {key: raw[key] for key in ("kind", "budget") if raw.get(key)}
@@ -35,7 +49,15 @@ def record(raw: dict) -> dict:
 
 
 def append_log(path: str | Path, raws: list[dict]) -> None:
-    """Append one JSON line per model call, to sum spend across sessions."""
+    """Append model calls to a JSON Lines log, one `record` per line.
+
+    The log only grows, so summing its `cost` fields gives the spend across all sessions.
+    The file and its parent folders are created if missing. Nothing is written if `raws` is empty.
+
+    Args:
+        path: The log file, usually `config.USAGE_LOG`.
+        raws: Entries of `agent.usage` to log, in order.
+    """
     if not raws:
         return
     path = Path(path)
@@ -47,9 +69,23 @@ def append_log(path: str | Path, raws: list[dict]) -> None:
 
 @contextmanager
 def logged_calls(usage: list[dict], path: str | Path | None) -> Iterator[list[dict]]:
-    """Collect the entries appended to `usage` inside the block, and append them to `path` when it exits, even on error.
+    """Log the model calls made inside a `with` block, such as one turn of the agent.
 
-    The yielded list is filled in on exit. With `path=None` nothing is written.
+    On entry it notes how many entries `usage` already has. On exit, even if the block raised, it
+    collects the entries appended since then and appends them to the log at `path`, so calls that
+    were already paid for are logged when a turn fails. The error, if any, is re-raised.
+
+        with logged_calls(agent.usage, USAGE_LOG) as calls:
+            agent.run_turn(text)
+        print(usage_line(calls))
+
+    Args:
+        usage: The list the agent appends each call to, `agent.usage`. It must only be appended to
+            while the block runs.
+        path: The log file to append to, or None to collect the calls without writing anything.
+
+    Yields:
+        A list that is empty inside the block and holds the block's entries of `usage` once it exits.
     """
     start = len(usage)
     calls: list[dict] = []
@@ -62,13 +98,21 @@ def logged_calls(usage: list[dict], path: str | Path | None) -> Iterator[list[di
 
 
 def human(n: int) -> str:
+    """Format a token count briefly: `999` stays `999`, `3400` becomes `3.4k`."""
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 def usage_line(raws: list[dict]) -> str:
-    """One line summing some entries of `agent.usage`: `$0.0012 · 3.4k in (82% cached) · 210 out`.
+    """Sum some model calls into one line for the user, e.g. `$0.0012 · 3.4k in (82% cached) · 210 out`.
 
-    Calls with an unknown cost show as `+?` after the known amount, or `$?` if no cost is known.
+    Calls with an unknown cost are left out of the dollar amount and flagged: `+?` after the known
+    amount, or `$?` if no call's cost is known.
+
+    Args:
+        raws: Entries of `agent.usage` to sum, usually the calls of one turn from `logged_calls`.
+
+    Returns:
+        The total cost, the prompt tokens with the share read from cache, and the completion tokens.
     """
     records = [record(raw) for raw in raws]
     known = [r["cost"] for r in records if r["cost"] is not None]
