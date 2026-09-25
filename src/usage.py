@@ -4,9 +4,7 @@ and keeps a `Budget` per agent, arranged as a tree, that limits spend and shows 
 import json
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 COST_UNKNOWN = "[stopped: cost of the last call is unknown, so the budget can't be enforced]"
 
@@ -45,22 +43,6 @@ def append_log(path: str | Path, raws: list[dict]) -> None:
             f.write(json.dumps(record(raw)) + "\n")
 
 
-@contextmanager
-def logged_calls(usage: list[dict], path: str | Path | None) -> Iterator[list[dict]]:
-    """Collect the entries appended to `usage` inside the block, and append them to `path` when it exits, even on error.
-
-    The yielded list is filled in on exit. With `path=None` nothing is written.
-    """
-    start = len(usage)
-    calls: list[dict] = []
-    try:
-        yield calls
-    finally:
-        calls.extend(usage[start:])
-        if path:
-            append_log(path, calls)
-
-
 def human(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
@@ -89,19 +71,26 @@ class Budget:
     `limit` (USD) applies to this node's subtree: an agent may call the model only while no node on its chain
     is `exhausted`. Entries stay at the node that made the call, so any subtree's spend, and where it went,
     can be read at any time. `journal` is the whole tree's calls in charge order, each tagged with the path
-    of its node, for the usage log.
+    of its node. With `log_path` set on the root, each call is also appended to that file as it's charged,
+    whichever agent made it and whenever.
+
+    `cancel()` stops a subtree for good: its agents make no further call. Unlike an agent's interrupt, which
+    every turn clears, nothing clears it, so a cancel sent before a turn starts still holds.
 
     Thread-safe: one lock per tree, shared by all its nodes, since parallel agents charge concurrently. It's
     never held around anything that blocks.
     """
 
-    def __init__(self, limit: float | None = None, parent: "Budget | None" = None, name: str = "main", task: str = ""):
+    def __init__(self, limit: float | None = None, parent: "Budget | None" = None, name: str = "main", task: str = "",
+                 log_path: str | Path | None = None):
         self.limit = limit  # settable: the REPL and tests raise it mid-session
         self.parent = parent
         self.name = name
         self.task = task  # what this node's agent was asked to do, for breakdowns
+        self.log_path = log_path  # read at the root only; settable, e.g. by a UI once it has built the agent
         self.children: list[Budget] = []
         self.entries: list[dict] = []  # this node's own calls: its agent's usage entries
+        self._cancelled = False  # set once by cancel(), never cleared
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
         self._journal: list[dict] = parent._journal if parent else []
 
@@ -113,7 +102,7 @@ class Budget:
     @property
     def journal(self) -> list[dict]:
         """The whole tree's calls in charge order, each tagged `{"budget": path}`. Append-only, so
-        `logged_calls(budget.journal, path)` logs every call made in the tree during its block."""
+        `journal[start:]` is every call made in the tree since `len(journal)` was `start`."""
         return self._journal
 
     def child(self, limit: float | None, name: str, task: str = "") -> "Budget":
@@ -124,10 +113,18 @@ class Budget:
         return node
 
     def charge(self, entry: dict) -> None:
-        """Record one model call's usage entry at this node, and in the tree's journal."""
+        """Record one model call's usage entry at this node and in the tree's journal, and append it to the root's
+        `log_path`, if set. The file is written outside the lock."""
+        tagged = {**entry, "budget": self.path}
         with self._lock:
             self.entries.append(entry)
-            self._journal.append({**entry, "budget": self.path})
+            self._journal.append(tagged)
+        if path := self._chain()[-1].log_path:
+            append_log(path, [tagged])
+
+    def cancel(self) -> None:
+        """No more model calls in this subtree. Never cleared: a cancelled node stays cancelled."""
+        self._cancelled = True
 
     @property
     def spent(self) -> float:
@@ -136,14 +133,26 @@ class Budget:
             return sum(entry.get("cost") or 0 for node in self._subtree() for entry in node.entries)
 
     @property
+    def cancelled(self) -> bool:
+        """True when this node or an ancestor was cancelled."""
+        return any(node._cancelled for node in self._chain())
+
+    @property
     def exhausted(self) -> bool:
-        """True when this node or any ancestor has spent its limit."""
-        node: Budget | None = self
-        while node is not None:
-            if node.limit is not None and node.spent >= node.limit:
-                return True
-            node = node.parent
-        return False
+        """True when this node or an ancestor was cancelled or has spent its limit: no more model calls."""
+        return self.cancelled or any(node.limit is not None and node.spent >= node.limit for node in self._chain())
+
+    @property
+    def limited(self) -> bool:
+        """True when this node or an ancestor has a limit, so a call of unknown cost makes it unenforceable."""
+        return any(node.limit is not None for node in self._chain())
+
+    @property
+    def remaining(self) -> float | None:
+        """What this node may still spend: the smallest `limit - spent` on its chain (at least 0), or None when no
+        node on it has a limit."""
+        left = [node.limit - node.spent for node in self._chain() if node.limit is not None]
+        return max(0.0, min(left)) if left else None
 
     def nodes(self) -> list["Budget"]:
         """This node and its descendants, depth first."""
@@ -171,6 +180,13 @@ class Budget:
                 "unknown_costs": len(records) - len(known),
             })
         return rows
+
+    def _chain(self) -> list["Budget"]:
+        """This node and its ancestors, ending at the root."""
+        chain: list[Budget] = [self]
+        while chain[-1].parent is not None:
+            chain.append(chain[-1].parent)
+        return chain
 
     def _subtree(self) -> list["Budget"]:
         """This node and its descendants, depth first. The caller holds the lock."""

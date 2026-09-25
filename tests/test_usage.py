@@ -1,4 +1,4 @@
-"""Tests for `usage.py`: records, the log, the one-line summary and `logged_calls`.
+"""Tests for `usage.py`: records, the log and the one-line summary. `Budget` is in `test_budget.py`.
 
 Each test names the bug it would catch.
 """
@@ -8,7 +8,7 @@ import json
 import pytest
 
 from conftest import REAL_META, REAL_USAGE, usage
-from usage import append_log, human, logged_calls, record, usage_line
+from usage import append_log, human, record, usage_line
 
 REAL_ENTRY = {**REAL_USAGE, **REAL_META}  # an entry of `agent.usage`, as `Agent.step()` builds it
 
@@ -100,34 +100,3 @@ def test_human_boundary():
     assert human(999) == "999"
     assert human(1000) == "1.0k"
 
-
-# ---------------------------------------------------------------- logged_calls
-
-
-def test_logged_calls_logs_only_the_calls_made_inside(tmp_path):
-    # Catches the slice taken at the wrong time, which logs turn 1 again in turn 2.
-    path = tmp_path / "usage.jsonl"
-    agent_usage = [entry(cost=0.001)]
-    with logged_calls(agent_usage, path) as calls:
-        agent_usage += [entry(cost=0.002), entry(cost=0.003)]
-    assert calls == agent_usage[1:]
-    assert [json.loads(line) for line in path.read_text().splitlines()] == [record(raw) for raw in agent_usage[1:]]
-
-
-def test_logged_calls_logs_on_error_and_reraises(tmp_path):
-    # Catches a crash mid-turn dropping calls that were already paid for, or swallowing the error.
-    path = tmp_path / "usage.jsonl"
-    agent_usage: list[dict] = []
-    with pytest.raises(RuntimeError, match="boom"):
-        with logged_calls(agent_usage, path):
-            agent_usage.append(entry(cost=0.002))
-            raise RuntimeError("boom")
-    assert len(path.read_text().splitlines()) == 1
-
-
-def test_logged_calls_without_a_path(tmp_path):
-    agent_usage: list[dict] = []
-    with logged_calls(agent_usage, None) as calls:
-        agent_usage.append(entry())
-    assert calls == agent_usage
-    assert list(tmp_path.iterdir()) == []

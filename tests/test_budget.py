@@ -3,6 +3,7 @@
 Each test names the bug it would catch.
 """
 
+import json
 import threading
 
 import pytest
@@ -230,3 +231,75 @@ def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
     out = capsys.readouterr().out
     assert "session: $0.0050 over 2 model calls" in out
     assert "main/1" in out and "look something up" in out
+
+
+# ---------------------------------------------------------------- cancel, limits along the chain, logging
+
+
+def test_cancel_stops_the_subtree_for_good():
+    # Catches a cancel that misses descendants, reaches the parent, or wears off.
+    root = Budget()
+    run = root.child(1.0, "1")
+    below = run.child(None, "1")
+    run.cancel()
+    assert run.exhausted and below.exhausted and below.cancelled
+    assert not root.exhausted and not root.cancelled
+    run.limit = 100.0  # nothing about the limit brings it back
+    assert run.exhausted
+
+
+def test_an_agent_on_a_cancelled_budget_makes_no_call():
+    # Catches the cancel being cleared at the start of a turn, as the interrupt flag is.
+    budget = Budget().child(1.0, "1")
+    client = FakeClient([response("never")])
+    agent = Agent(client=client, budget=budget)
+    budget.cancel()
+    agent.run_turn("hello")
+    assert client.requests == []
+    assert agent.over_budget
+
+
+def test_remaining_is_the_tightest_limit_on_the_chain():
+    # Catches a subagent told it has more than an ancestor has left.
+    root = Budget(1.0)
+    run = root.child(0.5, "1")
+    assert run.remaining == pytest.approx(0.5)
+    root.charge(entry(0.75))  # the root has 0.25 left, less than the run's own 0.5
+    assert run.remaining == pytest.approx(0.25)
+    root.charge(entry(0.5))  # overspent: never negative
+    assert run.remaining == 0.0
+    assert Budget().child(None, "1").remaining is None
+
+
+def test_unknown_cost_stops_an_agent_whose_limit_is_an_ancestors():
+    # Catches a child with no limit of its own counting unknown costs as $0 against the session's limit.
+    root = Budget(2.0)
+    client = FakeClient([response(tool_calls=[call("add", a=1, b=2)], no_usage=True), response("never")])
+    child = Agent(client=client, tools={"add": add}, budget=root.child(None, "1"))
+    child.run_turn("go")
+    assert child.last_cost_unknown and child.interrupted
+    assert len(client.requests) == 1
+
+
+def test_unknown_cost_without_any_limit_changes_nothing():
+    # Catches the chain check stopping agents that have no limit anywhere, which never stopped before.
+    agent = make_agent([tool_reply(), response("done", no_usage=True)])
+    agent.run_turn("go")
+    assert not agent.last_cost_unknown and not agent.interrupted
+
+
+def test_every_charge_is_logged_at_the_roots_path(tmp_path):
+    # Catches calls missing from the usage log: a subagent's, or one made between two turns.
+    path = tmp_path / "usage.jsonl"
+    root = Budget(log_path=path)
+    root.charge(entry(0.001))
+    root.child(None, "1").child(None, "1").charge(entry(0.002))  # e.g. a background run, while the REPL is idle
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [line["budget"] for line in lines] == ["main", "main/1/1"]
+    assert lines[1]["cost"] == 0.002
+
+
+def test_no_log_without_a_path(tmp_path):
+    root = Budget()
+    root.child(None, "1").charge(entry())
+    assert list(tmp_path.iterdir()) == []

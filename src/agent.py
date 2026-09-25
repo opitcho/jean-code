@@ -9,6 +9,7 @@ import skills
 from llm import ChatClient, openrouter, tool_schema
 from prompts import (COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE,
                      SUMMARY_TAG)
+from subagents import Profile, Subagents, result_block, subagents_prompt
 from usage import Budget
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
@@ -62,6 +63,11 @@ class Agent:
     user typing `/name`), and bundled files via `read_skill_file`. The tool list and system
     prompt never change once the first request is sent, so loading a skill doesn't invalidate the cache.
 
+    Subagents: `subagent_profiles` are the kinds of subagent the model may start, listed in the system prompt.
+    With any, `self.subagents` adds the `spawn` and `subagent` tools; each run gets a child of `self.budget`.
+    Background results nobody has read are appended to the next user message, once each. `close()` stops every
+    run, and an interrupt ends any wait for one.
+
     User commands are agent methods the user calls by starting a message with `/name`, as tools
     are the ones the model calls. `self.commands` maps a name to a function of the rest of the
     line; its output goes into the user's message, so the model sees what the command did.
@@ -94,6 +100,7 @@ class Agent:
         skills_dir: str | Path | None = None,
         max_cost: float | None = None,
         budget: Budget | None = None,
+        subagent_profiles: dict[str, Profile] | None = None,
         compact_at: int | None = 256_000,
         keep_first: int = 1,
         keep_last: int = 2,
@@ -116,7 +123,8 @@ class Agent:
         }
 
         self.messages: list[dict] = []
-        system = f"{self.system_prompt}\n\n{skills.skills_prompt(self.skills)}".strip()
+        listings = (self.system_prompt, skills.skills_prompt(self.skills), subagents_prompt(subagent_profiles or {}))
+        system = "\n\n".join(part for part in listings if part).strip()
         if system:
             self.messages.append({"role": "system", "content": system})
 
@@ -143,6 +151,8 @@ class Agent:
         self.last_request: dict | None = None
         self.last_response: dict | None = None  # the last response: id, provider, choices, usage
         self._interrupt = threading.Event()
+        # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
+        self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
 
     @property
     def awaiting_user(self) -> bool:
@@ -189,8 +199,9 @@ class Agent:
 
     @property
     def last_cost_unknown(self) -> bool:
-        """True when there is a budget and the last model call reported no cost, so `total_cost` is too low."""
-        return self.max_cost is not None and bool(self.usage) and self.usage[-1].get("cost") is None
+        """True when a limit applies (this node's or an ancestor's) and the last model call reported no cost, so the
+        limit can't be enforced."""
+        return self.budget.limited and bool(self.usage) and self.usage[-1].get("cost") is None
 
     @property
     def context_tokens(self) -> int:
@@ -228,13 +239,21 @@ class Agent:
         self._interrupt.set()
 
     def close(self) -> None:
-        """Release what the tools hold (background jobs, containers) by running `cleanup`."""
+        """Stop every subagent run and wait for them, then release what the tools hold (background jobs,
+        containers) by running `cleanup`."""
+        if self.subagents:  # first: no run outlives its parent
+            self.subagents.close()
         for fn in self.cleanup:
             fn()
 
     def run_turn(self, user_input: str) -> None:
-        """Add the user's message (with a command's output, if it starts with one), then call the model until it answers."""
+        """Add the user's message (with a command's output, if it starts with one, and any background subagent
+        results nobody has read), then call the model until it answers."""
         content = self._run_command(user_input)
+        claimed = self.subagents.claim() if self.subagents else []  # each result is taken, so delivered, once
+        if claimed:
+            blocks = "\n\n".join(result_block(id, profile, run) for id, profile, run in claimed)
+            content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
         self.stop_reason = None
         for call in self._unanswered_calls():  # every call needs a result, so answer the ones left waiting
@@ -417,6 +436,8 @@ class Agent:
             tools = dict(self.tool_map)
             if self.skills:
                 tools |= {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
+            if self.subagents:
+                tools |= {"spawn": self.subagents.spawn, "subagent": self.subagents.subagent}
             self._registered = {name: (validate_call(fn), tool_schema(name, fn)) for name, fn in tools.items()}
         return self._registered
 

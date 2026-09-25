@@ -23,7 +23,8 @@ from coding import coding_agent
 from config import USAGE_LOG
 from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
 from repl import compaction_line
-from usage import COST_UNKNOWN, human, logged_calls, record, usage_line
+from subagents import run_status
+from usage import COST_UNKNOWN, human, record, usage_line
 
 MODEL = DEFAULT_MODEL
 POLL_SECONDS = 0.5
@@ -48,7 +49,8 @@ LONG_ARG = 80  # string arguments longer than this get their own code block in t
 STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
 CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window", "head_end")
 STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage", "compactions",  # shown elsewhere
-                "needs_approval", "loaded_skills", *STATE_CONFIG, *CONTEXT_CONFIG}
+                "needs_approval", "loaded_skills", *STATE_CONFIG, *CONTEXT_CONFIG,
+                "budget", "subagents"}  # the sidebar; their trees link back up (child.parent), so vars() would recurse
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
     "provider": st.column_config.TextColumn("provider"),
@@ -244,19 +246,25 @@ def is_running() -> bool:
     return thread is not None and thread.is_alive()
 
 
+def subagent_state(agent) -> tuple[int, int]:
+    """(running, pending) for the agent's subagents. While any run, the view keeps polling; when either changes,
+    it reruns in full, so the sidebar and the notice catch up."""
+    subagents = agent.subagents
+    return (subagents.running(), subagents.pending) if subagents else (0, 0)
+
+
 def start_run(fn, *args) -> None:
     """Run an agent method (`run_turn`, `approve`, `deny`) off the script thread; the UI polls the agent's state.
 
-    The model calls it made are appended to the usage log when it ends.
+    The model calls it makes are logged as they're charged, through `agent.budget.log_path` (set in `new_chat`).
     """
-    run, agent = st.session_state.run, st.session_state.agent
+    run = st.session_state.run
 
     def target():
-        with logged_calls(agent.budget.journal, USAGE_LOG):  # the whole tree's calls, subagents included
-            try:
-                fn(*args)
-            except Exception as e:  # surfaced in the header; never call st.* from here
-                run["error"] = f"{type(e).__name__}: {e}"
+        try:
+            fn(*args)
+        except Exception as e:  # surfaced in the header; never call st.* from here
+            run["error"] = f"{type(e).__name__}: {e}"
 
     run["error"] = run["notice"] = None
     run["thread"] = threading.Thread(target=target, daemon=True)
@@ -281,6 +289,7 @@ def new_chat() -> None:
     if old := st.session_state.get("agent"):
         old.close()
     st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False))
+    st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
     st.session_state.entries = []
     st.session_state.selected_uid = None
     st.session_state.run = {"thread": None, "error": None, "notice": None}
@@ -379,6 +388,23 @@ def render_sidebar(agent) -> None:
         if budget.limit:
             st.progress(min(budget.spent / budget.limit, 1.0),
                         text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget")
+        if agent.subagents:
+            render_subagents(agent.subagents)
+
+
+def render_subagents(subagents) -> None:
+    """The runs so far, one line each (status, spend, task), and a notice for results waiting to be delivered."""
+    runs = subagents.snapshot()
+    st.html(eyebrow(f"SUBAGENTS · {len(runs)}"))
+    if not runs:
+        st.caption("none started")
+    for id, profile, run in runs:
+        status, reason, _ = run_status(run)
+        detail = f" ({reason})" if reason else ""
+        st.caption(f"**#{id}** {profile} · {status}{detail} · ${run.agent.budget.spent:.4f} · {clip(one_line(run.task), 60)}")
+    if pending := subagents.pending:
+        st.info(f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
+                f"{'them' if pending > 1 else 'it'}.", icon=":material/inbox:")
 
 
 def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None:
@@ -687,15 +713,18 @@ if "agent" not in st.session_state:
     st.session_state.was_running = False
 render_sidebar(st.session_state.agent)
 announce_compactions(st.session_state.agent)
+st.session_state.subagents_seen = subagent_state(st.session_state.agent)
 
 
-@st.fragment(run_every=POLL_SECONDS if is_running() else None)
+@st.fragment(run_every=POLL_SECONDS if is_running() or st.session_state.subagents_seen[0] else None)
 def live_view() -> None:
     agent, entries = st.session_state.agent, st.session_state.entries
     running = is_running()
     if st.session_state.was_running and not running:
         st.session_state.was_running = False
         st.rerun()  # full rerun: stop polling, re-enable the input and refresh the sidebar
+    if subagent_state(agent) != st.session_state.subagents_seen:
+        st.rerun()  # a run finished or a result was delivered: refresh the sidebar, and stop polling once none runs
 
     ctx = list(agent.messages)  # snapshot: the run thread appends concurrently
     sync_history(entries, ctx)

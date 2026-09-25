@@ -12,7 +12,7 @@ from typing import Callable
 from agent import Agent, DEFAULT_MODEL
 from coding import coding_agent
 from config import USAGE_LOG
-from usage import COST_UNKNOWN, breakdown_lines, human, logged_calls, usage_line
+from usage import COST_UNKNOWN, breakdown_lines, human, usage_line
 
 
 def dim(text: str) -> str:
@@ -67,10 +67,19 @@ def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
     """Read a line, run a turn while printing it live, and ask about calls needing approval.
 
     Ctrl+C mid-turn interrupts. `/cost` shows the session's spend and the API key's credits.
-    Each model call is appended to `usage_log`, to sum spend across sessions.
+    Each model call in the agent's tree is appended to `usage_log` as it's made, to sum spend across sessions:
+    background subagents' calls between turns included.
     """
+    if usage_log:
+        agent.budget.log_path = usage_log
     print(f"Chatting with {agent.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
+    announced = 0  # finished background results already announced
     while True:
+        pending = agent.subagents.pending if agent.subagents else 0
+        if pending and pending != announced:
+            print(dim(f"[{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
+                      f"{'them' if pending > 1 else 'it'}]"))
+        announced = pending
         try:
             user_input = input("you> ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -85,7 +94,7 @@ def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
             print_cost(agent)
             continue
 
-        run_and_print(agent, usage_log, agent.run_turn, user_input)
+        run_and_print(agent, agent.run_turn, user_input)
         while agent.pending_calls and not agent.interrupted:
             name, arguments = agent.pending_calls[0]
             try:
@@ -94,13 +103,14 @@ def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
                 print()
                 break  # leave it pending; the next message answers it
             if answer.lower() in {"y", "yes"}:
-                run_and_print(agent, usage_log, agent.approve)
+                run_and_print(agent, agent.approve)
             else:
-                run_and_print(agent, usage_log, agent.deny, "" if answer.lower() in {"", "n", "no"} else answer)
+                run_and_print(agent, agent.deny, "" if answer.lower() in {"", "n", "no"} else answer)
 
 
-def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *args) -> None:
-    """Run `fn` in a thread with Ctrl+C mapped to interrupt(), printing each message as it lands."""
+def run_and_print(agent: Agent, fn: Callable, *args) -> None:
+    """Run `fn` in a thread with Ctrl+C mapped to interrupt(), printing each message as it lands, then a line
+    summing the calls made meanwhile in the agent's tree (subagents included)."""
     printer = TurnPrinter(agent)
     errors: list[Exception] = []
 
@@ -110,17 +120,19 @@ def run_and_print(agent: Agent, usage_log: str | Path | None, fn: Callable, *arg
         except Exception as e:
             errors.append(e)
 
-    with logged_calls(agent.budget.journal, usage_log) as calls:  # the whole tree's calls, subagents included
-        worker = threading.Thread(target=target, daemon=True)
-        previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
-        try:
-            worker.start()
-            while worker.is_alive():
-                printer.poll()
-                worker.join(0.05)
-        finally:
-            signal.signal(signal.SIGINT, previous)
+    journal = agent.budget.journal
+    start = len(journal)
+    worker = threading.Thread(target=target, daemon=True)
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
+    try:
+        worker.start()
+        while worker.is_alive():
+            printer.poll()
+            worker.join(0.05)
+    finally:
+        signal.signal(signal.SIGINT, previous)
     printer.poll()
+    calls = journal[start:]
 
     for e in errors:
         print(f"[error] {type(e).__name__}: {e}")
@@ -172,4 +184,6 @@ if __name__ == "__main__":
     try:
         repl(agent)
     finally:
+        if agent.subagents and (running := agent.subagents.running()):
+            print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))
         agent.close()
