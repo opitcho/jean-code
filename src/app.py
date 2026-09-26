@@ -30,6 +30,7 @@ from subagents import Run
 from usage import COST_UNKNOWN, human, record, usage_line
 
 MODEL = DEFAULT_MODEL
+REASONING_LEVELS = ("off", "low", "medium", "high")  # "off" sends no reasoning setting (agent.reasoning = None)
 POLL_SECONDS = 0.5
 CSS_PATH = Path(__file__).with_name("app.css")
 
@@ -338,13 +339,25 @@ def new_chat() -> None:
     """A fresh agent; the sidebar toggle picks where its shell runs. The old agent's jobs/container are closed."""
     if old := st.session_state.get("agent"):
         old.close()
-    st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False))
+    st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False),
+                                          reasoning=reasoning_effort())
     st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
     st.session_state.histories = {}  # budget path -> that agent's list[Entry]
     st.session_state.selected = {}  # budget path -> selected uid; None or missing follows the latest
     st.session_state.view = st.session_state.agent.budget.path  # the agent picker's value
     st.session_state.run = {"thread": None, "error": None, "notice": None}
     st.session_state.compactions_seen = 0
+
+
+def reasoning_effort() -> str | None:
+    """The sidebar's reasoning level as `Agent.reasoning` takes it: None for "off"."""
+    level = st.session_state.get("reasoning", "medium")
+    return None if level == "off" else level
+
+
+def set_reasoning() -> None:
+    """Apply the picked level to the live agent: each request reads `agent.reasoning`, so no new chat is needed."""
+    st.session_state.agent.reasoning = reasoning_effort()
 
 
 def select(uid: int | None) -> None:
@@ -439,8 +452,11 @@ def render_sidebar(agent) -> None:
         st.html(eyebrow(f"SKILLS · {len(agent.skills)}"))
         st.html(chips(sorted(agent.skills), on=agent.loaded_skills, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
-        st.html('<div class="row">' + pill(agent.model, cls="model")
-                + pill("reasoning", bold=agent.reasoning or "off") + "</div>")
+        st.html('<div class="row">' + pill(agent.model, cls="model") + "</div>")
+        st.segmented_control("Reasoning effort", REASONING_LEVELS, default="medium", required=True,
+                             key="reasoning", on_change=set_reasoning,
+                             help="Sent with each of the main agent's requests, from the next one on, "
+                                  "so it can change mid-chat. Subagents keep their own (medium).")
         budget = agent.budget  # the agent and any subagents
         if budget.limit:
             st.progress(min(budget.spent / budget.limit, 1.0),
