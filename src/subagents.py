@@ -213,13 +213,6 @@ class Subagents:
         running   how many runs haven't finished (spawn's cap, UIs)
         snapshot  every run so far, by id (UIs, `agent_tree`)
         close     cancel every run and wait for them (`Agent.close`)
-
-    Only here do runs have ids and results become text. Waits end early when the agent is interrupted (its
-    `interrupted` event is the agent's own); background runs keep going.
-
-    A background result is delivered once: a finished background run is pending until `claim` or `subagent`
-    marks it delivered. Pending is derived from the runs' futures, not recorded by a callback, since a future
-    wakes its waiters before it runs its callbacks: a result read in between would be delivered twice.
     """
 
     def __init__(self, profiles: dict[str, Profile], budget: Budget, interrupted: threading.Event):
