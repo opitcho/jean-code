@@ -29,6 +29,7 @@ MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`
 POLL_SECONDS = 0.2  # how often a wait checks whether the parent was interrupted
 
 
+#TODO: Customized tools per profile
 @dataclass(frozen=True)
 class Profile:
     """The spec of one kind of subagent: what it's for, what it may spend, and how to start one on a task."""
@@ -76,7 +77,7 @@ class Run:
     """One subagent working on one task: the running agent and the future of its `Outcome`.
 
     Only `Run.start` creates one, and it starts the run's thread. Nothing about a Run changes afterwards except its
-    future, which the standard library completes exactly once, always with an `Outcome`: errors are part of it.
+    future.
     """
 
     agent: Agent
@@ -203,16 +204,16 @@ def agent_tree(agent: Agent) -> dict[str, Agent]:
 class Subagents:
     """An agent's subagents: the two tools its model calls, and the methods the agent and UIs use to manage its runs.
 
-    Tools (the model calls these with JSON arguments and reads their text results):
+    Tools:
         spawn     start a subagent, and wait for its result or let it run in the background
         subagent  check on a run, wait for it, or cancel it
 
-    Management (code calls these; they are never tools):
-        claim     take the finished background results nobody has seen, once each (`Agent.run_turn` injects them)
-        pending   how many finished results wait to be claimed (UIs)
-        running   how many runs haven't finished (spawn's cap, UIs)
-        snapshot  every run so far, by id (UIs, `agent_tree`)
-        close     cancel every run and wait for them (`Agent.close`)
+    Only here do runs have ids and results become text. Waits end early when the agent is interrupted (its
+    `interrupted` event is the agent's own); background runs keep going.
+
+    A background result is delivered once: a finished background run is pending until `claim` or `subagent`
+    marks it delivered. Pending is derived from the runs' futures, not recorded by a callback, since a future
+    wakes its waiters before it runs its callbacks: a result read in between would be delivered twice.
     """
 
     def __init__(self, profiles: dict[str, Profile], budget: Budget, interrupted: threading.Event):

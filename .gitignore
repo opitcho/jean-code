@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 .claude
+.pytest_cache
+.streamlit
 
 .experiments/
 workspace/

@@ -6,6 +6,9 @@ The agent stays UI-agnostic: `run_turn` runs in a background thread and this UI 
 `agent.messages`. The timeline is the UI's own history of every message it has seen,
 matched by object identity, so it survives the context window being rewritten
 (e.g. compaction): turns that leave `agent.messages` are dimmed, not lost.
+
+The sidebar picks which agent the timeline and inspector show: the main agent, or any subagent run in its tree.
+Every agent's history is kept, whichever one is shown, so switching back loses nothing.
 """
 
 import html
@@ -18,11 +21,12 @@ from pathlib import Path
 
 import streamlit as st
 
-from agent import DEFAULT_MODEL
+from agent import DEFAULT_MODEL, Agent
 from coding import coding_agent
 from config import USAGE_LOG
 from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
 from repl import compaction_line
+from subagents import Run
 from usage import COST_UNKNOWN, human, record, usage_line
 
 MODEL = DEFAULT_MODEL
@@ -42,6 +46,15 @@ KINDS = {
     "summary": ("SUMMARY", "≡", "#2DD4BF"),
 }
 MONO_KINDS = {"tool_call", "tool_result"}
+# status -> (color in the agent picker, dot and pill classes in the header)
+STATUSES = {
+    "running": ("green", "run", "status-run"),
+    "awaiting approval": ("orange", "wait", "status-wait"),
+    "idle": ("gray", "", ""),
+    "done": ("violet", "done", ""),
+    "stopped": ("orange", "stop", "status-stop"),
+    "failed": ("red", "fail", "status-fail"),
+}
 ERROR_PREFIXES = ("Error", "Denied by user", "Not run")  # results the agent writes when a call didn't succeed
 EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash result, see shell.format_result
 LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
@@ -68,6 +81,30 @@ class Entry:
     uid: int
     msg: dict
     in_context: bool = True
+
+
+@dataclass
+class View:
+    """An agent the UI can show: the main agent (no `run`), or a subagent run somewhere in its tree."""
+
+    path: str  # its budget path: "main", "main/1", "main/1/2"
+    agent: Agent
+    run: Run | None = None
+    profile: str = ""
+    id: int | None = None  # the run id its parent's model knows it by
+
+
+def agent_views(agent) -> dict[str, View]:
+    """The main agent, then every subagent run below it depth-first, keyed by budget path."""
+    views = {agent.budget.path: View(agent.budget.path, agent)}
+
+    def walk(parent) -> None:
+        for id, profile, run in parent.subagents.snapshot() if parent.subagents else []:
+            views[run.path] = View(run.path, run.agent, run, profile, id)
+            walk(run.agent)
+
+    walk(agent)
+    return views
 
 
 def to_jsonable(value):
@@ -176,7 +213,9 @@ def sync_history(entries: list[Entry], ctx: list) -> None:
 
     A compaction's summary thus lands where it sits in the context, after the messages it replaced.
     Entries hold references to their messages, so `id()` can't be reused while they exist.
+    Uids count up within each agent's history: entries are never removed, so the largest is the latest.
     """
+    uid = max((e.uid for e in entries), default=0)
     ctx_ids = {id(m) for m in ctx}
     position = {}
     for i, e in enumerate(entries):
@@ -189,8 +228,8 @@ def sync_history(entries: list[Entry], ctx: list) -> None:
             continue
         # before the next entry still in context, so it follows the compacted entries it replaced
         at = next((j for j in range(start, len(entries)) if entries[j].in_context), len(entries))
-        st.session_state.next_uid += 1
-        entries.insert(at, Entry(st.session_state.next_uid, m))
+        uid += 1
+        entries.insert(at, Entry(uid, m))
         position = {id(e.msg): i for i, e in enumerate(entries)}
         start = at + 1
 
@@ -245,11 +284,23 @@ def is_running() -> bool:
     return thread is not None and thread.is_alive()
 
 
-def subagent_state(agent) -> tuple[int, int]:
-    """(running, pending) for the agent's subagents. While any run, the view keeps polling; when either changes,
-    it reruns in full, so the sidebar and the notice catch up."""
-    subagents = agent.subagents
-    return (subagents.running(), subagents.pending) if subagents else (0, 0)
+def status_of(view: View) -> tuple[str, str | None]:
+    """(status, reason): the main agent's "running", "awaiting approval" or "idle"; a run's "running", or how it
+    ended ("done", "stopped" with why, "failed")."""
+    if view.run is not None:
+        outcome = view.run.outcome(0)  # None while it runs
+        return (outcome.status, outcome.reason) if outcome else ("running", None)
+    if is_running():
+        return "running", None
+    return ("awaiting approval" if view.agent.pending_calls else "idle"), None
+
+
+def tree_state(agent) -> tuple[tuple[tuple[str, bool], ...], int]:
+    """((path, done) of every run in the tree, results pending for the main agent). While a run is unfinished,
+    the view keeps polling; when this changes (a run starts or ends, a result is delivered), it reruns in full,
+    so the sidebar catches up."""
+    runs = tuple((path, view.run.done()) for path, view in agent_views(agent).items() if view.run)
+    return runs, agent.subagents.pending if agent.subagents else 0
 
 
 def start_run(fn, *args) -> None:
@@ -269,7 +320,7 @@ def start_run(fn, *args) -> None:
     run["thread"] = threading.Thread(target=target, daemon=True)
     run["thread"].start()
     st.session_state.was_running = True
-    st.session_state.selected_uid = None  # follow the live turn
+    st.session_state.selected[st.session_state.agent.budget.path] = None  # follow the live turn
 
 
 def compact_now(agent, run: dict) -> None:
@@ -289,14 +340,21 @@ def new_chat() -> None:
         old.close()
     st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False))
     st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
-    st.session_state.entries = []
-    st.session_state.selected_uid = None
+    st.session_state.histories = {}  # budget path -> that agent's list[Entry]
+    st.session_state.selected = {}  # budget path -> selected uid; None or missing follows the latest
+    st.session_state.view = st.session_state.agent.budget.path  # the agent picker's value
     st.session_state.run = {"thread": None, "error": None, "notice": None}
     st.session_state.compactions_seen = 0
 
 
 def select(uid: int | None) -> None:
-    st.session_state.selected_uid = uid
+    """Select a block in the timeline of the agent on view; None follows the latest."""
+    st.session_state.selected[st.session_state.view] = uid
+
+
+def show(path: str) -> None:
+    """Show another agent. A button callback: the picker's value can only change before the picker is drawn."""
+    st.session_state.view = path
 
 
 # ---------------------------------------------------------------- html snippets (styles in app.css)
@@ -387,36 +445,50 @@ def render_sidebar(agent) -> None:
         if budget.limit:
             st.progress(min(budget.spent / budget.limit, 1.0),
                         text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget")
-        if agent.subagents:
-            render_subagents(agent.subagents)
+        render_agents(agent)
 
 
-def render_subagents(subagents) -> None:
-    """The runs so far, one line each (status, spend, task), and a notice for results waiting to be delivered."""
-    runs = subagents.snapshot()
-    st.html(eyebrow(f"SUBAGENTS · {len(runs)}"))
-    if not runs:
-        st.caption("none started")
-    for id, profile, run in runs:
-        outcome = run.outcome(0)  # None while it runs
-        status = outcome.status if outcome else "running"
-        detail = f" ({outcome.reason})" if outcome and outcome.reason else ""
-        st.caption(f"**#{id}** {profile} · {status}{detail} · ${run.agent.budget.spent:.4f} · {clip(one_line(run.task), 60)}")
-    if pending := subagents.pending:
+def agent_label(view: View) -> str:
+    """The picker's line for an agent: its name, runs indented by depth. It must never change, status included:
+    the browser sends the picked label back, and a label that no longer matches an option loses the pick."""
+    if view.run is None:
+        return f"**{view.path}**"
+    indent = "\u2003" * (view.path.count("/") - 1)  # em spaces: markdown collapses plain ones
+    return f"{indent}↳ **#{view.id}** {view.profile}"
+
+
+def agent_caption(view: View) -> str:
+    """The picker's second line: a status dot and status, the agent's own calls and spend, and a run's task."""
+    status, reason = status_of(view)
+    parts = [f":{STATUSES[status][0]}[●] " + (f"{status} ({reason})" if reason else status),
+             f"{len(view.agent.usage)} calls · ${view.agent.total_cost:.4f}"]
+    if view.run is not None:
+        parts.append(clip(re.sub(r"[*_`#>\[\]]+", "", view.run.task), 48))  # plain text: captions are markdown
+    return " · ".join(parts)
+
+
+def render_agents(agent) -> None:
+    """The agent picker: the main agent and every subagent run, and a notice for results waiting to be delivered.
+    Refreshed by full reruns, which `tree_state` triggers whenever a run starts or ends."""
+    views = agent_views(agent)
+    st.html(eyebrow(f"AGENTS · {len(views)}"))
+    st.radio("Agent to inspect", list(views), key="view", format_func=lambda path: agent_label(views[path]),
+             captions=[agent_caption(v) for v in views.values()], label_visibility="collapsed")
+    if agent.subagents and not agent.subagents.snapshot():
+        st.caption("No subagents started yet.")
+    if pending := agent.subagents.pending if agent.subagents else 0:
         st.info(f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
                 f"{'them' if pending > 1 else 'it'}.", icon=":material/inbox:")
 
 
-def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None:
+def render_header(view: View, entries: list[Entry], ctx: list, running: bool) -> None:
+    agent = view.agent
     tool_calls = sum(turn_kind(e.msg) == "tool_call" for e in entries)
     compacted = sum(not e.in_context for e in entries)
-    if running:
-        status = pill("running", dot="run", cls="status-run")
-    elif agent.pending_calls:
-        status = pill("awaiting approval", dot="wait", cls="status-wait")
-    else:
-        status = pill("idle", dot="")
-    pills = [pill(agent.model, cls="model"), status]
+    status, _ = status_of(view)
+    _, dot, cls = STATUSES[status]
+    pills = [pill(view.path, bold=f"#{view.id} {view.profile}", cls="on")] if view.run else []
+    pills += [pill(agent.model, cls="model"), pill(status, dot=dot, cls=cls)]
     pills += [pill(label, bold=n) for n, label in
               ((len(entries), "turns"), (tool_calls, "tool calls"), (len(ctx), "in context"), (compacted, "compacted"))
               if n]
@@ -426,11 +498,25 @@ def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None
 
     with st.container(horizontal=True, vertical_alignment="center", wrap=False):
         st.html(f'<div class="hdr"><span class="hdr-title">jean-code</span>{"".join(pills)}</div>')
-        if running:
-            st.button("Stop", icon=":material/stop_circle:", on_click=agent.interrupt, type="primary")
+        if view.run is None:
+            if running:
+                st.button("Stop", icon=":material/stop_circle:", on_click=agent.interrupt, type="primary")
+            else:
+                st.button("New chat", icon=":material/refresh:", on_click=new_chat)
+        elif running:
+            st.button("Cancel run", icon=":material/cancel:", on_click=view.run.cancel, type="primary",
+                      help="Stops this subagent, and any it started, after the model call it is making.")
         else:
-            st.button("New chat", icon=":material/refresh:", on_click=new_chat)
+            st.button("Back to main", icon=":material/arrow_back:", on_click=show,
+                      args=(st.session_state.agent.budget.path,))
 
+    if view.run is not None:  # a run's warnings are in how it ended
+        outcome = view.run.outcome(0)
+        if outcome and outcome.status == "failed":
+            st.error(outcome.text, icon=":material/error:")
+        elif outcome and outcome.status == "stopped":
+            st.warning(f"Stopped before answering: {outcome.reason}", icon=":material/warning:")
+        return
     if error := st.session_state.run["error"]:
         st.error(error, icon=":material/error:")
     if not running and agent.interrupted and agent.last_cost_unknown and not agent.over_budget:
@@ -439,7 +525,7 @@ def render_header(agent, entries: list[Entry], ctx: list, running: bool) -> None
         st.warning(agent.stop_reason, icon=":material/warning:")
 
 
-def render_timeline(entries: list[Entry], selected: Entry | None, running: bool, agent) -> None:
+def render_timeline(entries: list[Entry], selected: Entry | None, running: bool, pending: bool, agent) -> None:
     names = call_names(entries)
     with st.container(height=640, autoscroll=True, border=False, key="timeline"):
         if not entries and not running:
@@ -465,7 +551,7 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
             if running:
                 with st.container(key="blk-thinking-live"):
                     st.html(card("thinking", "waiting for model…", classes="ghost"))
-            elif agent.pending_calls:
+            elif pending:
                 render_approval(agent)
 
 
@@ -579,7 +665,7 @@ def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, 
 
     with st.container(horizontal=True, vertical_alignment="center"):
         st.html(f'<div class="insp-head k-{kind}{err}"><span class="badge">{icon} {label} #{selected.uid}</span>{meta}</div>')
-        if st.session_state.selected_uid is None:
+        if st.session_state.selected.get(st.session_state.view) is None:
             st.html(pill("⤓ following latest"), width="content")
         else:
             st.button("Follow latest", icon=":material/vertical_align_bottom:", on_click=select, args=(None,),
@@ -709,36 +795,46 @@ st.html(kind_css())
 render_sidebar_top()
 if "agent" not in st.session_state:
     new_chat()
-    st.session_state.next_uid = 0
     st.session_state.was_running = False
 render_sidebar(st.session_state.agent)
 announce_compactions(st.session_state.agent)
-st.session_state.subagents_seen = subagent_state(st.session_state.agent)
+st.session_state.tree_seen = tree_state(st.session_state.agent)
 
 
-@st.fragment(run_every=POLL_SECONDS if is_running() or st.session_state.subagents_seen[0] else None)
+def any_run_going() -> bool:
+    return any(not done for _, done in st.session_state.tree_seen[0])
+
+
+@st.fragment(run_every=POLL_SECONDS if is_running() or any_run_going() else None)
 def live_view() -> None:
-    agent, entries = st.session_state.agent, st.session_state.entries
-    running = is_running()
-    if st.session_state.was_running and not running:
+    agent = st.session_state.agent
+    if st.session_state.was_running and not is_running():
         st.session_state.was_running = False
         st.rerun()  # full rerun: stop polling, re-enable the input and refresh the sidebar
-    if subagent_state(agent) != st.session_state.subagents_seen:
-        st.rerun()  # a run finished or a result was delivered: refresh the sidebar, and stop polling once none runs
+    if tree_state(agent) != st.session_state.tree_seen:
+        st.rerun()  # a run started or ended, or a result was delivered: refresh the sidebar; stop polling once none runs
 
-    ctx = list(agent.messages)  # snapshot: the run thread appends concurrently
-    sync_history(entries, ctx)
+    views = agent_views(agent)
+    contexts = {path: list(v.agent.messages) for path, v in views.items()}  # snapshots: runs append concurrently
+    for path, ctx in contexts.items():  # every agent, not only the one on view, so none misses a compaction
+        sync_history(st.session_state.histories.setdefault(path, []), ctx)
+
+    view = views.get(st.session_state.view) or views[agent.budget.path]
+    entries, ctx = st.session_state.histories[view.path], contexts[view.path]
+    running = is_running() if view.run is None else not view.run.done()
+    pending = view.run is None and not running and bool(agent.pending_calls)  # only the main agent asks approval
     by_uid = {e.uid: e for e in entries}
-    selected = by_uid.get(st.session_state.selected_uid) or (entries[-1] if entries else None)
+    selected = by_uid.get(st.session_state.selected.get(view.path)) or (entries[-1] if entries else None)
 
-    render_header(agent, entries, ctx, running)
+    render_header(view, entries, ctx, running)
     timeline_col, inspector_col = st.columns([2, 3], gap="large")
 
     with timeline_col:
-        st.html(eyebrow("TIMELINE"))
-        render_timeline(entries, selected, running, agent)
-        prompt = st.chat_input("Agent is working…" if running else "Message the agent…", disabled=running)
-        if prompt:
+        st.html(eyebrow("TIMELINE" if view.run is None else f"TIMELINE · #{view.id} {view.profile.upper()}"))
+        render_timeline(entries, selected, running, pending, view.agent)
+        if view.run is not None:
+            st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
+        elif prompt := st.chat_input("Agent is working…" if running else "Message the agent…", disabled=running):
             if prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
                 start_run(compact_now, agent, st.session_state.run)
             else:
@@ -748,13 +844,13 @@ def live_view() -> None:
     with inspector_col:
         turn_tab, request_tab, context_tab, state_tab = st.tabs(["Turn", "Request", "Context", "Agent state"])
         with turn_tab:
-            render_turn(agent, entries, selected, ctx, running, bool(agent.pending_calls))
+            render_turn(view.agent, entries, selected, ctx, running, pending)
         with request_tab:
-            render_request(agent)
+            render_request(view.agent)
         with context_tab:
-            render_context(agent)
+            render_context(view.agent)
         with state_tab:
-            render_state(agent)
+            render_state(view.agent)
 
 
 live_view()

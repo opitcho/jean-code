@@ -53,6 +53,11 @@ header[data-testid="stHeader"] { background: transparent; }
   100% { box-shadow:0 0 0 8px transparent; } }
 .pill.status-run { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 35%, var(--line)); }
 .pill.status-wait { color:var(--wait); border-color:color-mix(in srgb, var(--wait) 40%, var(--line)); }
+.dot.done { background:var(--accent); }
+.dot.stop { background:var(--warn); }
+.dot.fail { background:var(--err); }
+.pill.status-stop { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.pill.status-fail { color:var(--err); border-color:color-mix(in srgb, var(--err) 40%, var(--line)); }
 .pill.status-run b, .pill.status-wait b { color:inherit; }
 
 .kv { display:grid; grid-template-columns: max-content minmax(0,1fr); border:1px solid var(--line);
@@ -85,6 +90,9 @@ header[data-testid="stHeader"] { background: transparent; }
 .brand-sub { font-size:.72rem; color:var(--faint); }
 .shell-note { font-size:.76rem; color:var(--muted); line-height:1.6; margin-top:-.3rem; }
 .shell-note b { color:var(--ink-soft); font-weight:600; }
+/* the agent picker: one option per agent, its caption (status, spend, task) underneath */
+.st-key-view [role="radiogroup"] { gap:.4rem; }
+.st-key-view [data-testid="stCaptionContainer"] { overflow-wrap:anywhere; }
 .shell-note code { font-family:var(--mono); font-size:.72rem; color:var(--ink-soft);
   background:var(--panel); padding:.05rem .3rem; border-radius:4px; overflow-wrap:anywhere; }
 
