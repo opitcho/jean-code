@@ -1,8 +1,7 @@
 """The chat-completions wire format: an OpenRouter client and tool schemas.
 
 Everything here is plain dicts in the OpenAI chat format, so what goes over the wire is exactly
-what the agent stores and shows. Findings behind the details are in
-`.claude/.archived_plans/openrouter-deepseek.md` and `.experiments/openrouter_stream_roundtrip.py`.
+what the agent stores and shows.
 """
 
 import inspect

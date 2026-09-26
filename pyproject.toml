@@ -1,7 +1,7 @@
 [project]
 name = "jean-code"
 version = "0.1.0"
-description = "Add your description here"
+description = "A small coding agent with a shell, web tools, subagents and skills, with a terminal REPL and a Streamlit UI."
 authors = [
     { name = "opitcho", email = "oscar.pitcho@live.com" }
 ]
@@ -11,17 +11,17 @@ dependencies = [
     "ddgs>=9.16.0",
     "griffelib>=2.3.0",
     "httpx>=0.28.1",
-    "ipykernel>=7.3.0",
-    "jupyter>=1.1.1",
     "pydantic>=2.13.5",
     "pyyaml>=6.0.3",
     "streamlit>=1.63.0",
-    "tornado<6.5",
 ]
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.3.0",
+    "jupyter>=1.1.1",
     "pytest>=9.1.1",
+    "tornado<6.5",
 ]
 
 [tool.pytest.ini_options]
