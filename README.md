@@ -79,13 +79,6 @@ without Docker and the image it fails, and only the `searcher` subagent works.
   logged to `logs/usage.jsonl`.
 - **See what it's doing**: the UI shows every thought, tool call and result live, for the main agent and each subagent.
 
-## Reading the code
-
-Start with `src/agent.py`: `Agent.run_turn` adds your message, then `_loop` calls `step` (one model call, then its
-tool calls) until the model answers. Then `src/llm.py`, which turns plain Python functions into the tool schemas
-the model sees, and `src/coding.py`, which puts the coding agent together from a shell, the web tools and the
-subagents.
-
 ## Layout
 
 ```
