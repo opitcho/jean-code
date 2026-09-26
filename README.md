@@ -1,4 +1,4 @@
-# jean-code
+# Jean-Code - A minimal Coding Harness for Educational Purposes.
 
 A small coding agent that works in your shell and in your browser. Built on [OpenRouter](https://openrouter.ai) (DeepSeek V4.1 Flash by default) - Supports all the goodies you're used to in agents: bash, tools, web-browsing, subagents, etc.
 
