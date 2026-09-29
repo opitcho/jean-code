@@ -16,12 +16,13 @@ def api_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")  # builds a client; nothing here sends a request
 
 
-def test_the_coding_agent_offers_both_subagents():
+def test_the_coding_agent_offers_its_subagents():
     # Catches profiles that exist but never reach the model: no listing, or no tools.
     agent = coding_agent(skills_dir=None)
     try:
         prompt = agent.messages[0]["content"]
         assert "## Subagents" in prompt and "- searcher: " in prompt and "- general: " in prompt
+        assert "- research: " in prompt
         assert {"spawn", "subagent"} <= set(agent._tools())
     finally:
         agent.close()

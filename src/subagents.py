@@ -64,7 +64,8 @@ class Outcome:
     - "done": the agent answered; `text` is its answer (or the profile's report).
     - "stopped": it ended before answering; `reason` says why, and `text` is what it last said (or the report),
       which may be incomplete but can still help.
-    - "failed": the agent, its report or its cleanup raised; `text` is the error.
+    - "failed": the agent, its report or its cleanup raised; `text` is the error, followed by the report when the
+      agent raised and the profile has one.
     """
 
     status: Literal["done", "stopped", "failed"]
@@ -116,7 +117,17 @@ class Run:
         self._future.set_result(outcome)
 
     def _finish(self, report: Callable[[], str] | None) -> Outcome:
-        self.agent.run_turn(self.task)
+        try:
+            self.agent.run_turn(self.task)
+        except BaseException as e:
+            if report is None:
+                raise
+            # A report hands back what the agent left elsewhere (a notebook), which an error doesn't undo.
+            error = f"{type(e).__name__}: {e}"
+            try:
+                return Outcome("failed", f"{error}\n\n{report()}")
+            except BaseException as r:
+                return Outcome("failed", f"{error}\n\nThe report failed too: {type(r).__name__}: {r}")
         reason = why_stopped(self.agent)  # read now: a cancel() after the turn mustn't relabel a finished run
         text = report() if report else last_reply(self.agent)
         if reason:

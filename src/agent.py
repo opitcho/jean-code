@@ -44,6 +44,9 @@ def ordinal(n: int) -> str:
 
 
 class Agent:
+    #TODO: Simplify this docstring. It communicates many things which are irrelevant and redudntant
+    # E.g. UI comment, context compaction, user commands, etc. --> These are all implementations
+    # details which should not be in a docstring.
     """Tool-calling agent that chats with a user through a model on OpenRouter.
 
     The transcript in `self.messages` is in the OpenAI chat format. It stores each model reply

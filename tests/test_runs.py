@@ -152,6 +152,15 @@ def test_a_failing_report_fails_the_run():
     assert run.outcome(TIMEOUT) == Outcome("failed", "ZeroDivisionError: division by zero")
 
 
+def test_the_report_still_runs_when_the_agent_raises():
+    # Catches a research run that hits a 5xx losing its report, though its notebook holds everything found so far.
+    run = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: "the notebook")
+    assert run.outcome(TIMEOUT) == Outcome("failed", "RuntimeError: HTTP 500\n\nthe notebook")
+    both = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: 1 / 0)
+    assert both.outcome(TIMEOUT) == Outcome(
+        "failed", "RuntimeError: HTTP 500\n\nThe report failed too: ZeroDivisionError: division by zero")
+
+
 def test_a_failing_cleanup_still_completes_the_run():
     # Catches `close()` raising outside the try, which would leave the run "running" forever.
     def boom():

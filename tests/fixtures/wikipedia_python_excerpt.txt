@@ -1,0 +1,191 @@
+riented programming and structured programming are fully supported, and many of their features support functional programming and
+aspect-oriented programming
+– including
+metaprogramming
+[
+58
+]
+and
+metaobjects
+.
+[
+59
+]
+Many other paradigms are supported via extensions, including
+design by contract
+[
+60
+]
+[
+61
+]
+and
+logic programming
+.
+[
+62
+]
+Python is often referred to as a
+‘
+glue language
+’
+[
+63
+]
+because it is purposely designed to be able to integrate components written in other languages.
+Python uses dynamic typing and a combination of
+reference counting
+and a cycle-detecting garbage collector for
+memory management
+.
+[
+64
+]
+It uses dynamic
+name resolution
+(
+late binding
+), which binds method and variable names during program execution.
+Python's design offers some support for functional programming in the "
+Lisp
+tradition". It has
+filter
+,
+map
+, and
+reduce
+functions;
+list comprehensions
+,
+dictionaries
+,
+sets
+, and
+generator
+expressions.
+[
+65
+]
+The standard library has two modules (
+itertools
+and
+functools
+) that implement functional tools borrowed from
+Haskell
+and
+Standard ML
+.
+[
+66
+]
+Python's core philosophy is summarized in the
+Zen of Python
+(PEP 20) written by
+Tim Peters
+, which includes aphorisms such as these:
+[
+67
+]
+Explicit is better than implicit.
+Simple is better than complex.
+Readability counts.
+Special cases aren't special enough to break the rules.
+Although practicality beats purity, errors should never pass silently, unless explicitly silenced.
+There should be one—and preferably only one—obvious way to do it.
+However, Python has received criticism for violating these principles and adding unnecessary language bloat.
+[
+68
+]
+Responses to these criticisms note that the Zen of Python is a guideline rather than a rule.
+[
+69
+]
+The addition of some new features had been controversial: Guido van Rossum resigned as
+Benevolent Dictator for Life
+after conflict about adding the assignment expression operator in
+Python 3.8.
+[
+70
+]
+[
+71
+]
+Nevertheless, rather than 
+
+ytes
+b
+'Some ASCII'
+b
+"Some ASCII"
+bytes
+([
+119
+,
+105
+,
+107
+,
+105
+])
+complex
+immutable
+Complex number
+with real and imaginary parts
+3
++
+2.7
+j
+3
++
+2.7
+j
+5
+j
+dict
+mutable
+Associative array
+(or dictionary) of key and value pairs; can contain mixed types (keys and values); keys must be a hashable type
+{
+'key1'
+:
+1.0
+,
+3
+:
+False
+}
+{}
+types.EllipsisType
+immutable
+An
+ellipsis
+placeholder to be used as an index in
+NumPy
+arrays
+...
+Ellipsis
+float
+immutable
+64-bit
+double-precision
+floating-point number
+(
+IEEE 754
+number with 53
+bits of precision, in all supported versions since CPython 3.11;
+[
+107
+]
+also in practice in 3.10 and older
+, though technically there the precision is machine-dependent
+[
+108
+]
+)
+.  Python's built-in type
+memoryview
+does though support both 64-bit doubles and 32-bit floats, and Python's standard library
+struct
+module additionally supports 16-bit half-floats. Python packages like NumPy and Pandas may also support 32-bit floats or more, e.g.
+numpy.half
+; though support for

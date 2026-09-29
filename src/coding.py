@@ -1,10 +1,11 @@
-"""The coding agent both front-ends run: a shell plus web tools, and two kinds of subagent."""
+"""The coding agent both front-ends run: a shell plus web tools, and three kinds of subagent."""
 
 from pathlib import Path
 
 from agent import Agent, DEFAULT_MODEL
 from config import SKILLS_DIR
 from prompts import SEARCHER_PROMPT, SUBAGENT_NOTE, SYSTEM_PROMPT
+from research import research_profile
 from shell import DockerShell, LocalShell
 from subagents import Profile, agent_profile
 from tools import fetch_page, web_search
@@ -19,8 +20,8 @@ def coding_agent(
     subagents: bool = True,
     **kwargs,
 ) -> Agent:
-    """An agent with a shell (on the host, or in the Docker sandbox), web tools, and the `searcher` and `general`
-    subagents (see `subagent_profiles`) unless `subagents` is False.
+    """An agent with a shell (on the host, or in the Docker sandbox), web tools, and the `searcher`, `general` and
+    `research` subagents (see `subagent_profiles`) unless `subagents` is False.
 
     Whether `bash` needs approval comes from the shell: yes on the host, no in the sandbox.
     `agent.close()` stops its subagents and closes the shell: it kills background jobs, and removes the container.
@@ -45,6 +46,8 @@ def subagent_profiles(model: str = DEFAULT_MODEL, network: bool = True,
     - `searcher`: web tools only, answers one question with sources. Cheap, and safe anywhere.
     - `general`: a copy of the coding agent without subagents of its own, whose shell always runs in the Docker
       sandbox (its own container, in `workspace/`), so it needs no approval, even when the parent runs on the host.
+    - `research`: a research lead and its researchers (research.py), which write a cited report to a run folder in
+      `workspace/research/`. The research skill scopes the brief before spawning one.
     """
     return {
         "searcher": agent_profile(
@@ -55,6 +58,7 @@ def subagent_profiles(model: str = DEFAULT_MODEL, network: bool = True,
             "/workspace (the project's workspace/ folder, not the user's directory); for self-contained work: "
             "prototypes, experiments, trying a library, long runs",
             lambda task, budget: general_agent(model, budget, network, skills_dir), max_cost=0.50, max_cost_cap=2.0),
+        "research": research_profile(model),
     }
 
 

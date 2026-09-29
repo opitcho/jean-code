@@ -1,0 +1,836 @@
+pypdf · PyPI
+
+pypdf · PyPI
+Skip to main content
+Switch to mobile version
+pypdf 6.19.0
+A pure-python PDF library capable of splitting, merging, cropping, and transforming PDF files
+pip install pypdf
+Copy PIP instructions
+pypdf
+pypdf is a free and open-source pure-python PDF library capable of splitting,
+merging
+,
+cropping, and transforming
+the pages of PDF files. It can also add
+custom data, viewing options, and
+passwords
+to PDF files. pypdf can
+retrieve text
+and
+metadata
+from PDFs as well.
+See
+pdfly
+for a CLI application that uses pypdf to interact with PDFs.
+Installation
+Install pypdf using pip:
+pip install pypdf
+For using pypdf with AES encryption or decryption, install extra dependencies:
+pip install pypdf[crypto]
+NOTE
+:
+pypdf
+3.1.0 and above include significant improvements compared to
+previous versions. Please refer to
+the migration
+guide
+for
+more information.
+Usage
+from
+pypdf
+import
+PdfReader
+reader
+=
+PdfReader
+(
+"example.pdf"
+)
+number_of_pages
+=
+len
+(
+reader
+.
+pages
+)
+page
+=
+reader
+.
+pages
+[
+0
+]
+text
+=
+page
+.
+extract_text
+()
+pypdf can do a lot more, e.g. splitting, merging, reading and creating annotations, decrypting and encrypting. Check out the
+documentation
+for additional usage
+examples!
+For questions and answers, visit
+StackOverflow
+(tagged with
+pypdf
+).
+Contributions
+Maintaining pypdf is a collaborative effort. You can support the project by
+writing documentation, helping to narrow down issues, and submitting code.
+See the
+CONTRIBUTING.md
+file for more information.
+Q&A
+The experience pypdf users have covers the whole range from beginner to expert. You can contribute to the pypdf community by answering questions
+on
+StackOverflow
+,
+helping in
+discussions
+,
+and asking users who report issues for
+MCVE
+'s (Code + example PDF!).
+Issues
+A good bug ticket includes a MCVE - a minimal complete verifiable example.
+For pypdf, this means that you must upload a PDF that causes the bug to occur
+as well as the code you're executing with all of the output. Use
+print(pypdf.__version__)
+to tell us which version you're using.
+Code
+All code contributions are welcome, but smaller ones have a better chance to
+get included in a timely manner. Adding unit tests for new features or test
+cases for bugs you've fixed help us to ensure that the Pull Request (PR) is fine.
+pypdf includes a test suite which can be executed with
+pytest
+:
+$
+pytest
+=====================
+test
+session
+starts
+=====================
+platform
+linux
+--
+Python
+3
+.6.15,
+pytest-7.0.1,
+pluggy-1.0.0
+rootdir:
+/home/moose/GitHub/Martin/pypdf
+plugins:
+cov-3.0.0
+collected
+233
+items
+tests/test_basic_features.py
+..
+[
+0
+%
+]
+tests/test_constants.py
+.
+[
+1
+%
+]
+tests/test_filters.py
+.................x.....
+[
+11
+%
+]
+tests/test_generic.py
+.................................
+[
+25
+%
+]
+.............
+[
+30
+%
+]
+tests/test_javascript.py
+..
+[
+31
+%
+]
+tests/test_merger.py
+.
+[
+32
+%
+]
+tests/test_page.py
+.........................
+[
+42
+%
+]
+tests/test_pagerange.py
+................
+[
+49
+%
+]
+tests/test_papersizes.py
+..................
+[
+57
+%
+]
+tests/test_reader.py
+..................................
+[
+72
+%
+]
+...............
+[
+78
+%
+]
+tests/test_utils.py
+....................
+[
+87
+%
+]
+tests/test_workflows.py
+..........
+[
+91
+%
+]
+tests/test_writer.py
+.................
+[
+98
+%
+]
+tests/test_xmp.py
+...
+[
+100
+%
+]
+==========
+232
+passed,
+1
+xfailed,
+1
+warning
+in
+4
+.52s
+==========
+Project links
+Data verified by PyPI on Sep 16, 2026
+Data provided by the project maintainers, verified at the time the release was uploaded to PyPI.
+Bug Reports
+Source
+Changelog
+Documentation
+Key dates
+PyPI data
+Data sourced directly from PyPI's database.
+Released:
+Sep 16, 2026
+Latest release
+3 maintainers
+PyPI data
+Data sourced directly from PyPI's database.
+Martin.Thoma
+mfenniak
+stefan6419846
+Credits
+Author:
+Mathieu Fenniak
+Maintainer:
+stefan6419846
+GitHub Statistics
+Data verified by PyPI on Sep 16, 2026
+The GitHub source repository was provided by the project maintainers and verified by PyPI at the time of upload. Stars, forks, and open issues/PRs are derived from that repository and have not been independently verified.
+Repository
+Stars:
+Forks:
+Open issues:
+Open PRs:
+License expression
+BSD-3-Clause
+View SPDX License List
+Requires
+Python
+>=3.9
+Provides Extra
+crypto
+cryptodome
+dev
+docs
+fonts
+full
+image
+rtl-text
+Classifiers
+Development Status
+5 - Production/Stable
+Intended Audience
+Developers
+Operating System
+OS Independent
+Programming Language
+Python :: 3
+Python :: 3 :: Only
+Python :: 3.9
+Python :: 3.10
+Python :: 3.11
+Python :: 3.12
+Python :: 3.13
+Python :: 3.14
+Topic
+Software Development :: Libraries :: Python Modules
+Typing
+Typed
+Report project as malware
+Release files for pypdf 6.19.0
+For a detailed explanation of source distributions (sdists) and built distributions (wheels), please see the
+package formats documentation
+.
+Source distribution (sdist)
+Source distribution for pypdf 6.19.0
+File
+Size
+Uploaded
+pypdf-6.19.0.tar.gz
+7.0 MB
+Sep 16, 2026
+Details
+Built distribution (wheel)
+Table of built distributions (wheels) for pypdf 6.19.0
+File
+Interpreter
+ABI
+Platform
+Reset
+pypdf-6.19.0-py3-none-any.whl
+395.5 kB
+Sep 16, 2026
+Python 3
+none
+any
+Details
+Total release size:
+7.4 MB
+Release files
+/ pypdf-6.19.0.tar.gz
+Download URL
+pypdf-6.19.0.tar.gz
+Size
+7.0 MB
+Tags
+Source
+SHA-256 checksum
+How to use checksums
+bbc43aca292369ccc6cbc8a921991ecf2538a3587ab5a116eff06c321d647155
+BLAKE2b-256 checksum
+How to use checksums
+1fac63d71aaedb59acbcdef491e6ca6469165e3771c9c74358204818fd9bc5a6
+Upload date
+Sep 16, 2026
+Uploaded using Trusted Publishing?
+What is trusted publishing?
+Yes
+Uploaded via
+twine/7.0.0 CPython/3.13.14
+Provenance
+Provenance
+describes where a file came from. On PyPI, provenance is shared via
+attestations
+, which provide a verifiable record of the build or publishing details.
+View details, limitations and caveats.
+PyPI Publish
+Attestation
+PyPI verified that this artifact, at this checksum, originated from the publisher listed below.
+Signed by GitHub Actions, verified by PyPI on Sep 16, 2026.
+Transparency log
+Identity
+Publishing platform
+GitHub Actions
+Publishing repository
+github.com/py-pdf/pypdf
+Publishing commit
+github.com/py-pdf/pypdf/tree/d62cb58d3988b291b0435eddfd118c4f8f6b6a46
+Workflow
+Publishing configuration
+github.com/py-pdf/pypdf/blob/d62cb58d3988b291b0435eddfd118c4f8f6b6a46/.github/workflows/publish-to-pypi.yaml
+Publishing logs
+github.com/py-pdf/pypdf/actions/runs/35079901185/attempts/1
+Artifact
+Subject
+pypdf-6.19.0.tar.gz
+SHA-256 checksum
+bbc43aca292369ccc6cbc8a921991ecf2538a3587ab5a116eff06c321d647155
+Verifying attestations
+Release files
+/ pypdf-6.19.0-py3-none-any.whl
+Download URL
+pypdf-6.19.0-py3-none-any.whl
+Size
+395.5 kB
+Tags
+Python 3
+SHA-256 checksum
+How to use checksums
+7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14
+BLAKE2b-256 checksum
+How to use checksums
+3c2cc43c03eaf630435f023f1dc61ec4a4a78951ad5530a62c71cc89bde307b7
+Upload date
+Sep 16, 2026
+Uploaded using Trusted Publishing?
+What is trusted publishing?
+Yes
+Uploaded via
+twine/7.0.0 CPython/3.13.14
+Provenance
+Provenance
+describes where a file came from. On PyPI, provenance is shared via
+attestations
+, which provide a verifiable record of the build or publishing details.
+View details, limitations and caveats.
+PyPI Publish
+Attestation
+PyPI verified that this artifact, at this checksum, originated from the publisher listed below.
+Signed by GitHub Actions, verified by PyPI on Sep 16, 2026.
+Transparency log
+Identity
+Publishing platform
+GitHub Actions
+Publishing repository
+github.com/py-pdf/pypdf
+Publishing commit
+github.com/py-pdf/pypdf/tree/d62cb58d3988b291b0435eddfd118c4f8f6b6a46
+Workflow
+Publishing configuration
+github.com/py-pdf/pypdf/blob/d62cb58d3988b291b0435eddfd118c4f8f6b6a46/.github/workflows/publish-to-pypi.yaml
+Publishing logs
+github.com/py-pdf/pypdf/actions/runs/35079901185/attempts/1
+Artifact
+Subject
+pypdf-6.19.0-py3-none-any.whl
+SHA-256 checksum
+7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14
+Verifying attestations
+Release history
+Release notifications
+|
+
+
+RSS feed
+This release
+6.19.0
+This release
+Sep 16, 2026
+2 release files
+6.18.1
+Sep 11, 2026
+2 release files
+6.18.0
+Sep 7, 2026
+2 release files
+6.17.0
+Sep 4, 2026
+2 release files
+6.16.2
+Aug 23, 2026
+2 release files
+6.16.1
+Aug 14, 2026
+2 release files
+6.16.0
+Aug 13, 2026
+2 release files
+6.15.0
+Aug 6, 2026
+2 release files
+6.14.2
+Jun 23, 2026
+2 release files
+6.14.1
+Jun 23, 2026
+2 release files
+6.14.0
+Jun 22, 2026
+2 release files
+6.13.3
+Jun 17, 2026
+2 release files
+6.13.2
+Jun 10, 2026
+2 release files
+6.13.1
+Jun 8, 2026
+2 release files
+6.13.0
+Jun 5, 2026
+2 release files
+6.12.2
+May 26, 2026
+2 release files
+6.12.1
+May 22, 2026
+2 release files
+6.12.0
+May 21, 2026
+2 release files
+6.11.0
+May 9, 2026
+2 release files
+6.10.2
+Apr 15, 2026
+2 release files
+6.10.1
+Apr 14, 2026
+2 release files
+6.10.0
+Apr 10, 2026
+2 release files
+6.9.2
+Mar 23, 2026
+2 release files
+6.9.1
+Mar 17, 2026
+2 release files
+6.9.0
+Mar 15, 2026
+2 release files
+6.8.0
+Mar 9, 2026
+2 release files
+6.7.5
+Mar 2, 2026
+2 release files
+6.7.4
+Feb 27, 2026
+2 release files
+6.7.3
+Feb 24, 2026
+2 release files
+6.7.2
+Feb 22, 2026
+2 release files
+6.7.1
+Feb 17, 2026
+2 release files
+6.7.0
+Feb 8, 2026
+2 release files
+6.6.2
+Jan 26, 2026
+2 release files
+6.6.1
+Jan 25, 2026
+2 release files
+6.6.0
+Jan 9, 2026
+2 release files
+6.5.0
+Dec 21, 2025
+2 release files
+6.4.2
+Dec 14, 2025
+2 release files
+6.4.1
+Dec 7, 2025
+2 release files
+6.4.0
+Nov 23, 2025
+2 release files
+6.3.0
+Nov 16, 2025
+2 release files
+6.2.0
+Nov 9, 2025
+2 release files
+6.1.3
+Oct 22, 2025
+2 release files
+6.1.2
+Oct 19, 2025
+2 release files
+6.1.1
+Sep 28, 2025
+2 release files
+6.1.0
+Sep 21, 2025
+2 release files
+6.0.0
+Aug 11, 2025
+2 release files
+5.9.0
+Jul 27, 2025
+2 release files
+5.8.0
+Jul 13, 2025
+2 release files
+5.7.0
+Jun 29, 2025
+2 release files
+5.6.1
+Jun 22, 2025
+2 release files
+5.6.0
+Jun 1, 2025
+2 release files
+5.5.0
+May 11, 2025
+2 release files
+5.4.0
+Mar 16, 2025
+2 release files
+5.3.1
+Mar 2, 2025
+2 release files
+5.3.0
+Feb 9, 2025
+2 release files
+5.2.0
+Jan 26, 2025
+2 release files
+5.1.0
+Oct 27, 2024
+2 release files
+5.0.1
+Sep 29, 2024
+2 release files
+5.0.0
+Sep 17, 2024
+2 release files
+4.3.1
+Jul 21, 2024
+2 release files
+4.3.0
+Jul 14, 2024
+2 release files
+4.2.0
+Apr 7, 2024
+2 release files
+4.1.0
+Mar 3, 2024
+2 release files
+4.0.2
+Feb 18, 2024
+2 release files
+4.0.1
+Jan 28, 2024
+2 release files
+4.0.0
+Jan 19, 2024
+2 release files
+3.17.4
+Dec 24, 2023
+2 release files
+3.17.3
+Dec 17, 2023
+2 release files
+3.17.2
+Dec 10, 2023
+2 release files
+3.17.1
+Nov 14, 2023
+2 release files
+3.17.0
+Oct 29, 2023
+2 release files
+3.16.4
+Oct 10, 2023
+2 release files
+3.16.3
+Oct 8, 2023
+2 release files
+3.16.2
+Sep 24, 2023
+2 release files
+3.16.1
+Sep 17, 2023
+2 release files
+3.16.0
+Sep 10, 2023
+2 release files
+3.15.5
+Sep 3, 2023
+2 release files
+3.15.4
+Aug 27, 2023
+2 release files
+3.15.3
+Aug 26, 2023
+2 release files
+3.15.2
+Aug 20, 2023
+2 release files
+3.15.1
+Aug 13, 2023
+2 release files
+3.15.0
+Aug 6, 2023
+2 release files
+3.14.0
+Jul 29, 2023
+2 release files
+3.13.0
+Jul 23, 2023
+2 release files
+3.12.2
+Jul 16, 2023
+2 release files
+3.12.1
+Jul 9, 2023
+2 release files
+3.12.0
+Jul 2, 2023
+2 release files
+3.11.1
+Jun 27, 2023
+2 release files
+3.11.0
+Jun 23, 2023
+2 release files
+3.10.0
+Jun 18, 2023
+2 release files
+3.9.1
+Jun 4, 2023
+2 release files
+3.9.0
+May 21, 2023
+2 release files
+3.8.1
+Apr 23, 2023
+2 release files
+3.8.0
+Apr 16, 2023
+2 release files
+3.7.1
+Apr 9, 2023
+2 release files
+3.7.0
+Mar 26, 2023
+2 release files
+3.6.0
+Mar 18, 2023
+2 release files
+3.5.2
+Mar 12, 2023
+2 release files
+3.5.1
+Mar 5, 2023
+2 release files
+3.5.0
+Feb 26, 2023
+2 release files
+3.4.1
+Feb 12, 2023
+2 release files
+3.4.0
+Feb 5, 2023
+2 release files
+3.3.0
+Jan 22, 2023
+2 release files
+3.2.1
+Jan 8, 2023
+2 release files
+3.2.0
+Dec 31, 2022
+2 release files
+3.1.0
+Dec 23, 2022
+2 release files
+1.13
+Dec 4, 2010
+1 release file
+1.12
+Sep 2, 2008
+1 release file
+1.11
+May 9, 2008
+1 release file
+1.10
+Oct 5, 2007
+1 release file
+1.9
+Dec 15, 2006
+1 release file
+1.8
+Dec 14, 2006
+1 release file
+1.7
+Dec 11, 2006
+1 release file
+1.6
+Jun 6, 2006
+1 release file
+1.5
+Jan 29, 2006
+1 release file
+1.4
+Jan 27, 2006
+1 release file
+1.3
+Jan 23, 2006
+1.2
+Jan 23, 2006
+1.1
+Jan 18, 2006
+1.0
+Jan 18, 2006
+Anthropic, PBC
+Visionary sponsor
+Bloomberg
+Visionary sponsor
+Hudson River Trading
+Visionary sponsor
+Meta
+Visionary sponsor
+NVIDIA
+Visionary sponsor
+Microsoft
+Sustainability sponsor
+Depot
+Continuous Integration
+AWS
+Cloud computing and Security Sponsor
+Datadog
+Monitoring
+Fastly
+CDN
+Google
+Download Analytics
+Sentry
+Error logging
+StatusPage
+Status page
+"PyPI", "Python Package Index", and the blocks logos are registered
+trademarks
+of the
+Python Software Foundation
+.
+© 2026
+Python Software Foundation
+Site map
+Deployed from
+02dae5a
+

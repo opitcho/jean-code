@@ -72,6 +72,9 @@ without Docker and the image it fails, and only the `searcher` subagent works.
 - **Searches the web** and reads pages when it needs documentation or answers.
 - **Delegates to subagents**: a web researcher, and a coding agent that experiments in the sandbox while the main
   one keeps working.
+- **Research reports**: ask it to research something and it agrees a brief with you, then a research run works in
+  the background. Researchers record facts with quotes that are checked against the pages they fetched, and a lead
+  writes a report citing them, to `workspace/research/<run>/report.md`.
 - **Skills**: teach it a task with a folder in `skills/`: a `SKILL.md` (YAML front matter with a `name` and a
   `description`, then the instructions) plus any reference files. See `skills/unit-conversion/` for an example.
 - **Long sessions**: when the conversation gets too long, it summarizes the older turns and carries on.
@@ -95,8 +98,9 @@ src/
   prompts.py    system prompts and the compaction prompt
   shell.py      host and Docker shell backends
   subagents.py  starting, waiting for and managing subagent runs
+  research.py   research runs: a lead, researchers and the notebook of checked facts they share
   skills.py     skill discovery
-  tools.py      web tools
+  tools.py      web tools, and page text from HTML and PDFs
   llm.py        OpenRouter client, and tool schemas built from functions
   usage.py      cost records, logging and budgets
   config.py     paths in the repo
@@ -108,7 +112,7 @@ tests/          unit tests, with a scripted fake model: no API key needed
 docs/           the README's screenshot
 
 Created at runtime (gitignored):
-workspace/      the sandbox's /workspace
+workspace/      the sandbox's /workspace; research runs in workspace/research/
 logs/           usage.jsonl, one line per model call
 ```
 
