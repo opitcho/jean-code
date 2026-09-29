@@ -11,12 +11,14 @@ import pytest
 
 from agent import Agent
 from conftest import FakeClient, call, response, usage
+from llm import tool
 from subagents import Outcome, Profile, Run, agent_profile
 from usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 
@@ -27,6 +29,7 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+@tool
 def slow() -> str:
     """Wait a moment."""
     time.sleep(0.1)

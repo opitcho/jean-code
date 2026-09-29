@@ -7,7 +7,10 @@ import copy
 import json
 import time
 
+import httpx
 import pytest
+
+import pages
 
 # A real usage payload and its response metadata, from `.experiments/output/usage_check.txt` (turn 2).
 REAL_USAGE = {
@@ -124,3 +127,18 @@ def make_pdf(lines: list[str]) -> bytes:
     out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
     out += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
     return out + f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+
+
+@pytest.fixture
+def serve(monkeypatch):
+    """Serve `served[url] = (body, content type)` in place of the web, for `pages.read_page` and the tools on it."""
+    served: dict[str, tuple[bytes, str]] = {}
+
+    def get(url, **kwargs):
+        body, content_type = served[url]
+        return httpx.Response(200, content=body, headers={"content-type": content_type},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(pages.httpx, "get", get)
+    pages.read_page.cache_clear()  # tests reuse URLs with different bodies
+    return served

@@ -11,12 +11,14 @@ import pytest
 
 from agent import Agent
 from conftest import FakeClient, call, response, usage
+from llm import tool
 from subagents import MAX_RUNNING, MAX_WAIT, Profile, Subagents, agent_profile, agent_tree
 from usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 
@@ -36,6 +38,7 @@ def echo_profile(max_cost=1.0, max_cost_cap=None):
 
 def held_profile(release: threading.Event):
     """Calls `hold`, which blocks until `release` is set, then answers "did <task>"."""
+    @tool
     def hold() -> str:
         """Wait until released."""
         release.wait(TIMEOUT)
@@ -215,6 +218,7 @@ def test_fan_out_runs_in_parallel():
     # Catches background spawns that run one after another: each waits for the other two at the barrier.
     barrier = threading.Barrier(3, timeout=TIMEOUT)
 
+    @tool
     def meet() -> str:
         """Wait for the others."""
         barrier.wait()
@@ -329,3 +333,15 @@ def test_close_stops_every_run_and_waits_for_them():
     closer.join(TIMEOUT)
     assert not closer.is_alive() and parent.subagents.running() == 0
     assert all(run.agent.budget.cancelled for _, _, run in parent.subagents.snapshot())
+
+
+def test_a_tool_named_like_spawn_is_refused():
+    # Catches a passed tool silently replaced by the agent's own `spawn`, so the model never reaches it.
+    @tool
+    def spawn(task: str) -> str:
+        """Start something."""
+        return task
+
+    with pytest.raises(ValueError, match="named like the agent's own: spawn"):
+        Agent(client=FakeClient([]), tools={"spawn": spawn}, subagent_profiles={"echo": echo_profile()})
+

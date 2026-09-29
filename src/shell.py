@@ -24,6 +24,8 @@ import uuid
 import weakref
 from pathlib import Path
 
+from llm import tool
+
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent / "workspace"
 JOBS_DIR = ".jobs"
 MAX_OUTPUT_CHARS = 10000
@@ -59,6 +61,7 @@ class Shell:
         self.max_timeout = max_timeout
         self.jobs: dict[str, int] = {}  # job id -> how much of its log was already returned
 
+    @tool
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
         """Run a shell command in the working directory and return its exit code and output.
 
@@ -89,6 +92,7 @@ class Shell:
             return f"exit code: 124 (timed out after {timeout}s)\n{truncate_middle(output)}\n\n{TIMEOUT_HINT}"
         return format_result(code, output)
 
+    @tool
     def job(self, job_id: str, wait: int = 0, kill: bool = False) -> str:
         """Check on a background job started with bash(background=True).
 

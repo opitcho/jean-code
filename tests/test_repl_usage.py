@@ -6,10 +6,12 @@ Each test names the bug it would catch.
 
 from agent import Agent
 from conftest import FakeClient, call, response, usage
+from llm import tool
 from repl import print_cost, repl, run_and_print
 from usage import COST_UNKNOWN
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 

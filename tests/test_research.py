@@ -1,5 +1,5 @@
 """Tests for research runs: the notebook's tools, the rendered report, and how runs end. No network and no model:
-`tools.read_page` serves fixed pages, and a client scripted per task plays the lead and each researcher.
+`pages.read_page` serves fixed pages, and a client scripted per task plays the lead and each researcher.
 
 Each test names the bug it would catch.
 """
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import tools
 from conftest import call, response, usage
+from pages import html_text
 from research import (Notebook, check_quote, read_facts, render_report, research_lead, research_profile,
                       research_result, researcher_profile, summary_of)
 from subagents import Run
@@ -36,7 +36,7 @@ def pages(monkeypatch):
         page = served[url]
         return page() if callable(page) else page
 
-    monkeypatch.setattr(tools, "read_page", read_page)
+    monkeypatch.setattr("pages.read_page", read_page)
     return served
 
 
@@ -159,6 +159,80 @@ def test_a_quote_verifies_across_the_spaces_html_extraction_adds():
     # Catches correct quotes failing where HTML extraction split a word or code tokens apart, as on a live run.
     page = 'print(\n page. extract_text (extraction_mode = "layout"))\nPyMuPD F and pypdfium generally outperformed others'
     assert check_quote('print(page.extract_text(extraction_mode="layout")) PyMuPDF and pypdfium generally', page) is None
+
+
+# Quotes that failed on a live run (facts F75, F14, F15, F16, F85, F106, F101, F32, F86, F77, F141) though the
+# sentence was on the page. The .txt fixtures are the text read_page saved; the .html ones are the pages' raw HTML.
+@pytest.mark.parametrize("fixture, quote", [
+    ("arxiv_2508_05635_excerpt.txt",
+     "At its core lies GE-Base, an instruction-conditioned, multi-view video diffusion model trained on approximately "
+     "3,000 hours of video-language paired data spanning over one million real-world robotic manipulation episodes "
+     "from the AgiBot-World-Beta dataset."),
+    ("arxiv_2511_02097_excerpt.txt",
+     "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
+     "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), latent dynamics modeling, and video generation "
+     "paradigms, each targeting distinct representational granularities and predictive mechanisms."),
+    ("arxiv_2511_02097_excerpt.txt",
+     "A central point of contention concerns its generative capability, as illustrated by NVIDIA, who define world "
+     "models as systems that learn environmental dynamics from multimodal data and generate videos capturing spatial "
+     "and physical properties."),
+    ("arxiv_2511_02097_excerpt.txt",
+     "Indeed, many recent world models adopt video generation as their core mechanism, enabling the prediction of "
+     "future states encompassing observations, actions, and environmental changes."),
+    ("arxiv_2411_14499_excerpt.txt",
+     "A key limitation is its causal reasoning ability (, ), restricting it to passively generating sequences without "
+     "actively predicting how actions might alter events."),
+    ("arxiv_2502_20694_excerpt.txt",
+     "Previous video generation evaluation mainly uses single-number metric such as Frechet Video Distance (FVD) and "
+     "CLIPSIM."),
+])
+def test_a_quote_verifies_without_the_citations_the_page_has(fixture, quote):
+    # Catches correct quotes failing because the researcher left out "[81]" or "(Bu et al., 2025a)", or kept only
+    # the brackets of a citation whose numbers the page split onto their own lines.
+    assert check_quote(quote, (FIXTURES / fixture).read_text()) is None
+
+
+def test_a_quote_that_keeps_the_citation_still_verifies():
+    # Catches citations stripped from the page only, which would fail researchers who quote them.
+    page = (FIXTURES / "arxiv_2511_02097_excerpt.txt").read_text()
+    assert check_quote("as illustrated by NVIDIA [81], who define world models as systems that learn", page) is None
+
+
+def test_a_quote_verifies_across_a_pdf_line_break_hyphen():
+    # Catches "no language encoder" failing on pypdf's "no lan-\nguage encoder".
+    quote = ("On LIBERO, a 0.09B probe with no language encoder scores at or near reported SOTA, and most reported "
+             "gains are not provably statistically significant.")
+    assert check_quote(quote, (FIXTURES / "arxiv_2606_04233_pdf_excerpt.txt").read_text()) is None
+
+
+@pytest.mark.parametrize("fixture, quote", [
+    ("arxiv_2505_12705_excerpt.html",
+     "In simulation, we apply DreamGen to the RoboCasa benchmark [20], scaling synthetic data up to 333× relative to "
+     "the original human demonstrations. This yields log-linear improvements in policy performance as the number of "
+     "neural trajectories increases (Figure 4)."),
+    ("arxiv_2503_06800_excerpt.html",
+     "Our findings reveal major shortcomings, with even the best model achieving only 22% joint performance (i.e., "
+     "high semantic and physical commonsense adherence) on the hard subset of VideoPhy-2."),
+    ("openai_rubiks_cube_excerpt.html",
+     "Our robot still hasn’t perfected its technique though, as it solves the Rubik’s Cube 60% of the time (and only "
+     "20% of the time for a maximally difficult scramble)."),
+])
+def test_a_quote_verifies_against_html_math_and_hidden_link_text(fixture, quote):
+    # Catches arXiv math read as "333 × \times" (the TeX source after the symbol), and OpenAI links read as
+    # "difficult⁠(opens in a new window)": text no reader of the page sees.
+    assert check_quote(quote, html_text((FIXTURES / fixture).read_text())) is None
+
+
+@pytest.mark.parametrize("quote", [
+    # A word changed between citations.
+    "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
+    "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), explicit dynamics modeling",
+    # Two passages joined with "...": what the researcher prompt forbids.
+    "A central point of contention concerns its generative capability, ... who define world models as systems",
+])
+def test_ignoring_citations_still_fails_a_changed_or_cut_quote(quote):
+    # Catches citation stripping loose enough to verify a quote the page doesn't say.
+    assert check_quote(quote, (FIXTURES / "arxiv_2511_02097_excerpt.txt").read_text()) is not None
 
 
 def test_a_short_quote_is_recorded_unverified(tmp_path, pages):

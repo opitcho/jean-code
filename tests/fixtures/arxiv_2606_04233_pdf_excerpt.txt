@@ -1,0 +1,11 @@
+statistical significance, creeping overfitting, and data-source dependence. We pro-
+pose one diagnostic per failure mode. We audit LIBERO, CALVIN, SimplerEnv,
+RoboCasa, and RoboTwin 2.0 under these diagnostics. LIBERO and CALVIN fail
+multiple diagnostics. RoboCasa and RoboTwin 2.0 fail fewer, despite appearing
+far less often in recent progress claims. On LIBERO, a 0.09B probe with no lan-
+guage encoder scores at or near reported SOTA, and most reported gains are not
+provably statistically significant. On CALVIN, randomizing block poses within
+the training range drops performance for every tested policy. We release the four
+diagnostics with reference implementations for authors and reviewers to apply be-
+fore treating a benchmark score as evidence of progress. Code and artifacts are
+available at ripl.github.io/manipulation benchmark audit.

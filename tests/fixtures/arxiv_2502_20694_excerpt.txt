@@ -1,0 +1,17 @@
+,
+62
+,
+28
+]
+. In this paper, we focus on evaluation of video models that take in text and image conditions.
+Evaluation of video generation models.
+Previous video generation evaluation mainly uses single-number metric such as Frechet Video Distance (FVD)
+[
+46
+]
+and CLIPSIM
+[
+43
+]
+.
+Huang et al. [24]

@@ -10,6 +10,7 @@ import pytest
 
 from agent import Agent
 from conftest import FakeClient, call, response, usage
+from llm import tool
 from repl import print_cost
 from test_compaction import compacted_session
 from usage import Budget, breakdown_lines, record
@@ -21,6 +22,7 @@ def entry(cost=0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:
             "id": "gen-1", "provider": "DeepSeek", "model": "m", "created": 1789748403}
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 

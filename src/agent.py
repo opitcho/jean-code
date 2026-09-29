@@ -6,7 +6,7 @@ from typing import Callable
 from pydantic import validate_call
 
 import skills
-from llm import ChatClient, openrouter, tool_schema
+from llm import ChatClient, is_tool, openrouter, tool, tool_schema
 from prompts import (COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE,
                      SUMMARY_TAG)
 from subagents import Profile, Subagents, result_block, subagents_prompt
@@ -52,8 +52,8 @@ class Agent:
     The transcript in `self.messages` is in the OpenAI chat format. It stores each model reply
     as the API returned it and sends it back unchanged: one assistant message (content, plus
     reasoning, reasoning_details and tool calls when present), then one tool message per call,
-    matched to its call by `tool_call_id`. Tools are typed, documented functions passed as `tools`;
-    their schemas are built from the signature and docstring.
+    matched to its call by `tool_call_id`. Tools are typed, documented functions marked `@tool` (llm.py), passed as
+    `tools`; their schemas are built from the signature and docstring.
 
     A UI shows a turn by reading `messages` as it grows; the agent knows nothing about UIs.
 
@@ -156,6 +156,7 @@ class Agent:
         self._interrupt = threading.Event()
         # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
         self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
+        self._all_tools()  # an unmarked or clashing tool fails here, where the agent is built, not at its first request
 
     @property
     def awaiting_user(self) -> bool:
@@ -363,6 +364,7 @@ class Agent:
         record["status"] = "compacted"
         return record["status"]
 
+    @tool
     def load_skill(self, name: str) -> str:
         """Load a skill's instructions. Call this before starting a task that matches a skill.
 
@@ -379,6 +381,7 @@ class Agent:
         self.loaded_skills.append(name)
         return body
 
+    @tool
     def read_skill_file(self, name: str, path: str) -> str:
         """Read a file bundled with a skill, such as a reference document or a script.
 
@@ -436,13 +439,24 @@ class Agent:
         of the prompt, so any change would invalidate the cache.
         """
         if self._registered is None:
-            tools = dict(self.tool_map)
-            if self.skills:
-                tools |= {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
-            if self.subagents:
-                tools |= {"spawn": self.subagents.spawn, "subagent": self.subagents.subagent}
-            self._registered = {name: (validate_call(fn), tool_schema(name, fn)) for name, fn in tools.items()}
+            self._registered = {name: (validate_call(fn), tool_schema(name, fn))
+                                for name, fn in self._all_tools().items()}
         return self._registered
+
+    def _all_tools(self) -> dict[str, Callable]:
+        """`tool_map` plus the agent's own tools. Raises on a tool not marked `@tool`, and on one named like one of
+        the agent's, which would otherwise silently replace it."""
+        own: dict[str, Callable] = {}
+        if self.skills:
+            own |= {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
+        if self.subagents:
+            own |= {"spawn": self.subagents.spawn, "subagent": self.subagents.subagent}
+        if clash := sorted(self.tool_map.keys() & own.keys()):
+            raise ValueError(f"tools named like the agent's own: {', '.join(clash)}")
+        if unmarked := [name for name, fn in self.tool_map.items() if not is_tool(fn)]:
+            raise ValueError(f"tools not marked @tool: {', '.join(unmarked)}; mark them, so it's clear where they're "
+                             "defined that a model sees their name, parameters and docstring")
+        return self.tool_map | own
 
     def _build_request(self) -> dict:
         """The chat request for the current transcript."""

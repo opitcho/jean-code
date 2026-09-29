@@ -9,8 +9,10 @@ import pytest
 import agent as agent_module
 from agent import Agent, estimate_tokens
 from conftest import FakeClient, call, response, usage
+from llm import tool
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 

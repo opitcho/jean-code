@@ -9,9 +9,10 @@ import pytest
 import llm
 from agent import Agent
 from conftest import FakeClient, call, response, usage
-from llm import ChatClient
+from llm import ChatClient, tool
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 
@@ -26,6 +27,7 @@ def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
     client = FakeClient(responses)
     ran: list[dict] = []
 
+    @tool
     def rm(path: str) -> str:
         """Remove a file.
 

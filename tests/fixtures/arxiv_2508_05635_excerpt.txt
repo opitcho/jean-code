@@ -1,0 +1,18 @@
+specific tuning; the resulting friction could potentially slow down iteration, obscure failure modes, and impede reproducibility at scale. These fragmented stages underscore the absence of an integrated framework capable of learning and evaluating manipulation policies in a unified manner.
+To this end, we introduce Genie Envisioner (GE), a unified platform that collapses robot sensing, policy learning, and evaluation into a single closed-loop video generative world model, as illustrated in Figure
+1
+. At its core lies
+GE
+-
+Base
+, an instruction-conditioned, multi-view video diffusion model trained on approximately 3,000 hours of video-language paired data spanning over one million real-world robotic manipulation episodes from the AgiBot
+-
+World
+-
+Beta dataset
+(
+Bu et al., 2025a
+)
+. Conditioned on robot’s visual observations, GE
+-
+Base autoregressively generates video chunks that capture the temporal evolution of manipulation behaviors following high-level instructions.

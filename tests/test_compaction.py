@@ -14,9 +14,11 @@ import pytest
 import agent as agent_module
 from agent import Agent, estimate_tokens, is_synthetic
 from conftest import FakeClient, call, response, usage
+from llm import tool
 from prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
 
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers.
 
@@ -27,6 +29,7 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+@tool
 def rm(path: str) -> str:
     """Remove a file.
 

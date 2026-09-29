@@ -113,3 +113,15 @@ def tool_schema(name: str, fn: Callable) -> dict:
     parameters = create_model(f"{name}_args", **fields).model_json_schema()
     return {"type": "function", "function": {"name": name, "description": description,
                                              "parameters": drop_titles(parameters)}}
+
+
+def tool(fn: Callable) -> Callable:
+    """Mark `fn` as a tool: a function a model calls. Its name, parameters and docstring are what the model sees, so
+    changing any of them changes the model's API. `Agent` refuses tools without the mark."""
+    fn.is_tool = True
+    return fn
+
+
+def is_tool(fn: Callable) -> bool:
+    """Whether `fn` was marked with `@tool`. A bound method has its function's mark."""
+    return getattr(fn, "is_tool", False) is True

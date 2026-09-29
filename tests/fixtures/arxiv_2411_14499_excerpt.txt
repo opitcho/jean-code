@@ -1,0 +1,15 @@
+. This concept builds on the broader idea of world models, which strive to capture the dynamics of an environment and enable machines to predict how the world will evolve over time. In the case of a video world model, the focus is on generating sequences of visual frames that represent these evolving states.
+Sora
+(
+187
+)
+is a large-scale video generation model designed for high-quality, temporally consistent video sequences up to one minute long, based on various multimodal inputs. It leverages neural network architectures to produce visually coherent simulations that often align with real-world physical principles, like light reflection or melting. These capabilities suggest Sora’s potential as a world simulator, predicting future states based on initial conditions and parameters. However, despite its impressive video generation, Sora has significant limitations in fully understanding and simulating the external world. A key limitation is its causal reasoning ability
+(
+338
+,
+35
+)
+, restricting it to passively generating sequences without actively predicting how actions might alter events. Furthermore, Sora struggles to consistently reproduce correct physical laws
+(
+126
+)

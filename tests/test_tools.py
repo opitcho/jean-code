@@ -1,29 +1,11 @@
-"""Tests for the page tools: `read_page` (HTML, PDF, other text) and `fetch_page`'s windows. No network: httpx.get
+"""Tests for `fetch_page`: its windows, and that paging through a page downloads it once. No network: httpx.get
 is replaced.
 
 Each test names the bug it would catch.
 """
 
-import httpx
-import pytest
-
-import tools
-from conftest import make_pdf
-from tools import fetch_page, read_page
-
-
-@pytest.fixture
-def serve(monkeypatch):
-    """Serve `pages[url] = (body, content type)` in place of the web."""
-    pages: dict[str, tuple[bytes, str]] = {}
-
-    def get(url, **kwargs):
-        body, content_type = pages[url]
-        return httpx.Response(200, content=body, headers={"content-type": content_type},
-                              request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(tools.httpx, "get", get)
-    return pages
+import pages
+from tools import fetch_page
 
 
 def test_fetch_page_returns_the_window_from_start_and_says_where_it_is(serve):
@@ -43,20 +25,11 @@ def test_a_page_that_fits_is_returned_whole_and_a_start_past_the_end_says_so(ser
     assert fetch_page("https://x.test/a", start=50) == "[nothing at start=10: the page has 10 characters]"
 
 
-def test_html_gives_the_title_and_visible_text(serve):
-    # Catches the split into read_page losing the HTML cleanup.
-    html = b"<html><head><title>T</title><script>var x;</script></head><body><nav>menu</nav><p>Body text</p></body></html>"
-    serve["https://x.test/h"] = (html, "text/html; charset=utf-8")
-    text = read_page("https://x.test/h")
-    assert text.startswith("T\n\n") and "Body text" in text
-    assert "var x" not in text and "menu" not in text
-
-
-def test_a_pdf_gives_its_text_by_content_type_or_by_its_first_bytes(serve):
-    # Catches a PDF returned as binary noise, as fetch_page did before pypdf.
-    pdf = make_pdf(["Hello from a PDF.", "Second line here."])
-    serve["https://x.test/p.pdf"] = (pdf, "application/pdf")
-    serve["https://x.test/download"] = (pdf, "application/octet-stream")
-    for url in ("https://x.test/p.pdf", "https://x.test/download"):
-        text = read_page(url)
-        assert "Hello from a PDF." in text and "Second line here." in text
+def test_reading_a_page_window_by_window_downloads_it_once(serve, monkeypatch):
+    # Catches every fetch_page call downloading the whole page again.
+    serve["https://x.test/a"] = (b"0123456789" * 3, "text/plain")
+    get, calls = pages.httpx.get, []
+    monkeypatch.setattr(pages.httpx, "get", lambda url, **kwargs: calls.append(url) or get(url, **kwargs))
+    for start in (0, 10, 20):
+        fetch_page("https://x.test/a", max_chars=10, start=start)
+    assert calls == ["https://x.test/a"]

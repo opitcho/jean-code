@@ -12,7 +12,9 @@ from typing import Annotated, Any, Literal, Optional, TypedDict
 import pytest
 from pydantic import BaseModel, Field
 
-from llm import drop_titles, parse_docstring, tool_schema
+from agent import Agent
+from conftest import FakeClient
+from llm import drop_titles, is_tool, parse_docstring, tool, tool_schema
 
 
 # ---------------------------------------------------------------- parse_docstring
@@ -497,3 +499,31 @@ def test_param_starting_with_underscore():
     def f(_hidden: int, visible: int): ...
 
     assert set(params(f)["properties"]) == {"_hidden", "visible"}
+
+
+# ---------------------------------------------------------------- @tool
+
+
+def test_a_method_keeps_its_tool_mark_once_bound():
+    # Catches the mark lost on bound methods, which would make the agent refuse `shell.bash` and `notebook.facts`.
+    class Box:
+        @tool
+        def open(self) -> str:
+            """Open the box."""
+            return "open"
+
+        def close(self) -> str:
+            return "closed"
+
+    box = Box()
+    assert is_tool(box.open) and not is_tool(box.close)
+
+
+def test_an_agent_refuses_a_tool_not_marked_tool():
+    # Catches a helper passed as a tool by mistake, whose docstring and parameters the model would then see.
+    def helper(x: int) -> int:
+        return x
+
+    with pytest.raises(ValueError, match="not marked @tool: helper"):
+        Agent(client=FakeClient([]), tools={"helper": helper})
+

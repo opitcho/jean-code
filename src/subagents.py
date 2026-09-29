@@ -19,6 +19,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Literal
 
+from llm import tool
 from usage import Budget
 
 if TYPE_CHECKING:
@@ -239,6 +240,7 @@ class Subagents:
 
     # ---------------------------------------------------------------- tools
 
+    @tool
     def spawn(self, profile: str, task: str, background: bool = False, max_cost: float | None = None) -> str:
         """Start a new subagent: a separate agent that works on `task` and hands back one text result.
 
@@ -292,6 +294,7 @@ class Subagents:
             run.cancel()
         return result_block(id, profile, run.outcome())
 
+    @tool
     def subagent(self, run_id: int, wait: int = 0, cancel: bool = False) -> str:
         """Check on a subagent you started with spawn: how far it has got, or its result once it has finished.
 

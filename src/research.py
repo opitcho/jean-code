@@ -25,10 +25,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+import pages
 import tools
 from agent import Agent, DEFAULT_MODEL
 from config import RESEARCH_DIR
-from llm import ChatClient
+from llm import ChatClient, tool
 from prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
 from subagents import Profile, Run, agent_tree, last_reply
 from usage import Budget
@@ -47,8 +48,11 @@ RESEARCHER_DESCRIPTION = (
     "run's notebook; give it the sub-question, what's in and out of scope, what the others cover and what facts "
     "to return")
 
-# Curly quotes → straight, dashes → "-". NFKC already turns non-breaking spaces into spaces and "…" into "...".
-PUNCTUATION = str.maketrans({c: "'" for c in "‘’‚‛′"} | {c: '"' for c in "“”„‟″"} | {c: "-" for c in "‐‑‒–—―−"})
+# Curly quotes → straight, hyphens and dashes dropped. NFKC already turns non-breaking spaces into spaces and "…"
+# into "...".
+PUNCTUATION = str.maketrans({c: "'" for c in "‘’‚‛′"} | {c: '"' for c in "“”„‟″"} | {c: None for c in "-‐‑‒–—―−"})
+# In-text citations: "[81]", "[5, 6, 7]", "(338, 35)" and "(Bu et al., 2025a)". Researchers leave them out of quotes.
+REFERENCE_MARK = re.compile(r"\[[\d\s,;]*\]|\([\d\s,;]*\)|\(\s*[A-Z][^()]*?\b(?:1[89]|20)\d\d[a-z]?\s*\)")
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,7 @@ class Notebook:
     def tools_for(self, by: str) -> dict[str, Callable]:
         """The researcher tools, bound to this folder and to `by`, the researcher's budget path."""
 
+        @tool
         def fetch_page(url: str, max_chars: int = 8000, start: int = 0) -> str:
             """Fetch a web page or PDF and return part of its readable text. What you read here is what quotes are
             checked against.
@@ -117,6 +122,7 @@ class Notebook:
             """
             return self._fetch_page(by, url, max_chars, start)
 
+        @tool
         def record_fact(claim: str, url: str, quote: str, date: str | None = None) -> str:
             """Record one fact for the report, with the passage of a fetched page that supports it.
 
@@ -135,8 +141,8 @@ class Notebook:
         return {"fetch_page": fetch_page, "record_fact": record_fact}
 
     def _fetch_page(self, by: str, url: str, max_chars: int, start: int) -> str:
-        text = tools.read_page(url)  # the download, outside the lock
-        start, end = tools.window(text, start, max_chars)
+        text = pages.read_page(url)  # the download, outside the lock
+        start, end = pages.window(text, start, max_chars)
         with self._lock:
             index = self._index()
             entry = index.setdefault(page_key(url), {"file": f"P{len(index) + 1}.txt", "length": 0,
@@ -149,7 +155,7 @@ class Notebook:
             if by not in entry["by"]:
                 entry["by"].append(by)
             write_json(self.dir / "pages" / "index.json", index)
-        return tools.window_text(text, start, end)
+        return pages.window_text(text, start, end)
 
     def _record_fact(self, by: str, claim: str, url: str, quote: str, date: str | None) -> str:
         entry = self._index().get(page_key(url))
@@ -171,6 +177,7 @@ class Notebook:
 
     # ---------------------------------------------------------------- lead tools
 
+    @tool
     def facts(self, ids: list[str] | None = None, unused_only: bool = False) -> str:
         """List the facts the researchers have recorded so far, with their quotes and sources.
 
@@ -191,6 +198,7 @@ class Notebook:
             facts = [f for f in facts if f.id not in cited]
         return format_facts(facts) or "No facts match."
 
+    @tool
     def write_section(self, title: str, content: str) -> str:
         """Write one section of the report's draft, replacing the section with the same title if there is one.
 
@@ -229,6 +237,7 @@ class Notebook:
         position = [t.casefold() for t, _ in sections].index(title.casefold()) + 1
         return f"Saved '{title}' ({position} of {len(sections)} sections). {' '.join(notes)}"
 
+    @tool
     def read_draft(self) -> str:
         """Read the report's draft as it is now: every section written so far.
 
@@ -366,10 +375,15 @@ def page_key(url: str) -> str:
 
 
 def normalize(text: str) -> str:
-    """Text as quotes are compared: NFKC, straight quotes, "-" for dashes, case-folded, and no whitespace at all.
-    Without this, correct quotes from real pages fail on typography, and on how HTML extraction splits inline
-    elements onto their own lines ("splitting\n, merging", "page. extract_text (", "PyMuPD F")."""
-    return "".join(unicodedata.normalize("NFKC", text).translate(PUNCTUATION).casefold().split())
+    """Text as quotes are compared: NFKC, straight quotes, case-folded, and without whitespace, hyphens, dashes,
+    invisible format characters (U+2060 word joiners, soft hyphens) or in-text citations. Without this, correct
+    quotes from real pages fail on typography, on how HTML extraction splits inline elements onto their own lines
+    ("splitting\n, merging", "page. extract_text (", "PyMuPD F"), on PDF line breaks inside words ("lan-\nguage"), and
+    on the citations researchers leave out ("the AgiBot-World-Beta dataset (Bu et al., 2025a)."). Stripping from both
+    sides keeps quotes that do include a citation verifying too."""
+    text = unicodedata.normalize("NFKC", text).translate(PUNCTUATION)
+    text = REFERENCE_MARK.sub("", "".join(c for c in text if unicodedata.category(c) != "Cf"))
+    return "".join(text.casefold().split())
 
 
 def check_quote(quote: str, page: str) -> str | None:

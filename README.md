@@ -93,7 +93,8 @@ src/
   subagents.py  starting, waiting for and managing subagent runs
   research.py   research runs: a lead, researchers and the notebook of checked facts they share
   skills.py     skill discovery
-  tools.py      web tools, and page text from HTML and PDFs
+  tools.py      the web tools agents call: search, and fetching a page a window at a time
+  pages.py      page text from HTML and PDFs, cached per URL, and the windows cut from it
   llm.py        OpenRouter client, and tool schemas built from functions
   usage.py      cost records, logging and budgets
   config.py     paths in the repo
