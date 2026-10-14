@@ -106,7 +106,7 @@ def test_profile_limits_are_checked():
 def test_a_subagent_that_would_need_approval_is_refused():
     # Catches a run that stops at its first `bash` call waiting for an approval nobody can give.
     with pytest.raises(ValueError, match="approval: add"):
-        Run.start(make_agent([], needs_approval={"add"}), "go")
+        Run.start(make_agent([], needs_approval={"add"}, approve=lambda name, arguments: None), "go")
 
 
 # ---------------------------------------------------------------- stopped, not done
@@ -124,21 +124,22 @@ def test_an_answer_that_spends_the_last_of_the_budget_is_done():
     assert run.outcome(TIMEOUT) == done("the answer")
 
 
-def test_unknown_cost_is_stopped():
-    run = Run.start(make_agent([response(tool_calls=[call("add", a=1, b=2)], no_usage=True)]), "go")
+def test_unknown_cost_is_failed():
+    # Catches a run going on after a call of unknown cost, which its budget can't count.
+    run = Run.start(make_agent([response(tool_calls=[call("add", a=1, b=2)], no_usage=True), response("never")]), "go")
     outcome = run.outcome(TIMEOUT)
-    assert outcome.status == "stopped" and outcome.reason.startswith("a call's cost was unknown")
+    assert outcome.status == "failed" and "reported no cost" in outcome.text
 
 
 def test_a_full_context_is_stopped():
     outcome = Run.start(make_agent([], context_window=10, compact_at=None), "go").outcome(TIMEOUT)
-    assert outcome.status == "stopped" and outcome.reason.startswith("the context is nearly full")
+    assert (outcome.status, outcome.reason) == ("stopped", "context full")
 
 
 def test_running_out_of_tool_rounds_is_stopped():
     # Catches the tool-round limit, which never interrupts, reported as an answer.
     run = Run.start(make_agent([tool_reply(), tool_reply()], max_tool_rounds=1), "go")
-    assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "out of tool rounds (1)")
+    assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "out of tool rounds")
 
 
 # ---------------------------------------------------------------- failed

@@ -5,9 +5,7 @@ Two layers. The Python API is for code: a `Profile` is the spec of one kind of s
 is a future. `Subagents` is the boundary with a model: the `spawn` and `subagent` tools, which give runs small
 ids and turn results into text, plus the methods the agent and UIs use to manage those runs.
 
-A run ends with an `Outcome`: "done" with the text its agent last replied (or a profile's report); "stopped" when
-it ended before its agent answered (budget spent, cancelled, context full, cost unknown, out of tool rounds), with
-why and what it last said, so a mid-task remark is never mistaken for an answer; or "failed" with the error.
+A run ends with an `Outcome`: "done", "stopped" or "failed".
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from llm import tool
 from usage import Budget
 
 if TYPE_CHECKING:
-    from agent import Agent
+    from agent import Agent, TurnEnd
 
 MAX_RUNNING = 8  # runs per parent at once: bounds the overshoot past a limit, and parallel requests to the provider
 MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`
@@ -48,6 +46,7 @@ class Profile:
 
     @property
     def cap(self) -> float:
+        """The most a caller may give one run."""
         return self.max_cost if self.max_cost_cap is None else self.max_cost_cap
 
 
@@ -71,7 +70,7 @@ class Outcome:
 
     status: Literal["done", "stopped", "failed"]
     text: str
-    reason: str | None = None  # why it stopped
+    reason: TurnEnd | None = None  # why it stopped
 
 
 @dataclass(frozen=True, eq=False)
@@ -93,7 +92,7 @@ class Run:
         `report`, if given, produces the text to hand back instead of the agent's last reply: for profiles whose
         real output is somewhere else, such as a notebook the agent wrote to.
         """
-        if agent.needs_approval:  # nobody can approve a subagent's calls: refuse rather than stop at the first one
+        if agent.needs_approval:  # nobody can approve a subagent's calls: refuse rather than wait at the first one
             raise ValueError(f"a subagent can't have tools that need approval: {', '.join(sorted(agent.needs_approval))}")
         run = cls(agent, task)
         # A daemon thread, like the REPL's worker: close() is the orderly stop, and a crashed process doesn't hang on it.
@@ -118,8 +117,9 @@ class Run:
         self._future.set_result(outcome)
 
     def _finish(self, report: Callable[[], str] | None) -> Outcome:
+        """Run the agent's turn and say how it ended, with the report's text in place of its last reply if given."""
         try:
-            self.agent.run_turn(self.task)
+            end = self.agent.run_turn(self.task)
         except BaseException as e:
             if report is None:
                 raise
@@ -129,11 +129,10 @@ class Run:
                 return Outcome("failed", f"{error}\n\n{report()}")
             except BaseException as r:
                 return Outcome("failed", f"{error}\n\nThe report failed too: {type(r).__name__}: {r}")
-        reason = why_stopped(self.agent)  # read now: a cancel() after the turn mustn't relabel a finished run
         text = report() if report else last_reply(self.agent)
-        if reason:
-            return Outcome("stopped", text or "(no reply)", reason)
-        return Outcome("done", text or "(the subagent's final reply was empty)")
+        if end == "answered":
+            return Outcome("done", text or "(the subagent's final reply was empty)")
+        return Outcome("stopped", text or "(no reply)", end)
 
     @property
     def path(self) -> str:
@@ -155,22 +154,6 @@ class Run:
     def cancel(self) -> None:
         """No more model calls in this run or below it: it stops after the call in flight. Can't be lost or undone."""
         self.agent.budget.cancel()
-
-
-def why_stopped(agent: Agent) -> str | None:
-    """Why the agent's turn ended before it answered, or None when its last message is an answer."""
-    last = agent.messages[-1]
-    if last["role"] == "assistant" and not last.get("tool_calls"):
-        return None  # it answered, even if that call spent the last of the budget
-    if agent.budget.cancelled:
-        return "cancelled"
-    if agent.over_budget:
-        return "budget spent"
-    if agent.last_cost_unknown:
-        return "a call's cost was unknown, so the budget couldn't be enforced"
-    if agent.stop_reason:
-        return agent.stop_reason  # e.g. the context is nearly full
-    return f"out of tool rounds ({agent.max_tool_rounds})"
 
 
 def last_reply(agent: Agent) -> str | None:
@@ -224,8 +207,7 @@ class Subagents:
     `interrupted` event is the agent's own); background runs keep going.
 
     A background result is delivered once: a finished background run is pending until `claim` or `subagent`
-    marks it delivered. Pending is derived from the runs' futures, not recorded by a callback, since a future
-    wakes its waiters before it runs its callbacks: a result read in between would be delivered twice.
+    marks it delivered.
     """
 
     def __init__(self, profiles: dict[str, Profile], budget: Budget, interrupted: threading.Event):
@@ -358,6 +340,8 @@ class Subagents:
 
     def _pending_ids(self) -> list[int]:
         """Finished background runs not yet delivered, in id order. The caller holds the lock."""
+        # Derived from the runs' futures, not recorded by a callback: a future wakes its waiters before it runs its
+        # callbacks, so a result read in between would be delivered twice.
         return sorted(i for i in self._background - self._delivered if self.runs[i][1].done())
 
     def running(self) -> int:

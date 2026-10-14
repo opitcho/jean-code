@@ -48,6 +48,11 @@ RESEARCHER_DESCRIPTION = (
     "run's notebook; give it the sub-question, what's in and out of scope, what the others cover and what facts "
     "to return")
 
+# What `normalize` removes. Without it, correct quotes from real pages fail on typography, on how HTML extraction
+# splits inline elements onto their own lines ("splitting\n, merging", "page. extract_text (", "PyMuPD F"), on PDF
+# line breaks inside words ("lan-\nguage"), and on the citations researchers leave out ("the AgiBot-World-Beta
+# dataset (Bu et al., 2025a).").
+#
 # Curly quotes → straight, hyphens and dashes dropped. NFKC already turns non-breaking spaces into spaces and "…"
 # into "...".
 PUNCTUATION = str.maketrans({c: "'" for c in "‘’‚‛′"} | {c: '"' for c in "“”„‟″"} | {c: None for c in "-‐‑‒–—―−"})
@@ -76,7 +81,7 @@ class Notebook:
 
         run.json      {"path", "model", "started"}
         brief.md      the task, as given
-        pages/        P1.txt, …: the parts of each fetched page that a model saw
+        pages/        P1.txt, …: the parts of each fetched page that a model saw, in page order
           index.json  {page key: {"file", "length", "windows": [[start, end]], "by": [paths]}}
         facts.jsonl   one Fact per line, only ever appended to
         draft.md      the lead's sections, as "## Title" blocks, in the order first written
@@ -84,8 +89,8 @@ class Notebook:
         agents/       one <path>.json per agent (messages and usage), budget.json: written at the end of the run
 
     Thread-safe: one lock guards ids, facts.jsonl, the page files, index.json and draft.md. It's never held during a
-    download. index.json and draft.md are replaced whole (temp file, then os.replace), so a reader never sees half a
-    write.
+    download. The page files, index.json and draft.md are replaced whole (temp file, then os.replace), so a reader
+    never sees half a write.
     """
 
     def __init__(self, dir: str | Path):
@@ -149,9 +154,8 @@ class Notebook:
                                                      "windows": [], "by": []})
             entry["length"] = len(text)
             if end > start and [start, end] not in entry["windows"]:
-                with open(self.dir / "pages" / entry["file"], "a") as f:
-                    f.write(text[start:end] + "\n\n")
                 entry["windows"].append([start, end])
+                write_text(self.dir / "pages" / entry["file"], seen_text(text, entry["windows"]))
             if by not in entry["by"]:
                 entry["by"].append(by)
             write_json(self.dir / "pages" / "index.json", index)
@@ -369,6 +373,19 @@ def cited_ids(markdown: str) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def seen_text(text: str, windows: list[list[int]]) -> str:
+    """The parts of a page's `text` that `windows` cover, in page order whatever order they were fetched in, so a
+    quote across a window boundary verifies. Overlapping or touching windows merge into one stretch; stretches with
+    unread text between them are split by "[…]", which `normalize` keeps, so no quote verifies across the gap."""
+    stretches: list[list[int]] = []
+    for start, end in sorted(windows):
+        if stretches and start <= stretches[-1][1]:
+            stretches[-1][1] = max(stretches[-1][1], end)
+        else:
+            stretches.append([start, end])
+    return "\n\n[…]\n\n".join(text[start:end] for start, end in stretches) + "\n"
+
+
 def page_key(url: str) -> str:
     """The URL a page is filed under: no #fragment and no trailing /, so both spellings find the same page."""
     return url.strip().split("#", 1)[0].rstrip("/")
@@ -376,11 +393,8 @@ def page_key(url: str) -> str:
 
 def normalize(text: str) -> str:
     """Text as quotes are compared: NFKC, straight quotes, case-folded, and without whitespace, hyphens, dashes,
-    invisible format characters (U+2060 word joiners, soft hyphens) or in-text citations. Without this, correct
-    quotes from real pages fail on typography, on how HTML extraction splits inline elements onto their own lines
-    ("splitting\n, merging", "page. extract_text (", "PyMuPD F"), on PDF line breaks inside words ("lan-\nguage"), and
-    on the citations researchers leave out ("the AgiBot-World-Beta dataset (Bu et al., 2025a)."). Stripping from both
-    sides keeps quotes that do include a citation verifying too."""
+    invisible format characters (U+2060 word joiners, soft hyphens) or in-text citations. The quote and the page
+    both go through it, so a quote that does include a citation verifies too."""
     text = unicodedata.normalize("NFKC", text).translate(PUNCTUATION)
     text = REFERENCE_MARK.sub("", "".join(c for c in text if unicodedata.category(c) != "Cf"))
     return "".join(text.casefold().split())
@@ -417,6 +431,7 @@ def write_text(path: Path, text: str) -> None:
 
 def researcher(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
                client: ChatClient | None = None) -> Agent:
+    """A researcher: web search, plus the notebook's `fetch_page` and `record_fact`."""
     return Agent(model, system_prompt=RESEARCHER_PROMPT,
                  tools={"web_search": tools.web_search, **notebook.tools_for(budget.path)},
                  budget=budget, max_tool_rounds=15, compact_at=None, client=client)
@@ -424,6 +439,7 @@ def researcher(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
 
 def research_lead(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
                   client: ChatClient | None = None) -> Agent:
+    """The lead: it reads the facts, writes the draft and starts researchers. It has no web tools."""
     # max_tool_rounds=40: the default 10 runs out on 3 spawns + 3 collects + 4 sections.
     return Agent(model, system_prompt=RESEARCH_LEAD_PROMPT,
                  tools={"facts": notebook.facts, "write_section": notebook.write_section,

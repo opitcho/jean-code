@@ -23,7 +23,8 @@ def coding_agent(
     """An agent with a shell (on the host, or in the Docker sandbox), web tools, and the `searcher`, `general` and
     `research` subagents (see `subagent_profiles`) unless `subagents` is False.
 
-    Whether `bash` needs approval comes from the shell: yes on the host, no in the sandbox.
+    Whether `bash` needs approval comes from the shell: yes on the host, no in the sandbox. On the host, pass the
+    `approve` function that asks the user (see `Agent`).
     `agent.close()` stops its subagents and closes the shell: it kills background jobs, and removes the container.
     """
     shell = DockerShell(network=network) if sandbox else LocalShell()
@@ -63,12 +64,14 @@ def subagent_profiles(model: str = DEFAULT_MODEL, network: bool = True,
 
 
 def searcher_agent(model: str, budget: Budget) -> Agent:
+    """The `searcher` subagent: web tools only."""
     return Agent(model, system_prompt=SEARCHER_PROMPT,
                  tools={"web_search": web_search, "fetch_page": fetch_page}, budget=budget)
 
 
 def general_agent(model: str, budget: Budget, network: bool = True,
                   skills_dir: str | Path | None = SKILLS_DIR) -> Agent:
+    """The `general` subagent: the coding agent's tools, in its own sandbox container, without subagents."""
     shell = DockerShell(network=network)  # its own container; the sandbox is why its bash needs no approval
     return Agent(
         model,

@@ -190,21 +190,6 @@ def test_not_inside_a_tool_loop():
     assert kinds == [False, False, False, True]
 
 
-def test_not_while_a_call_waits_for_approval():
-    # Catches a summary request ending in a call without a result (400).
-    agent, client = make_agent([], needs_approval={"rm"})
-    run_small_turns(agent, 4)
-    client.responses += [response(tool_calls=[call("rm", path="x")], usage=BIG)]
-    agent.run_turn("turn 5")
-    assert agent.pending_calls and not any(map(is_summary_request, client.requests))
-    assert agent.compact(force=True).startswith("refused")
-    assert not any(map(is_summary_request, client.requests))
-    client.responses += [response("reply 5", usage=BIG), summary()]
-    agent.approve()  # the turn ends now, so it compacts
-    assert is_summary_request(client.requests[-1])
-    assert_valid(agent.messages)
-
-
 def test_not_after_an_interrupt():
     # Catches a paid summary call right after the user said stop.
     agent, client = make_agent([])
@@ -369,9 +354,9 @@ def test_hard_limit_stops_the_turn():
     # Catches a turn running on until the provider rejects the request mid-turn.
     agent, client = make_agent([response(tool_calls=[call("add", a=1, b=2)], usage=usage(prompt=1900))],
                                compact_at=None, context_window=2000)
-    agent.run_turn("go")
+    end = agent.run_turn("go")
     assert len(client.requests) == 1
-    assert agent.interrupted and "nearly full" in agent.stop_reason
+    assert end == "context full"
 
 
 def test_compact_at_must_leave_room():

@@ -1,6 +1,7 @@
-"""System prompts. Static text only (no timestamps or other per-call data), so the prompt prefix stays cached.
+"""Prompts. Static text only (no timestamps or other per-call data), so the prompt prefix stays cached.
 
-The agent appends the shell's description and the skills listing after it.
+The system prompts, then the messages and markers compaction uses. `coding.py` appends the shell's description to
+`SYSTEM_PROMPT`, and `Agent` appends the skills and subagents listings to whatever system prompt it's given.
 """
 
 SYSTEM_PROMPT = """\

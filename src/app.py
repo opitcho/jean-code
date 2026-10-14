@@ -21,13 +21,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from agent import DEFAULT_MODEL, Agent
+from agent import DEFAULT_MODEL, NOT_RUN, Agent
+from approval import Approvals, denied
 from coding import coding_agent
 from config import USAGE_LOG
 from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
 from repl import compaction_line
 from subagents import Run
-from usage import COST_UNKNOWN, human, record, usage_line
+from usage import human, record, usage_line
 
 MODEL = DEFAULT_MODEL
 REASONING_LEVELS = ("off", "low", "medium", "high")  # "off" sends no reasoning setting (agent.reasoning = None)
@@ -281,8 +282,9 @@ def context_size(agent) -> str:
 
 
 def is_running() -> bool:
+    """True while the run's thread is working: not while its turn waits for the user to approve a call."""
     thread = st.session_state.run["thread"]
-    return thread is not None and thread.is_alive()
+    return thread is not None and thread.is_alive() and st.session_state.approvals.waiting is None
 
 
 def status_of(view: View) -> tuple[str, str | None]:
@@ -293,7 +295,7 @@ def status_of(view: View) -> tuple[str, str | None]:
         return (outcome.status, outcome.reason) if outcome else ("running", None)
     if is_running():
         return "running", None
-    return ("awaiting approval" if view.agent.pending_calls else "idle"), None
+    return ("awaiting approval" if st.session_state.approvals.waiting else "idle"), None
 
 
 def tree_state(agent) -> tuple[tuple[tuple[str, bool], ...], int]:
@@ -305,7 +307,7 @@ def tree_state(agent) -> tuple[tuple[tuple[str, bool], ...], int]:
 
 
 def start_run(fn, *args) -> None:
-    """Run an agent method (`run_turn`, `approve`, `deny`) off the script thread; the UI polls the agent's state.
+    """Run `agent.run_turn` or `compact_now` off the script thread; the UI polls the agent's state.
 
     The model calls it makes are logged as they're charged, through `agent.budget.log_path` (set in `new_chat`).
     """
@@ -313,15 +315,26 @@ def start_run(fn, *args) -> None:
 
     def target():
         try:
-            fn(*args)
+            run["end"] = fn(*args)  # a TurnEnd; None from compact_now, which must stay that way
         except Exception as e:  # surfaced in the header; never call st.* from here
             run["error"] = f"{type(e).__name__}: {e}"
 
-    run["error"] = run["notice"] = None
+    run["error"] = run["notice"] = run["end"] = None
     run["thread"] = threading.Thread(target=target, daemon=True)
     run["thread"].start()
+    follow_run()
+
+
+def follow_run() -> None:
+    """The run's thread has work to do: poll until it stops, showing the main agent's latest block."""
     st.session_state.was_running = True
-    st.session_state.selected[st.session_state.agent.budget.path] = None  # follow the live turn
+    st.session_state.selected[st.session_state.agent.budget.path] = None
+
+
+def answer_approval(refusal: str | None = None) -> None:
+    """Answer the call that waits for approval: run it, or give the model `refusal` instead. The turn goes on."""
+    st.session_state.approvals.answer(refusal)
+    follow_run()
 
 
 def compact_now(agent, run: dict) -> None:
@@ -338,14 +351,17 @@ def compact_now(agent, run: dict) -> None:
 def new_chat() -> None:
     """A fresh agent; the sidebar toggle picks where its shell runs. The old agent's jobs/container are closed."""
     if old := st.session_state.get("agent"):
+        old.interrupt()
+        st.session_state.approvals.answer(NOT_RUN)  # a turn waiting for approval ends, and its thread with it
         old.close()
+    st.session_state.approvals = Approvals()  # the turn's thread asks through it; the approval card answers
     st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False),
-                                          reasoning=reasoning_effort())
+                                          reasoning=reasoning_effort(), approve=st.session_state.approvals.ask)
     st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
     st.session_state.histories = {}  # budget path -> that agent's list[Entry]
     st.session_state.selected = {}  # budget path -> selected uid; None or missing follows the latest
     st.session_state.view = st.session_state.agent.budget.path  # the agent picker's value
-    st.session_state.run = {"thread": None, "error": None, "notice": None}
+    st.session_state.run = {"thread": None, "error": None, "notice": None, "end": None}
     st.session_state.compactions_seen = 0
 
 
@@ -535,10 +551,8 @@ def render_header(view: View, entries: list[Entry], ctx: list, running: bool) ->
         return
     if error := st.session_state.run["error"]:
         st.error(error, icon=":material/error:")
-    if not running and agent.interrupted and agent.last_cost_unknown and not agent.over_budget:
-        st.warning(COST_UNKNOWN, icon=":material/warning:")
-    if not running and agent.interrupted and agent.stop_reason:
-        st.warning(agent.stop_reason, icon=":material/warning:")
+    if not running and (end := st.session_state.run["end"]) not in (None, "answered", "interrupted"):
+        st.warning(f"Stopped before answering: {end}", icon=":material/warning:")
 
 
 def render_timeline(entries: list[Entry], selected: Entry | None, running: bool, pending: bool, agent) -> None:
@@ -568,12 +582,12 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
                 with st.container(key="blk-thinking-live"):
                     st.html(card("thinking", "waiting for model…", classes="ghost"))
             elif pending:
-                render_approval(agent)
+                render_approval()
 
 
-def render_approval(agent) -> None:
-    """The first call waiting for approval, with Approve / Deny. Sending a message instead also answers it."""
-    name, arguments = agent.pending_calls[0]
+def render_approval() -> None:
+    """The call waiting for approval, with Approve / Deny. Sending a message instead denies it, as the reason."""
+    name, arguments = st.session_state.approvals.waiting
     with st.container(key="blk-approval-pending"):
         st.html(card("approval", f"{name}() wants to run:", mono=True))
         command = arguments.get("command") if name == "bash" else None
@@ -582,10 +596,10 @@ def render_approval(agent) -> None:
                                label_visibility="collapsed")
         with st.container(horizontal=True):
             if st.button("Approve", icon=":material/check:", type="primary"):
-                start_run(agent.approve)
+                answer_approval()
                 st.rerun()
             if st.button("Deny", icon=":material/block:"):
-                start_run(agent.deny, reason)
+                answer_approval(denied(reason))
                 st.rerun()
 
 
@@ -838,7 +852,7 @@ def live_view() -> None:
     view = views.get(st.session_state.view) or views[agent.budget.path]
     entries, ctx = st.session_state.histories[view.path], contexts[view.path]
     running = is_running() if view.run is None else not view.run.done()
-    pending = view.run is None and not running and bool(agent.pending_calls)  # only the main agent asks approval
+    pending = view.run is None and st.session_state.approvals.waiting is not None  # only the main agent asks
     by_uid = {e.uid: e for e in entries}
     selected = by_uid.get(st.session_state.selected.get(view.path)) or (entries[-1] if entries else None)
 
@@ -850,8 +864,11 @@ def live_view() -> None:
         render_timeline(entries, selected, running, pending, view.agent)
         if view.run is not None:
             st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
-        elif prompt := st.chat_input("Agent is working…" if running else "Message the agent…", disabled=running):
-            if prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
+        elif prompt := st.chat_input("Agent is working…" if running else "Approve or deny the call, or say why not…"
+                                     if pending else "Message the agent…", disabled=running):
+            if pending:
+                answer_approval(denied(prompt))
+            elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
                 start_run(compact_now, agent, st.session_state.run)
             else:
                 start_run(agent.run_turn, prompt)

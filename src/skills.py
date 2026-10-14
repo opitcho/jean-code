@@ -1,4 +1,10 @@
-"""Skill folders: a SKILL.md (YAML frontmatter plus instructions) and the files bundled with it."""
+"""Skill folders: a SKILL.md (YAML frontmatter plus instructions) and the files bundled with it.
+
+A skill loads in three levels, so the model only pays for what it uses:
+    1. its name and description, listed in the system prompt (`skills_prompt`)
+    2. its SKILL.md body, when the model calls `load_skill` or the user types `/name` (`instructions`)
+    3. its bundled files, one at a time through `read_skill_file` (`read_file`)
+"""
 
 import re
 from dataclasses import dataclass

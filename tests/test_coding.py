@@ -16,17 +16,21 @@ def api_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")  # builds a client; nothing here sends a request
 
 
+def yes(name: str, arguments: dict) -> None:
+    """An `approve` that lets every call run: the host shell's `bash` needs one."""
+
+
 def test_the_coding_agent_offers_its_subagents():
     # Catches profiles that exist but never reach the model: no listing, or no tools.
-    agent = coding_agent(skills_dir=None)
+    agent = coding_agent(skills_dir=None, approve=yes)
     try:
         prompt = agent.messages[0]["content"]
         assert "## Subagents" in prompt and "- searcher: " in prompt and "- general: " in prompt
         assert "- research: " in prompt
-        assert {"spawn", "subagent"} <= set(agent._tools())
+        assert {"spawn", "subagent"} <= set(agent._tools)
     finally:
         agent.close()
-    assert coding_agent(skills_dir=None, subagents=False).subagents is None
+    assert coding_agent(skills_dir=None, subagents=False, approve=yes).subagents is None
 
 
 def test_subagents_have_no_subagents_of_their_own():

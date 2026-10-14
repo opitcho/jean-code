@@ -102,7 +102,31 @@ def test_fetch_page_saves_each_window_it_returned_once(tmp_path, pages):
     index = json.loads((notebook.dir / "pages" / "index.json").read_text())
     assert index == {"https://a.test": {"file": "P1.txt", "length": 30, "windows": [[0, 10], [10, 20]],
                                         "by": ["main/1", "main/2"]}}
-    assert (notebook.dir / "pages" / "P1.txt").read_text() == "x" * 10 + "\n\n" + "x" * 10 + "\n\n"
+    assert (notebook.dir / "pages" / "P1.txt").read_text() == "x" * 20 + "\n"  # touching windows: one stretch
+
+
+def test_a_quote_across_windows_fetched_in_reverse_order_verifies(tmp_path, pages):
+    # Catches the page file keeping windows in fetch order: second half then first half, splitting the quote.
+    notebook = new_notebook(tmp_path)
+    pages["https://a.test"] = "The robot walks in one hour. It adapts to new terrain online."
+    researcher = notebook.tools_for("main/1")
+    researcher["fetch_page"]("https://a.test", max_chars=31, start=30)
+    researcher["fetch_page"]("https://a.test", max_chars=30)
+    assert researcher["record_fact"]("a claim", "https://a.test", pages["https://a.test"]) == (
+        "F1 recorded (quote verified)")
+
+
+def test_a_quote_joining_two_windows_across_unread_text_is_not_verified(tmp_path, pages):
+    # Catches the page file gluing separate windows together, which verifies a quote whose middle nobody read.
+    notebook = new_notebook(tmp_path)
+    pages["https://a.test"] = "Alpha beta gamma delta. The middle nobody read. Epsilon zeta eta theta iota."
+    researcher = notebook.tools_for("main/1")
+    researcher["fetch_page"]("https://a.test", max_chars=48, start=48)
+    researcher["fetch_page"]("https://a.test", max_chars=23)
+    assert (notebook.dir / "pages" / "P1.txt").read_text() == (
+        "Alpha beta gamma delta.\n\n[…]\n\nEpsilon zeta eta theta iota.\n")
+    assert "NOT verified" in researcher["record_fact"]("a claim", "https://a.test",
+                                                       "Alpha beta gamma delta. Epsilon zeta eta theta iota.")
 
 
 def test_record_fact_verifies_a_verbatim_quote_and_flags_a_paraphrase(tmp_path, pages):

@@ -1,22 +1,14 @@
-"""Accounting for model calls: what each call used and cost, shown to the user and saved to a log.
+"""Accounting for model calls: what each call used and cost.
 
-The agent appends one raw entry per model call to `agent.usage` (see `Agent._record_usage`): the API's
-`usage` object (token counts, `cost`) plus the response's `id`, `provider`, `model` and `created`, and a
-`kind` for calls that aren't normal steps, such as "compaction". This module turns those raw entries into
-flat records, writes them to a JSON Lines log (`config.USAGE_LOG`) so spend can be summed across sessions,
-and sums them into the one-line summary the REPL prints after each turn.
-
-It also keeps a `Budget` per agent, arranged as a tree that mirrors an agent and its subagents: each node
-limits its subtree's spend, can be cancelled for good, and records its agent's calls. With `log_path` set on
-the root, every call in the tree is appended to the log as it's charged, whichever agent made it and whenever.
+`record` flattens one raw entry of `agent.usage`, `append_log` writes records to a JSON Lines log
+(`config.USAGE_LOG`), and `usage_line` sums them into the line the REPL prints after each turn. `Budget` limits
+spend across an agent and its subagents.
 """
 
 import json
 import threading
 import time
 from pathlib import Path
-
-COST_UNKNOWN = "[stopped: cost of the last call is unknown, so the budget can't be enforced]"
 
 
 def record(raw: dict) -> dict:
@@ -112,8 +104,7 @@ class Budget:
     `cancel()` stops a subtree for good: its agents make no further call. Unlike an agent's interrupt, which
     every turn clears, nothing clears it, so a cancel sent before a turn starts still holds.
 
-    Thread-safe: one lock per tree, shared by all its nodes, since parallel agents charge concurrently. It's
-    never held around anything that blocks.
+    Thread-safe: one lock per tree, shared by all its nodes.
     """
 
     def __init__(self, limit: float | None = None, parent: "Budget | None" = None, name: str = "main", task: str = "",
@@ -176,11 +167,6 @@ class Budget:
     def exhausted(self) -> bool:
         """True when this node or an ancestor was cancelled or has spent its limit: no more model calls."""
         return self.cancelled or any(node.limit is not None and node.spent >= node.limit for node in self._chain())
-
-    @property
-    def limited(self) -> bool:
-        """True when this node or an ancestor has a limit, so a call of unknown cost makes it unenforceable."""
-        return any(node.limit is not None for node in self._chain())
 
     @property
     def remaining(self) -> float | None:

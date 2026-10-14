@@ -1,7 +1,8 @@
+import itertools
 import json
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import validate_call
 
@@ -15,6 +16,17 @@ from usage import Budget
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
 HARD_LIMIT = 0.9  # a turn stops before its context passes this share of the window
+# How a turn ended. The values are the text shown for it, and keys once stored: don't reword them.
+TurnEnd = Literal["answered", "interrupted", "budget spent", "cancelled", "context full", "out of tool rounds"]
+NOT_RUN = "Not run: the turn was stopped."  # the result of a call the turn ended before running
+
+
+class TurnStopped(Exception):
+    """Raised anywhere inside a turn to end it before the model answers; `run_turn` returns its `reason`."""
+
+    def __init__(self, reason: TurnEnd):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def parse_arguments(arguments: str) -> dict:
@@ -44,50 +56,33 @@ def ordinal(n: int) -> str:
 
 
 class Agent:
-    #TODO: Simplify this docstring. It communicates many things which are irrelevant and redudntant
-    # E.g. UI comment, context compaction, user commands, etc. --> These are all implementations
-    # details which should not be in a docstring.
-    """Tool-calling agent that chats with a user through a model on OpenRouter.
+    """A tool-calling agent: one conversation with a model, and the tools the model may call.
 
-    The transcript in `self.messages` is in the OpenAI chat format. It stores each model reply
-    as the API returned it and sends it back unchanged: one assistant message (content, plus
-    reasoning, reasoning_details and tool calls when present), then one tool message per call,
-    matched to its call by `tool_call_id`. Tools are typed, documented functions marked `@tool` (llm.py), passed as
-    `tools`; their schemas are built from the signature and docstring.
+    Drive it with `run_turn(text)`. It returns how the turn ended (a `TurnEnd`): "answered", or why it stopped
+    early. Call `close()` at the end.
 
-    A UI shows a turn by reading `messages` as it grows; the agent knows nothing about UIs.
+    Callers read its state directly. `messages` is the transcript in the OpenAI chat format, with each reply stored
+    as the API returned it. `usage` has one entry per model call, and `budget` holds the spend.
 
-    Tools named in `needs_approval` wait for the user: the turn stops before running
-    one, and resumes when a UI calls `approve()` or `deny()`. A call waiting for approval is
-    simply a call without a result yet, so `pending_calls` is read from the transcript.
-
-    Skills in `skills_dir` load in three levels, so the model only pays for what it uses:
-    names and descriptions in the system prompt, a SKILL.md body via `load_skill` (or the
-    user typing `/name`), and bundled files via `read_skill_file`. The tool list and system
-    prompt never change once the first request is sent, so loading a skill doesn't invalidate the cache.
-
-    Subagents: `subagent_profiles` are the kinds of subagent the model may start, listed in the system prompt.
-    With any, `self.subagents` adds the `spawn` and `subagent` tools; each run gets a child of `self.budget`.
-    Background results nobody has read are appended to the next user message, once each. `close()` stops every
-    run, and an interrupt ends any wait for one.
-
-    User commands are agent methods the user calls by starting a message with `/name`, as tools
-    are the ones the model calls. `self.commands` maps a name to a function of the rest of the
-    line; its output goes into the user's message, so the model sees what the command did.
-
-    Each model call appends the API's usage to `self.usage` (this agent's own calls) and charges it to
-    `self.budget`, the agent's node in a tree of budgets that mirrors its subagents. Once this node or an
-    ancestor has spent its limit (`max_cost` is this node's), turns stop as if interrupted. With a limit, a
-    call whose cost is unknown also stops the turn, since the budget can't be enforced past it. `close()`
-    runs `cleanup`, releasing what the tools hold.
-
-    Context compaction: `context_tokens` is the size of the context, measured by the last call plus an
-    estimate for what came after it. When a turn ends with the context at `compact_at` tokens or more,
-    `compact()` has the model summarize the middle of the conversation, and replaces the middle with that
-    summary. The first `keep_first` turns and the last `keep_last` turns stay verbatim. It only happens between
-    turns, so a tool loop's reasoning is never cut. A marker message (`head_end`) ends the kept head. Each
-    attempt is recorded in `compactions`; `context_history` lists every context the session has had.
-    A turn that would pass `HARD_LIMIT` of the window stops, with the reason in `stop_reason`.
+    Args:
+        model: OpenRouter model id.
+        system_prompt: Goes first; the skills and subagents listings are appended to it.
+        tools: Functions marked `@tool` (llm.py), by the name the model calls them.
+        needs_approval: Names of the tools whose calls are run only if `approve` allows them.
+        approve: Asked before each such call, on the turn's thread, with the tool's name and arguments; the turn
+            waits for it. Returns None to run the call, or the text the model gets as its result instead.
+        cleanup: Functions `close()` runs, to release what the tools hold.
+        reasoning: Effort: "low", "medium" or "high". None sends no reasoning setting.
+        max_tool_rounds: A turn makes at most 1 + this many model calls.
+        client: Where requests are sent. OpenRouter by default.
+        skills_dir: Folder of skills the model can load (skills.py).
+        max_cost: Limit in USD for this agent and its subagents. Not together with `budget`.
+        budget: This agent's node in an existing budget tree (usage.py). Subagents get one from their parent.
+        subagent_profiles: The kinds of subagent the model may start, by name (subagents.py).
+        compact_at: Context size in tokens at which the agent compacts after a turn. None: never on its own.
+        keep_first: Turns at the start that a compaction keeps verbatim.
+        keep_last: Turns at the end that a compaction keeps verbatim.
+        context_window: The model's context window, in tokens.
     """
 
     def __init__(
@@ -96,6 +91,7 @@ class Agent:
         system_prompt: str = "",
         tools: dict[str, Callable] | None = None,
         needs_approval: set[str] | None = None,
+        approve: Callable[[str, dict], str | None] | None = None,
         cleanup: list[Callable[[], None]] | None = None,
         reasoning: str | None = "medium",
         max_tool_rounds: int = 10,
@@ -111,16 +107,20 @@ class Agent:
     ):
         self.model = model
         self.system_prompt = system_prompt
-        self.reasoning = reasoning  # effort: "low", "medium" or "high"; None sends no reasoning setting
+        self.reasoning = reasoning
         self.max_tool_rounds = max_tool_rounds
         self.client = client or openrouter()
         self.tool_map: dict[str, Callable] = dict(tools or {})
-        self.needs_approval: set[str] = set(needs_approval or ())  # tool names the user must approve before each call
+        self.needs_approval: set[str] = set(needs_approval or ())
+        if self.needs_approval and approve is None:
+            raise ValueError(f"no `approve` function for the tools that need approval: "
+                             f"{', '.join(sorted(self.needs_approval))}")
+        self.approve = approve
         self.cleanup: list[Callable[[], None]] = list(cleanup or [])
-        self._registered: dict[str, tuple[Callable, dict]] | None = None  # built at the first request
 
         self.skills = skills.discover_skills(skills_dir) if skills_dir else {}
         self.loaded_skills: list[str] = []
+        # What the user runs by starting a message with `/name`: name → a function of the rest of the line.
         self.commands: dict[str, Callable[[str], str | None]] = {
             name: lambda rest, name=name: self.load_skill(name) for name in self.skills
         }
@@ -142,13 +142,12 @@ class Agent:
             raise ValueError(f"compact_at must leave room for the summary call: at most {context_window // 2}")
         if keep_first < 0 or keep_last < 1:
             raise ValueError("keep_first must be >= 0 and keep_last >= 1")
-        self.compact_at = compact_at  # None: never compact on its own
+        self.compact_at = compact_at
         self.keep_first = keep_first
         self.keep_last = keep_last
         self.context_window = context_window
         self.head_end: int | None = None  # index just after the head marker; nothing before it is ever removed
         self.compactions: list[dict] = []  # one record per compaction attempt that got past the checks
-        self.stop_reason: str | None = None  # why the last turn stopped early, when it wasn't the user or the budget
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
         self.last_request: dict | None = None
@@ -156,31 +155,11 @@ class Agent:
         self._interrupt = threading.Event()
         # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
         self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
-        self._all_tools()  # an unmarked or clashing tool fails here, where the agent is built, not at its first request
-
-    @property
-    def awaiting_user(self) -> bool:
-        """True when the model has nothing left to respond to, a call waits for approval, or it was interrupted."""
-        if self.interrupted or self.pending_calls:
-            return True
-        return not self.messages or self.messages[-1]["role"] not in ("user", "tool")
-
-    @property
-    def interrupted(self) -> bool:
-        """True once `interrupt()` was called, the budget ran out or a cost was unknown, until the next turn or approval decision."""
-        return self._interrupt.is_set()
-
-    @property
-    def pending_calls(self) -> list[tuple[str, dict]]:
-        """Calls from the model's last reply that have no result yet: they wait for the user's approval."""
-        pending = []
-        for call in self._unanswered_calls():
-            try:
-                arguments = parse_arguments(call["function"]["arguments"])
-            except ValueError:
-                arguments = {"<invalid JSON>": call["function"]["arguments"]}
-            pending.append((call["function"]["name"], arguments))
-        return pending
+        # Every tool the model can call, as (validating wrapper, schema) by name. Should never be changed: the schemas
+        # sit near the top of the prompt, so any change would invalidate the cache.
+        self._tools: dict[str, tuple[Callable, dict]] = {
+            name: (validate_call(fn), tool_schema(name, fn)) for name, fn in self._all_tools().items()
+        }
 
     @property
     def total_cost(self) -> float:
@@ -202,18 +181,11 @@ class Agent:
         return self.budget.exhausted
 
     @property
-    def last_cost_unknown(self) -> bool:
-        """True when a limit applies (this node's or an ancestor's) and the last model call reported no cost, so the
-        limit can't be enforced."""
-        return self.budget.limited and bool(self.usage) and self.usage[-1].get("cost") is None
-
-    @property
     def context_tokens(self) -> int:
         """Tokens the next request's prompt will take: the last call's prompt and completion, plus an estimate
-        for the messages added since. Before the first call, the whole transcript and the tool schemas are
-        estimated; right after a compaction, the old measurement scaled down by the estimated share kept."""
+        for the messages added since."""
         measured, messages = self._measured, self.messages  # read once: another thread may be running the turn
-        if measured is None:
+        if measured is None:  # no call yet: estimate the whole transcript and the tool schemas
             return estimate_tokens(self._tool_schemas()) + sum(estimate_tokens(m) for m in messages)
         count, tokens = measured
         return tokens + sum(estimate_tokens(m) for m in messages[count:])
@@ -223,20 +195,9 @@ class Agent:
         """Every context the session has had: the one before each compaction, then the current one."""
         return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
-    def approve(self) -> None:
-        """Run the first pending call, then continue the turn until it ends or another call needs approval."""
-        call, *rest = self._pending_or_raise()
-        self._append_result(call["id"], self._run_tool(call))
-        self._resume(rest)
-
-    def deny(self, reason: str = "") -> None:
-        """Refuse the first pending call; the model gets the refusal (and reason) as its result and continues."""
-        call, *rest = self._pending_or_raise()
-        self._append_result(call["id"], f"Denied by user. {reason}".strip())
-        self._resume(rest)
-
     def interrupt(self):
-        """Stop the turn once the model call in flight returns; that reply's tool calls still run.
+        """Stop the turn once the model call or tool call in flight returns. The reply's tool calls that haven't
+        started are not run.
 
         Safe to call from another thread or a signal handler.
         """
@@ -250,23 +211,24 @@ class Agent:
         for fn in self.cleanup:
             fn()
 
-    def run_turn(self, user_input: str) -> None:
+    def run_turn(self, user_input: str) -> TurnEnd:
         """Add the user's message (with a command's output, if it starts with one, and any background subagent
-        results nobody has read), then call the model until it answers."""
+        results nobody has read), then call the model until it answers. Returns how the turn ended."""
         content = self._run_command(user_input)
         claimed = self.subagents.claim() if self.subagents else []  # each result is taken, so delivered, once
         if claimed:
             blocks = "\n\n".join(result_block(id, profile, run.outcome(0)) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
-        self.stop_reason = None
-        for call in self._unanswered_calls():  # every call needs a result, so answer the ones left waiting
-            self._append_result(call["id"], "Not run: the user sent a new message instead.")
         if self.head_end is None and len(self._turn_starts()) == self.keep_first:
             self.messages.append({"role": "user", "content": HEAD_MARKER})
             self.head_end = len(self.messages)
         self.messages.append({"role": "user", "content": content})
-        self._loop()
+        try:
+            self._loop()
+        except TurnStopped as stop: 
+            return stop.reason
+        return "answered"
 
     def step(self) -> None:
         """One model call on the current context: append its reply, then run its tool calls."""
@@ -275,8 +237,6 @@ class Agent:
         self.last_response = None
         response = self.client.complete(request)
         self.last_response = response
-        # Recorded before the reply is read, so a paid call counts even if its reply is malformed.
-        # Without usage the entry still marks the call, with `cost: None`.
         usage = self._record_usage(response)
         message = response["choices"][0]["message"]
         reply = {k: v for k, v in message.items() if v is not None}  # drop unset fields like `refusal: null`
@@ -287,17 +247,13 @@ class Agent:
         self._run_tool_calls(reply.get("tool_calls", []))
 
     def compact(self, force: bool = False) -> str:
-        """Replace the middle of the conversation with a summary the model writes, keeping the first
-        `keep_first` and last `keep_last` turns. Call it between turns.
+        """Replace the middle of the conversation with a summary written by the model. The first `keep_first` and
+        last `keep_last` turns are kept as they are. Call it between turns.
 
-        Without `force`, only when `context_tokens` is at `compact_at` or more, and only if keeping the head and
-        tail alone gets under it. Returns what happened: "compacted", "below threshold", "nothing to compact",
-        "skipped: …", "refused: …" or "failed: …". The transcript is unchanged unless it's "compacted";
-        `interrupt()` during the summary call cancels it.
+        Does nothing if the context is under `compact_at`, or if compacting couldn't bring it under; `force` skips
+        both checks. Returns "compacted", or why the transcript was left unchanged. `interrupt()` cancels it.
         """
         self._interrupt.clear()
-        if self._unanswered_calls():
-            return "refused: a tool call is waiting for approval"
         if self.over_budget:
             return "refused: the budget is spent"
         tokens_before = self.context_tokens
@@ -312,7 +268,7 @@ class Agent:
         record = {"status": None, "removed": len(middle), "tokens_before": tokens_before}
         self.compactions.append(record)
 
-        # The kept part's share of the estimate, applied to the measured size: the estimator's bias cancels out.
+        # Check that compacting can bring the context under compact_at.
         schemas = estimate_tokens(self._tool_schemas())
         kept_estimate = schemas + sum(estimate_tokens(m) for m in head + tail)
         kept = round(tokens_before * kept_estimate / (kept_estimate + sum(estimate_tokens(m) for m in middle)))
@@ -346,7 +302,7 @@ class Agent:
             record["status"] = "failed: the summary was cut off at the length limit"
         elif not summary:
             record["status"] = "failed: the summary was empty"
-        elif self.interrupted:
+        elif self._interrupt.is_set():
             record["status"] = "failed: interrupted"
         if record["status"]:
             return record["status"]
@@ -418,6 +374,9 @@ class Agent:
 
         Called before the reply is read, so a paid call counts even if its reply is malformed.
         Without usage the entry still marks the call, with `cost: None`.
+
+        Raises:
+            RuntimeError: The response reported no cost, so spend can't be tracked. The entry is recorded first.
         """
         usage = response.get("usage") or {}
         entry = {"cost": None, **usage, **{k: response.get(k) for k in ("id", "provider", "model", "created")}}
@@ -425,23 +384,14 @@ class Agent:
             entry["kind"] = kind
         self.usage.append(entry)
         self.budget.charge(entry)
+        if entry["cost"] is None:
+            raise RuntimeError(f"model call {entry['id']} reported no cost, so spend can't be tracked")
         return usage
 
     def _get_skill(self, name: str) -> skills.Skill:
         if name not in self.skills:
             raise ValueError(f"unknown skill '{name}'; available: {', '.join(self.skills)}")
         return self.skills[name]
-
-    def _tools(self) -> dict[str, tuple[Callable, dict]]:
-        """Every tool the model can call, as (validating wrapper, schema) by name.
-
-        Built once, at the first request, and never changed after: the schemas sit near the top
-        of the prompt, so any change would invalidate the cache.
-        """
-        if self._registered is None:
-            self._registered = {name: (validate_call(fn), tool_schema(name, fn))
-                                for name, fn in self._all_tools().items()}
-        return self._registered
 
     def _all_tools(self) -> dict[str, Callable]:
         """`tool_map` plus the agent's own tools. Raises on a tool not marked `@tool`, and on one named like one of
@@ -472,7 +422,7 @@ class Agent:
         return request
 
     def _tool_schemas(self) -> list[dict]:
-        return [schema for _, schema in self._tools().values()]
+        return [schema for _, schema in self._tools.values()]
 
     def _run_command(self, user_input: str) -> str:
         """The user's message; if it starts with `/name` for a command, run it and append its output."""
@@ -486,72 +436,61 @@ class Agent:
         return f'{user_input}\n\n<command name="{first[1:]}">\n{output}\n</command>'
 
     def _loop(self) -> None:
-        """Call the model until it answers, a call needs approval, the turn is interrupted or the budget is spent.
+        """Call the model until it answers, running the tools it calls. Raises `TurnStopped` if the turn has to end
+        first.
 
         Once the model has answered, compact the context if it's over `compact_at`.
         """
-        for _ in range(1 + self.max_tool_rounds):
+        for calls in itertools.count():
+            if self.budget.cancelled:  # before the budget: a cancelled one also counts as spent
+                raise TurnStopped("cancelled")
             if self.over_budget:
-                self._interrupt.set()
-                break
+                raise TurnStopped("budget spent")
             if self.context_tokens >= HARD_LIMIT * self.context_window:
-                self.stop_reason = f"the context is nearly full (~{self.context_tokens} tokens), so the turn stopped"
-                self._interrupt.set()
-                break
+                raise TurnStopped("context full")
+            if calls > self.max_tool_rounds:
+                raise TurnStopped("out of tool rounds")
             self.step()
-            if self.last_cost_unknown:
-                self._interrupt.set()
-                break
-            if self.awaiting_user:
-                break
-        if self.awaiting_user and not self.interrupted and not self._unanswered_calls():
-            self.compact()
-            if self.last_cost_unknown:
-                self._interrupt.set()
-
-    def _resume(self, rest: list[dict]) -> None:
-        """After an approval decision: run the reply's remaining calls, then continue if none is waiting."""
-        self._interrupt.clear()
-        self.stop_reason = None
-        self._run_tool_calls(rest)
-        if not self.pending_calls:
-            self._loop()
-
-    def _unanswered_calls(self) -> list[dict]:
-        """Calls in the last assistant message without a tool result yet, in call order."""
-        last = next((i for i in reversed(range(len(self.messages))) if self.messages[i]["role"] == "assistant"), None)
-        if last is None:
-            return []
-        answered = {m["tool_call_id"] for m in self.messages[last + 1 :] if m["role"] == "tool"}
-        return [call for call in self.messages[last].get("tool_calls", []) if call["id"] not in answered]
-
-    def _pending_or_raise(self) -> list[dict]:
-        pending = self._unanswered_calls()
-        if not pending:
-            raise ValueError("no tool call is waiting for approval")
-        return pending
+            last = self.messages[-1]
+            if last["role"] == "assistant" and not last.get("tool_calls"):  # an answer, even if cut off or empty
+                if not self._interrupt.is_set():  # compact() clears the flag, and the user said stop
+                    self.compact()
+                return
+            if self._interrupt.is_set():
+                raise TurnStopped("interrupted")
 
     def _run_tool_calls(self, calls: list[dict]) -> None:
-        """Append one result per call, in call order.
+        """Append one result per call, in call order. If the turn is stopped part-way, the calls left get `NOT_RUN`:
+        a request can't hold a call without a result."""
+        done = 0
+        try:
+            for call in calls:
+                if self._interrupt.is_set():
+                    raise TurnStopped("interrupted")
+                self._add_result(call, self._run_tool(call))
+                done += 1
+        finally:
+            for call in calls[done:]:
+                self._add_result(call, NOT_RUN)
 
-        Stops before the first call that needs approval; it and the calls after it stay pending.
-        """
-        for call in calls:
-            if call["function"]["name"] in self.needs_approval:
-                return
-            self._append_result(call["id"], self._run_tool(call))
-
-    def _append_result(self, call_id: str, content: str) -> None:
-        self.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
+    def _add_result(self, call: dict, content: str) -> None:
+        self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
 
     def _run_tool(self, call: dict) -> str:
-        """Run a registered tool; errors (bad JSON, invalid arguments, failures) are returned so the model can retry."""
+        """A call's result: the tool's output, or what `approve` gave instead if the tool needs approval. Errors
+        (bad JSON, invalid arguments, failures) are returned too, so the model can retry."""
         name = call["function"]["name"]
-        tool = self._tools().get(name)
+        tool = self._tools.get(name)
         if tool is None:
             return f"Error: unknown tool '{name}'"
         fn, _ = tool
         try:
-            return str(fn(**parse_arguments(call["function"]["arguments"])))
+            arguments = parse_arguments(call["function"]["arguments"])
+        except ValueError as e:
+            return f"Error: {type(e).__name__}: {e}"
+        if name in self.needs_approval and (refusal := self.approve(name, arguments)) is not None:
+            return refusal
+        try:
+            return str(fn(**arguments))
         except Exception as e:
             return f"Error: {type(e).__name__}: {e}"

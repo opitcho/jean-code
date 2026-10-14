@@ -1,4 +1,4 @@
-"""Paths in the repo that the front-ends use."""
+"""Paths in the repo."""
 
 from pathlib import Path
 

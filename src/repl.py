@@ -7,12 +7,12 @@ import argparse
 import signal
 import threading
 from pathlib import Path
-from typing import Callable
 
-from agent import Agent, DEFAULT_MODEL
+from agent import Agent, DEFAULT_MODEL, NOT_RUN, TurnEnd
+from approval import Approvals, denied
 from coding import coding_agent
 from config import USAGE_LOG
-from usage import COST_UNKNOWN, breakdown_lines, human, usage_line
+from usage import breakdown_lines, human, usage_line
 
 
 def dim(text: str) -> str:
@@ -63,9 +63,10 @@ def compaction_line(record: dict) -> str:
     return f"[compaction {record['status']}]"
 
 
-def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
-    """Read a line, run a turn while printing it live, and ask about calls needing approval.
+def repl(agent: Agent, approvals: Approvals | None = None, usage_log: str | Path | None = USAGE_LOG) -> None:
+    """Read a line, then run a turn while printing it live and asking about the calls that need approval.
 
+    `approvals` is the one whose `ask` the agent was built with, if any of its tools need approval.
     Ctrl+C mid-turn interrupts. `/cost` shows the session's spend and the API key's credits.
     Each model call in the agent's tree is appended to `usage_log` as it's made, to sum spend across sessions:
     background subagents' calls between turns included.
@@ -94,40 +95,61 @@ def repl(agent: Agent, usage_log: str | Path | None = USAGE_LOG) -> None:
             print_cost(agent)
             continue
 
-        run_and_print(agent, agent.run_turn, user_input)
-        while agent.pending_calls and not agent.interrupted:
-            name, arguments = agent.pending_calls[0]
-            try:
-                answer = input(f"approve {name}({arguments})? [y/N, or a reason to deny] ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break  # leave it pending; the next message answers it
-            if answer.lower() in {"y", "yes"}:
-                run_and_print(agent, agent.approve)
-            else:
-                run_and_print(agent, agent.deny, "" if answer.lower() in {"", "n", "no"} else answer)
+        run_and_print(agent, user_input, approvals)
 
 
-def run_and_print(agent: Agent, fn: Callable, *args) -> None:
-    """Run `fn` in a thread with Ctrl+C mapped to interrupt(), printing each message as it lands, then a line
-    summing the calls made meanwhile in the agent's tree (subagents included)."""
+def ask_approval(agent: Agent, name: str, arguments: dict) -> str | None:
+    """Ask on the terminal whether a call may run: None for yes, otherwise the result the model gets instead.
+    Ctrl+C or Ctrl+D stops the turn."""
+    try:
+        answer = input(f"approve {name}({arguments})? [y/N, or a reason to deny] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        agent.interrupt()
+        return NOT_RUN
+    if answer.lower() in {"y", "yes"}:
+        return None
+    return denied("" if answer.lower() in {"", "n", "no"} else answer)
+
+
+def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = None) -> TurnEnd | None:
+    """Run a turn and print it as it happens.
+
+    The turn runs on a worker thread while this thread prints each new message, asks about each call that waits in
+    `approvals`, and maps Ctrl+C to `agent.interrupt()`. Afterwards prints the error if the turn raised, why it
+    stopped if it didn't end with an answer, and a usage line for the model calls made meanwhile in the agent's
+    tree (subagents included).
+
+    Returns how the turn ended, or None if it raised.
+    """
     printer = TurnPrinter(agent)
     errors: list[Exception] = []
+    ends: list[TurnEnd] = []
 
     def target():
         try:
-            fn(*args)
+            ends.append(agent.run_turn(user_input))
         except Exception as e:
             errors.append(e)
+
+    def on_sigint(signum, frame):
+        agent.interrupt()
 
     journal = agent.budget.journal
     start = len(journal)
     worker = threading.Thread(target=target, daemon=True)
-    previous = signal.signal(signal.SIGINT, lambda signum, frame: agent.interrupt())
+    previous = signal.signal(signal.SIGINT, on_sigint)
     try:
         worker.start()
         while worker.is_alive():
+            waiting = approvals.waiting if approvals else None  # read before printing, so its call is printed first
             printer.poll()
+            if waiting:
+                signal.signal(signal.SIGINT, previous)  # at the prompt, Ctrl+C is a KeyboardInterrupt again
+                try:
+                    approvals.answer(ask_approval(agent, *waiting))
+                finally:
+                    signal.signal(signal.SIGINT, on_sigint)
             worker.join(0.05)
     finally:
         signal.signal(signal.SIGINT, previous)
@@ -136,17 +158,12 @@ def run_and_print(agent: Agent, fn: Callable, *args) -> None:
 
     for e in errors:
         print(f"[error] {type(e).__name__}: {e}")
-    if agent.interrupted:
-        if agent.over_budget:
-            print(f"[budget of ${agent.max_cost} reached]")
-        elif agent.last_cost_unknown:
-            print(COST_UNKNOWN)
-        elif agent.stop_reason:
-            print(f"[{agent.stop_reason}]")
-        else:
-            print("[interrupted]")
+    end = ends[0] if ends else None
+    if end not in (None, "answered"):
+        print(f"[{end}]")
     if calls:
         print(dim(f"{usage_line(calls)} · context ~{human(agent.context_tokens)}"))
+    return end
 
 
 def print_cost(agent: Agent) -> None:
@@ -177,12 +194,13 @@ if __name__ == "__main__":
     parser.add_argument("--compact-at", type=int, default=256_000, help="compact the context after a turn that ends over this many tokens")
     cli = parser.parse_args()
 
+    approvals = Approvals()
     agent = coding_agent(
         cli.model, sandbox=cli.sandbox, network=not cli.no_network, reasoning=cli.reasoning, max_cost=cli.max_cost,
-        compact_at=cli.compact_at,
+        compact_at=cli.compact_at, approve=approvals.ask,
     )
     try:
-        repl(agent)
+        repl(agent, approvals)
     finally:
         if agent.subagents and (running := agent.subagents.running()):
             print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))

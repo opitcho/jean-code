@@ -1,5 +1,4 @@
-"""Reading web pages: download a page as text (HTML, PDF or plain), and cut that text into windows.
-"""
+"""Reading web pages: download a page as text (HTML, PDF or plain), and cut that text into windows."""
 
 import io
 import logging

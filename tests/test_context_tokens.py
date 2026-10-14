@@ -75,11 +75,11 @@ def test_a_fresh_measurement_replaces_the_estimates(flat):
     assert agent.context_tokens == 2080
 
 
-def test_a_response_without_usage_keeps_the_last_measurement(flat):
-    # Catches a crash on missing usage, or the count freezing while messages keep coming.
+def test_a_response_without_token_counts_keeps_the_last_measurement(flat):
+    # Catches a crash on missing token counts, or the count freezing while messages keep coming.
     agent = make_agent([
         response(tool_calls=[call("add", a=1, b=2)], usage=usage(prompt=1000, completion=50)),
-        response("3", no_usage=True),
+        response("3", usage={"cost": 0.001}),
     ])
     agent.run_turn("add")
     # measured 1050 after the first reply, then the tool result and the second reply

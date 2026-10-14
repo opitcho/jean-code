@@ -7,10 +7,6 @@ Commands are non-interactive (no TTY, stdin closed) and stateless: each call is 
 
 On the host, commands run in the directory the agent was started from, with no sandboxing.
 In Docker, they run in the `workspace/` folder, mounted into the container.
-
-Background jobs write `<id>.pid`, `.log` and `.exit` into a jobs folder on the host, so `job`
-reads those files directly: a temp folder for the host shell (to keep them out of the user's
-project), and `workspace/.jobs/<shell id>` for Docker (so the container can write them).
 """
 
 import os
@@ -138,6 +134,9 @@ class Shell:
         """Start `command` detached and return immediately."""
         raise NotImplementedError
 
+    # A job writes `<id>.pid`, `.log` and `.exit` into `jobs_dir`, on the host, so `job` reads the files directly:
+    # a temp folder for the host shell (to keep them out of the user's project), and `workspace/.jobs/<shell id>`
+    # for Docker (so the container can write them).
     def _job_file(self, job_id: str, kind: str) -> Path:
         return self.jobs_dir / f"{job_id}.{kind}"
 
@@ -236,8 +235,7 @@ class DockerShell(Shell):
     """Runs commands in a long-lived Docker container with only the workspace mounted.
 
     The container starts on the first command and lives until `close()`, so installed
-    packages persist. It also dies with this object or this process, even on a crash:
-    its main process reads a pipe only we hold, and exits when that pipe closes. It runs
+    packages persist. It also dies with this object or this process, even on a crash. It runs
     as the host user, so files it writes to the workspace are yours. Commands run without
     approval by default: the sandbox is the safety net.
 

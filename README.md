@@ -82,11 +82,44 @@ without Docker and the image it fails, and only the `searcher` subagent works.
   logged to `logs/usage.jsonl`.
 - **See what it's doing**: the UI shows every thought, tool call and result live, for the main agent and each subagent.
 
+## How a turn works
+
+The whole agent is the `Agent` class in `src/agent.py`. A turn is one call to `agent.run_turn(text)`:
+
+1. The user's message is appended to `agent.messages`, the transcript in the OpenAI chat format.
+2. The transcript and the tool schemas are sent to the model. Its reply is appended as the API returned it.
+3. If the reply has tool calls, each one is run and its result appended, and the loop goes back to step 2.
+   If it has none, the reply is the answer and the turn ends.
+
+A tool call that needs the user's approval doesn't end the turn. The agent is built with an `approve` function,
+which it calls with the tool's name and arguments and waits for: it returns None to run the call, or the text the
+model gets as the result instead. The front-ends pass `Approvals.ask` (`src/approval.py`), which hands the question
+to their own thread.
+
+A turn ends early when it's interrupted, when the budget is spent or cancelled, when the context is nearly full, or
+when it runs out of tool rounds. Whatever notices raises `TurnStopped`, and `run_turn` catches it and returns
+which: "answered", "interrupted", "budget spent", "cancelled", "context full" or "out of tool rounds".
+
+The front-ends don't get events from the agent. They run the turn on a thread, read the agent's state as it
+grows (`messages`, `usage` with one entry per model call, and `budget`), and keep what the call returned.
+
+Everything else is built on that loop:
+
+| Feature | How | Read |
+|---|---|---|
+| Tools | Typed, documented functions marked `@tool`; the schema comes from the signature and docstring | `llm.py`, `tools.py` |
+| Shell | The `bash` and `job` tools, on the host or in a container | `shell.py` |
+| Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `skills.py` |
+| Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `subagents.py` |
+| Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact` |
+| Budget | A tree of spending limits that mirrors the agents | `usage.py` |
+
 ## Layout
 
 ```
 src/
-  agent.py      the agent loop: tool calls, approvals, compaction
+  agent.py      the agent loop: tool calls, compaction
+  approval.py   asking the user before a tool call runs
   coding.py     the coding agent and its subagent profiles
   prompts.py    system prompts and the compaction prompt
   shell.py      host and Docker shell backends

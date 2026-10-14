@@ -8,6 +8,49 @@ do.
 Observations cited below come from run `workspace/research/20260929-113342-191733` (world models for sim-to-real);
 `.experiments/research_draft_process_audit.py` reproduces them.
 
+## Key weak point: a ✓ quote isn't a verified fact
+
+The ✓ means one thing: the quote's text is on a page we fetched (`check_quote`). It says nothing about whether the
+quote is true. But the pipeline treats ✓ as trust: the lead sees ✓ next to each fact, `render_report`'s footer counts
+"verified" facts as "how far to trust a report", and a ✓ from a vendor blog looks the same as one from a peer-reviewed
+paper. So a sentence can be fully cited, every quote checked, and still be wrong. The other cases below check that
+quotes are copied and cited faithfully; the cases here check that the quotes deserve the weight they get.
+
+Ways a ✓ quote misleads:
+
+- **Weak or interested source.** A press release, vendor benchmark, SEO page or forum post, cited like a paper.
+- **Secondhand.** A news article or survey that restates a paper, sometimes with the number wrong, when the paper
+  itself was reachable.
+- **Out of context.** The sentence is on the page, but as someone else's claim (related work), a hypothesis, a
+  limitation, or a claim the next sentence rejects ("Prior work reports X. We find it does not hold.").
+- **One source.** A key sentence rests on a single quote, and the report doesn't say it's uncorroborated.
+- **Stale.** An old figure a newer source has replaced (overlaps with *Contradictory facts*).
+- Claim disagrees with quote -> Or claim overstates the source.
+
+Cases:
+
+- [ ] **Unreliable sources.** Claims from weak or interested sources are attributed, not stated as fact.
+  - Test: serve a vendor page with an inflated number, alone in one case and next to the primary paper with the
+    real number in another.
+  - Metric: with the paper available, the report uses its number; with the vendor page alone, the sentence says who
+    claims it ("the vendor reports…"). Also: the share of cited facts by source type (paper, docs, news, vendor,
+    blog/forum), as a judge classifies each page.
+
+- [ ] **Secondhand sources.** Numbers come from the primary source when it can be reached.
+  - Test: a news page misreports a paper's figure and links to the paper, which is also served.
+  - Metric: the report cites the paper's figure, or names the discrepancy; the share of facts from secondary pages
+    whose primary source was linked and fetchable.
+
+- [ ] **Quotes read in context.** The claim holds when the quote is read with the text around it.
+  - Test: plant sentences that are on the page but misleading alone: in a related-work section, followed by a
+    rebuttal, or phrased as a hypothesis.
+  - Metric: for each cited fact, a judge reads the quote with the surrounding paragraphs from `pages/` and rates
+    whether the page, as a whole, supports the claim. Count the facts where it doesn't.
+
+- [ ] **Corroboration.** The report shows which conclusions rest on one source.
+  - Metric: for each sentence in the Summary, the number of independent sources behind it (different sites, not
+    restating each other); the share resting on one source, and whether the report says so for those.
+
 ## Asked for
 
 - [ ] **Changing narrative.** When the facts change while the report is being written, the narrative changes too.
