@@ -13,7 +13,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol, runtime_checkable
+from typing import Annotated, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
@@ -234,13 +234,6 @@ class ChatBackend(Protocol):
     tests pass scripted ones."""
 
     def complete(self, request: ChatRequest) -> Completion: ...
-
-
-@runtime_checkable
-class HasCredits(Protocol):
-    """An endpoint that reports the API key's spend and limit, like OpenRouter's."""
-
-    def credits(self) -> dict: ...
 
 
 class StreamingBackend(Protocol):

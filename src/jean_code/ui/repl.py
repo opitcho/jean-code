@@ -11,7 +11,7 @@ from pathlib import Path
 from jean_code.agents.coding import coding_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
-from jean_code.core.llm import AssistantMessage, HasCredits, Message, ToolMessage
+from jean_code.core.llm import AssistantMessage, Message, ToolMessage
 from jean_code.core.usage import breakdown_lines, human, usage_line
 from jean_code.ui.approval import Approvals, denied
 
@@ -182,10 +182,11 @@ def print_cost(agent: Agent) -> None:
     if len(budget.nodes()) > 1:
         for line in breakdown_lines(budget.breakdown()):
             print(dim(line))
-    if not isinstance(agent.client, HasCredits):  # only OpenRouter reports credits
+    credits = getattr(agent.client, "credits", None)  # only OpenRouter reports credits
+    if credits is None:
         return
     try:
-        key = agent.client.credits()
+        key = credits()
     except Exception as e:  # noqa: BLE001 - the credits line is optional
         print(f"credits unavailable: {type(e).__name__}: {e}")
         return

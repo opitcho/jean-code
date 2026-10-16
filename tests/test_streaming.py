@@ -11,7 +11,6 @@ from jean_code.core.llm import (
     ChatBackend,
     ChatRequest,
     Completion,
-    HasCredits,
     MalformedResponse,
     StreamingBackend,
     StreamingClient,
@@ -201,9 +200,8 @@ def test_a_stream_with_no_chunk_is_malformed(monkeypatch):
 
 def test_the_streaming_client_satisfies_each_backend_protocol():
     # The return annotation is the check, made by pyright: it fails if a protocol method is missing or mismatched.
-    def backends(client: StreamingClient) -> tuple[StreamingBackend, ChatBackend, HasCredits]:
-        return client, client, client
+    def backends(client: StreamingClient) -> tuple[StreamingBackend, ChatBackend]:
+        return client, client
 
     client = StreamingClient("https://example.test/api", "key")
-    assert backends(client) == (client, client, client)
-    assert isinstance(client, HasCredits)
+    assert backends(client) == (client, client)
