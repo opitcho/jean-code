@@ -10,8 +10,7 @@ import copy
 import json
 import os
 import time
-from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
 
@@ -254,7 +253,8 @@ class ChatClient:
 
     def complete(self, request: ChatRequest) -> Completion:
         """Send `request` and return the parsed completion. Raises `MalformedResponse` for a response it can't use."""
-        response = self._post({**self.extra, **render_request(request)})
+        response = self._send({**self.extra, **render_request(request)})
+        response.read()
         try:
             data = response.json()
         except ValueError as e:
@@ -263,27 +263,22 @@ class ChatClient:
             raise RuntimeError(f"model error: {data['error']}")
         return parse_completion(data)
 
-    def _post(self, body: dict) -> httpx.Response:
-        """POST a chat completion and read the whole response. Retries and raises like `_request`."""
-        with self._request(body) as response:
-            response.read()
-        return response
-
-    @contextmanager
-    def _request(self, body: dict) -> Generator[httpx.Response]:
-        """POST a chat completion and hold the response open for reading, retrying the statuses in RETRY_STATUSES
-        with backoff. Raises on any other error."""
+    def _send(self, body: dict) -> httpx.Response:
+        """POST a chat completion and return the response with its body unread: the caller reads or closes it.
+        Retries the statuses in RETRY_STATUSES with backoff; raises on any other error."""
+        request = self.http.build_request("POST", f"{self.base_url}/chat/completions", json=body)
         attempt = 0
         while True:
-            with self.http.stream("POST", f"{self.base_url}/chat/completions", json=body) as response:
-                if response.status_code not in RETRY_STATUSES or attempt >= self.retries:
-                    if response.is_error:
-                        response.read()
-                        raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
-                    yield response
-                    return
+            response = self.http.send(request, stream=True)
+            if response.status_code not in RETRY_STATUSES or attempt >= self.retries:
+                break
+            response.close()
             time.sleep(2**attempt)
             attempt += 1
+        if response.is_error:
+            response.read()
+            raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
+        return response
 
     def credits(self) -> dict:
         """The API key's spend and limit, from OpenRouter's /key endpoint."""
@@ -302,7 +297,8 @@ class StreamingClient(ChatClient):
         data: dict = {}
         message: dict = {"role": "assistant"}
         finish_reason = None
-        with self._request({**self.extra, **render_request(request), "stream": True}) as response:
+        response = self._send({**self.extra, **render_request(request), "stream": True})
+        try:
             for line in response.iter_lines():
                 # Blank separators, ": OPENROUTER PROCESSING" keep-alives and the end marker carry no chunk
                 if not line.startswith("data: ") or line == "data: [DONE]":
@@ -324,6 +320,8 @@ class StreamingClient(ChatClient):
                         yield TextDelta("reasoning", delta["reasoning"])
                     if delta.get("content"):
                         yield TextDelta("content", delta["content"])
+        finally:
+            response.close()
         if not data:
             raise MalformedResponse("stream ended without a chunk")
         yield parse_completion({**data, "choices": [{"message": message, "finish_reason": finish_reason}]})
