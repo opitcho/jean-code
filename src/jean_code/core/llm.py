@@ -10,7 +10,7 @@ import copy
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
@@ -270,7 +270,7 @@ class ChatClient:
         return response
 
     @contextmanager
-    def _request(self, body: dict) -> Iterator[httpx.Response]:
+    def _request(self, body: dict) -> Generator[httpx.Response]:
         """POST a chat completion and hold the response open for reading, retrying the statuses in RETRY_STATUSES
         with backoff. Raises on any other error."""
         attempt = 0
