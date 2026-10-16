@@ -92,11 +92,11 @@ def test_every_call_of_a_turn_is_recorded_in_order():
     assert agent.total_cost == pytest.approx(0.006)
 
 
-def test_response_without_usage_is_recorded_with_unknown_cost():
-    # Catches a call without usage leaving no trace and counting as free.
+def test_response_without_usage_is_recorded_with_unknown_cost(caplog):
+    # Catches a call without usage leaving no trace, or counting as free without a warning.
     agent, _ = make_agent([response("hi", no_usage=True, id="gen-x")])
-    with pytest.raises(RuntimeError, match="gen-x reported no cost"):
-        agent.run_turn("hello")
+    assert agent.run_turn("hello") == "answered"
+    assert "gen-x reported no cost" in caplog.text
     assert len(agent.usage) == 1
     assert agent.usage[0].generation_id == "gen-x"
     assert agent.usage[0].cost is None
@@ -183,13 +183,13 @@ def test_no_budget_runs_to_the_round_limit():
     ids=["no usage", "cost None"],
 )
 @pytest.mark.parametrize("max_cost", [1.0, None], ids=["budget", "no budget"])
-def test_unknown_cost_ends_the_turn_with_an_error(unknown, max_cost):
-    # Catches a call of unknown cost counting as free and the turn carrying on, with or without a budget.
-    agent, client = make_agent([tool_reply(), unknown, response("never")], max_cost=max_cost)
-    with pytest.raises(RuntimeError, match="reported no cost"):
-        agent.run_turn("go")
-    assert len(client.requests) == 2
-    assert len(agent.usage) == 2 and agent.usage[-1].cost is None
+def test_unknown_cost_warns_and_the_turn_carries_on(unknown, max_cost, caplog):
+    # Catches a call of unknown cost stopping the turn, or passing without a warning, with or without a budget.
+    agent, client = make_agent([tool_reply(), unknown, response("done")], max_cost=max_cost)
+    assert agent.run_turn("go") == "answered"
+    assert "reported no cost" in caplog.text
+    assert len(client.requests) == 3
+    assert len(agent.usage) == 3 and agent.usage[1].cost is None
 
 
 @pytest.mark.parametrize("max_cost", [0, -1])

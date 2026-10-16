@@ -79,3 +79,11 @@ def test_docker_shells_in_one_workspace_keep_separate_jobs(tmp_path):
     a.close()
     assert not a.jobs_dir.exists() and b.jobs_dir.exists()
     b.close()
+
+
+def test_closing_a_docker_shell_forgets_its_jobs(tmp_path):
+    # Catches a resumed sandbox numbering its jobs on from ones whose container and files are gone.
+    shell = DockerShell(workdir=tmp_path)
+    shell.jobs["1"] = 0  # as bash(background=True) records a job
+    shell.close()
+    assert shell.jobs == {}

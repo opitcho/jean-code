@@ -1,11 +1,13 @@
 """StreamingClient: a streamed reply yields its text as it arrives and is rebuilt into the reply `complete` returns."""
 
+import itertools
 import json
+import random
 
 import httpx
 import pytest
 
-from conftest import REAL_ASSISTANT, usage
+from conftest import REAL_ASSISTANT, REAL_META, REAL_USAGE, usage
 from jean_code.core import llm
 from jean_code.core.llm import ChatRequest, Completion, MalformedResponse, StreamingClient, TextDelta, render_message
 
@@ -187,3 +189,88 @@ def test_a_stream_with_no_chunk_is_malformed(monkeypatch):
     client = streaming_client(monkeypatch, sse())
     with pytest.raises(MalformedResponse, match="without a chunk"):
         list(client.stream(REQUEST))
+
+
+def whole(message: dict, finish_reason: str) -> dict:
+    """A non-streamed response carrying `message`, with real metadata and usage."""
+    choice = {"index": 0, "message": message, "finish_reason": finish_reason}
+    return {**REAL_META, "object": "chat.completion", "choices": [choice], "usage": REAL_USAGE}
+
+
+ANSWER = "The tool returned 6912."
+WHOLE_RESPONSES = {
+    "parallel tool calls": whole(REAL_ASSISTANT, "tool_calls"),
+    "answer": whole(
+        {
+            "role": "assistant",
+            "content": "1234 + 5678 = **6912**",
+            "refusal": None,
+            "reasoning": ANSWER,
+            "reasoning_details": [{"type": "reasoning.text", "text": ANSWER, "format": "unknown", "index": 0}],
+        },
+        "stop",
+    ),
+}
+
+
+def pieces(text: str, rng: random.Random) -> list[str]:
+    """`text` cut at random points; repeated cuts give the empty pieces providers also send."""
+    cuts = sorted(rng.choices(range(len(text) + 1), k=rng.randint(0, 6)))
+    bounds = [0, *cuts, len(text)]
+    return [text[start:end] for start, end in itertools.pairwise(bounds)]
+
+
+def as_chunks(response: dict, rng: random.Random) -> list[dict]:
+    """The chunks a provider could stream for a whole `response`, in the order DeepSeek sends them
+    (`.experiments/output/stream_wire.txt`): reasoning, answer, then each tool call's fragments in turn, with every
+    text cut at random points and the usage on the last choice or in a chunk of its own."""
+    meta = {key: value for key, value in response.items() if key not in ("object", "choices", "usage")}
+    choice = response["choices"][0]
+    message = choice["message"]
+
+    def chunk(delta: dict, finish_reason=None) -> dict:
+        choice = {"index": 0, "delta": {"role": "assistant", **delta}, "finish_reason": finish_reason}
+        return {**meta, "object": "chat.completion.chunk", "choices": [choice]}
+
+    chunks = []
+    if message.get("reasoning"):
+        [detail] = message["reasoning_details"]  # each reasoning chunk carries the same text as a detail fragment
+        assert detail["text"] == message["reasoning"]
+        for piece in pieces(message["reasoning"], rng):
+            chunks.append(chunk({"content": "", "reasoning": piece, "reasoning_details": [{**detail, "text": piece}]}))
+    for piece in pieces(message.get("content") or "", rng):
+        chunks.append(chunk({"content": piece}))
+    for call in message.get("tool_calls", []):
+        head = {"index": call["index"], "id": call["id"], "type": call["type"]}
+        function = {"name": call["function"]["name"], "arguments": ""}
+        chunks.append(chunk({"content": None, "tool_calls": [{**head, "function": function}]}))
+        for piece in pieces(call["function"]["arguments"], rng):
+            fragment = {"index": call["index"], "function": {"arguments": piece}}
+            chunks.append(chunk({"content": None, "tool_calls": [fragment]}))
+    chunks.append(chunk({"content": ""}, choice["finish_reason"]))
+    if rng.random() < 0.5:
+        chunks[-1]["usage"] = response["usage"]
+    else:
+        chunks.append({**meta, "object": "chat.completion.chunk", "choices": [], "usage": response["usage"]})
+    return chunks
+
+
+def compared(completion: Completion) -> dict:
+    """A completion's fields, with the message as it is sent back: a whole reply's `refusal: null` isn't sent, so it
+    doesn't count."""
+    return {**vars(completion), "message": render_message(completion.message)}
+
+
+@pytest.mark.parametrize("seed", range(100))
+@pytest.mark.parametrize("name", WHOLE_RESPONSES)
+def test_a_streamed_reply_completes_like_the_same_reply_sent_whole(monkeypatch, name, seed):
+    # Catches a stream rebuilt into a different reply than `complete` parses, wherever the provider cuts its text.
+    rng = random.Random(seed)  # noqa: S311 - seeded cut points, not secrets
+    response = WHOLE_RESPONSES[name]
+    sent_whole = streaming_client(monkeypatch, httpx.Response(200, json=response)).complete(REQUEST)
+    stream = sse(*as_chunks(response, rng), keep_alives=rng.randint(0, 2))
+    deltas, streamed = split(streaming_client(monkeypatch, stream).stream(REQUEST))
+    assert compared(streamed) == compared(sent_whole)
+    message = response["choices"][0]["message"]
+    for kind in ("reasoning", "content"):
+        assert "".join(delta.text for delta in deltas if delta.kind == kind) == (message.get(kind) or "")

@@ -115,7 +115,7 @@ Everything else is built on that loop:
 | Shell | The `bash` and `job` tools, on the host or in a container | `tools/shell.py` |
 | Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `core/skills.py` |
 | Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `core/subagents.py` |
-| Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact` |
+| Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact`, `core/compaction.py` |
 | Budget | A tree of spending limits that mirrors the agents | `core/usage.py` |
 
 ## Layout
@@ -124,12 +124,12 @@ Everything else is built on that loop:
 src/jean_code/
   config.py                paths in the repo
   core/                    the agent machinery; imports nothing from the packages below
-    agent.py               the agent loop: tool calls, compaction
+    agent.py               the agent loop: tool calls, and running compactions
     llm.py                 OpenRouter client, and tool schemas built from functions
     usage.py               cost records, logging and budgets
     subagents.py           starting, waiting for and managing subagent runs
     skills.py              skills: discovery, the load tools and /name commands
-    compaction_prompts.py  the compaction prompt and the messages it writes
+    compaction.py          compaction's prompts, and which turns it replaces
   tools/                   what a model calls; imports only core
     shell.py               host and Docker shell backends
     web.py                 the web tools agents call: search, and fetching a page a window at a time

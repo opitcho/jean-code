@@ -121,11 +121,11 @@ def test_ctrl_d_at_the_approval_prompt_stops_the_turn(monkeypatch, capsys):
 
 
 def test_unknown_cost_message(capsys):
-    # Catches the unknown-cost error missing from the output or shown as a budget stop.
+    # Catches an unknown cost ending the turn, or shown as free or as a budget stop.
     agent = make_agent([response("hi", no_usage=True)], max_cost=1.0)
-    run_and_print(agent, "go")
+    assert run_and_print(agent, "go") == "answered"
     out = capsys.readouterr().out
-    assert "[error] RuntimeError: model call" in out and "reported no cost" in out
+    assert "$?" in out and "[error]" not in out
     assert "budget of" not in out and "[interrupted]" not in out
 
 

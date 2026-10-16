@@ -131,11 +131,11 @@ def test_an_answer_that_spends_the_last_of_the_budget_is_done():
     assert run.outcome(TIMEOUT) == done("the answer")
 
 
-def test_unknown_cost_is_failed():
-    # Catches a run going on after a call of unknown cost, which its budget can't count.
-    run = Run.start(make_agent([response(tool_calls=[call("add", a=1, b=2)], no_usage=True), response("never")]), "go")
-    outcome = run.outcome(TIMEOUT)
-    assert outcome.status == "failed" and "reported no cost" in outcome.text
+def test_unknown_cost_does_not_fail_the_run():
+    # Catches a call of unknown cost failing the run instead of only being warned about.
+    unknown = response(tool_calls=[call("add", a=1, b=2)], no_usage=True)
+    run = Run.start(make_agent([unknown, response("the answer")]), "go")
+    assert run.outcome(TIMEOUT) == done("the answer")
 
 
 def test_a_full_context_is_stopped():
@@ -248,3 +248,93 @@ def test_a_malformed_response_fails_the_run():
     run = Run.start(make_agent([bad], root.child(0.5, "1")), "go")
     outcome = run.outcome(TIMEOUT)
     assert outcome is not None and outcome.status == "failed" and outcome.text.startswith("MalformedResponse:")
+
+
+# ---------------------------------------------------------------- resuming
+
+
+def test_resume_continues_the_same_agent():
+    # Catches a follow-up that starts a fresh agent, a new budget node, or drops the earlier turn from the context.
+    agent = make_agent([response("first")])
+    run = Run.start(agent, "go")
+    assert run.outcome(TIMEOUT) == done("first")
+    scripted(agent).responses.append(response("second"))
+    again = run.resume("more")
+    assert again.outcome(TIMEOUT) == done("second")
+    assert again is not run and again.agent is agent and again.path == run.path
+    assert (run.task, again.task) == ("go", "more")
+    contents = [message.content for message in agent.messages]
+    assert contents[-2:] == ["more", "second"] and "first" in contents[:-2]  # a second turn adds the head marker
+    sent = [message["content"] for message in scripted(agent).requests[-1]["messages"]]
+    assert "first" in sent and sent[-1] == "more"  # the follow-up's call saw turn one
+
+
+def test_resume_refuses_a_running_run():
+    # Catches a second turn started on an agent that is still in its first one.
+    agent = make_agent([response("later")])
+    gate = gated(agent)
+    run = Run.start(agent, "/gate go")
+    with pytest.raises(ValueError, match="still running"):
+        run.resume("more")
+    gate.set()
+    assert run.outcome(TIMEOUT) == done("later")
+    assert len(scripted(agent).requests) == 1
+
+
+def failed_run() -> Run:
+    return Run.start(make_agent([RuntimeError("HTTP 500")]), "go")
+
+
+def cancelled_run() -> Run:
+    agent = make_agent([])
+    gate = gated(agent)
+    run = Run.start(agent, "/gate go")
+    run.cancel()
+    gate.set()
+    return run
+
+
+def budget_spent_run() -> Run:
+    return Run.start(make_agent([tool_reply(cost=0.004, content="let me check")], Budget(0.004)), "go")
+
+
+def tool_rounds_run() -> Run:
+    return Run.start(make_agent([tool_reply(), tool_reply()], max_tool_rounds=1), "go")
+
+
+@pytest.mark.parametrize(
+    ("start", "first"),
+    [
+        (failed_run, ("failed", None)),
+        (cancelled_run, ("stopped", "cancelled")),
+        (budget_spent_run, ("stopped", "budget spent")),
+        (tool_rounds_run, ("stopped", "out of tool rounds")),
+    ],
+)
+def test_resume_after_every_ending(start, first):
+    # Catches a run that can't be continued because of how it stopped: nothing about an ending is final.
+    run = start()
+    outcome = run.outcome(TIMEOUT)
+    assert (outcome.status, outcome.reason) == first
+    run.agent.max_cost = run.agent.budget.spent + 1.0  # a spent budget is topped up, as Subagents.resume does
+    scripted(run.agent).responses.append(response("carried on"))
+    again = run.resume("carry on")
+    assert again.outcome(TIMEOUT) == done("carried on")
+    assert not run.agent.budget.cancelled
+
+
+def test_resume_after_a_full_context_stops_again():
+    # Catches a resumed full context that calls the model anyway, or isn't reported as still full.
+    run = Run.start(make_agent([], context_window=10, compact_at=None), "go")
+    assert run.outcome(TIMEOUT).reason == "context full"
+    again = run.resume("carry on")
+    assert (again.outcome(TIMEOUT).status, again.outcome(TIMEOUT).reason) == ("stopped", "context full")
+    assert scripted(run.agent).requests == []
+
+
+def test_a_resumed_run_keeps_its_report():
+    # Catches a resumed research lead answering with its last reply instead of its notebook.
+    agent = make_agent([response("see the notebook"), response("updated the notebook")])
+    run = Run.start(agent, "go", report=lambda: "the notebook")
+    assert run.outcome(TIMEOUT) == done("the notebook")
+    assert run.resume("dig deeper").outcome(TIMEOUT) == done("the notebook")

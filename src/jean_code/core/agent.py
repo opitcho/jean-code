@@ -1,5 +1,6 @@
 import itertools
 import json
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -7,14 +8,7 @@ from typing import Literal
 
 from pydantic import validate_call
 
-from jean_code.core.compaction_prompts import (
-    COMPACTION_PROMPT,
-    EARLIER_SUMMARY_NOTE,
-    HEAD_MARKER,
-    HEAD_MARKER_TAG,
-    SUMMARY_MESSAGE,
-    SUMMARY_TAG,
-)
+from jean_code.core.compaction import HEAD_MARKER, SUMMARY_MESSAGE, middle, summary_failure, summary_prompt, turn_starts
 from jean_code.core.llm import (
     AssistantMessage,
     ChatBackend,
@@ -32,6 +26,8 @@ from jean_code.core.skills import Skills
 from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
 from jean_code.core.tool_schema import is_tool, tool_schema
 from jean_code.core.usage import Budget, ModelCall
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
@@ -70,15 +66,6 @@ def message_tokens(message: Message) -> int:
     return estimate_tokens(render_message(message))
 
 
-def is_synthetic(message: Message) -> bool:
-    """True for the user messages the agent writes itself: the head marker and summaries."""
-    return isinstance(message, UserMessage) and message.content.startswith((HEAD_MARKER_TAG, SUMMARY_TAG))
-
-
-def ordinal(n: int) -> str:
-    return "last" if n == 1 else f"{n}{ {2: 'nd', 3: 'rd'}.get(n, 'th') }-to-last"
-
-
 class Agent:
     """A tool-calling agent: one conversation with a model, and the tools the model may call.
 
@@ -95,7 +82,8 @@ class Agent:
         needs_approval: Names of the tools whose calls are run only if `approve` allows them.
         approve: Asked before each such call, on the turn's thread, with the tool's name and arguments; the turn
             waits for it. Returns None to run the call, or the text the model gets as its result instead.
-        cleanup: Functions `close()` runs, to release what the tools hold.
+        cleanup: Functions `close()` runs, to release what the tools hold. A subagent is closed after every turn
+            and may be resumed, so what they release must come back on next use.
         reasoning: Effort: "low", "medium" or "high". None sends no reasoning setting.
         max_tool_rounds: A turn makes at most 1 + this many model calls.
         client: Where requests are sent. OpenRouter by default.
@@ -242,7 +230,7 @@ class Agent:
             blocks = "\n\n".join(result_block(id, profile, run.outcome()) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
-        if self.head_end is None and len(self._turn_starts()) == self.keep_first:
+        if self.head_end is None and len(turn_starts(self.messages)) == self.keep_first:
             self.messages.append(UserMessage(content=HEAD_MARKER))
             self.head_end = len(self.messages)
         self.messages.append(UserMessage(content=content))
@@ -274,33 +262,24 @@ class Agent:
         tokens_before = self.context_tokens
         if not force and (self.compact_at is None or tokens_before < self.compact_at):
             return "below threshold"
-        region = self._middle()
+        messages = self.messages
+        region = middle(messages, self.head_end, self.keep_last)
         if region is None:
             return "nothing to compact"
-        messages = self.messages
         start, end = region
-        head, middle, tail = messages[:start], messages[start:end], messages[end:]
-        record = {"status": None, "removed": len(middle), "tokens_before": tokens_before}
+        head, replaced, tail = messages[:start], messages[start:end], messages[end:]
+        record = {"status": None, "removed": len(replaced), "tokens_before": tokens_before}
         self.compactions.append(record)
 
         # Check that compacting can bring the context under compact_at.
         schemas = estimate_tokens(self._tool_schemas())
         kept_estimate = schemas + sum(message_tokens(m) for m in head + tail)
-        kept = round(tokens_before * kept_estimate / (kept_estimate + sum(message_tokens(m) for m in middle)))
+        kept = round(tokens_before * kept_estimate / (kept_estimate + sum(message_tokens(m) for m in replaced)))
         if not force and self.compact_at is not None and kept >= self.compact_at:
             record["status"] = f"skipped: the kept turns alone take ~{kept} tokens, over compact_at"
             return record["status"]
 
-        first = tail[0]
-        if not isinstance(first, UserMessage):  # _middle cuts at a turn start, so this can't happen
-            raise RuntimeError("compaction's kept tail doesn't start with a user turn")
-        prompt = COMPACTION_PROMPT.format(
-            head_tag=HEAD_MARKER_TAG,
-            ordinal=ordinal(self.keep_last),
-            tail_quote=" ".join(first.content.split())[:80],
-            earlier_summary=EARLIER_SUMMARY_NOTE if is_synthetic(middle[0]) else "",
-        )
-        request = self._build_request(UserMessage(content=prompt))
+        request = self._build_request(UserMessage(content=summary_prompt(replaced, tail, self.keep_last)))
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
@@ -308,61 +287,39 @@ class Agent:
         booked = len(self.usage)
         try:
             completion = self._call(request, kind="compaction")
-            summary = completion.message.content.strip()
         except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
             record["status"] = f"failed: {type(e).__name__}: {e}"
             return record["status"]
         finally:
             record["call"] = self.usage[-1] if len(self.usage) > booked else None  # booked even when it failed
-        if completion.message.tool_calls:
-            record["status"] = "failed: the model called a tool instead of summarizing"
-        elif completion.finish_reason == "length":
-            record["status"] = "failed: the summary was cut off at the length limit"
-        elif not summary:
-            record["status"] = "failed: the summary was empty"
-        elif self._interrupt.is_set():
-            record["status"] = "failed: interrupted"
-        if record["status"]:
-            return record["status"]
+        if failure := summary_failure(completion, self._interrupt.is_set()):
+            record["status"] = failure
+            return failure
 
+        summary = completion.message.content.strip()
         record["summary"] = UserMessage(content=SUMMARY_MESSAGE.format(summary=summary))
         record["before"] = messages  # the old list itself: it's replaced, never modified
         self.messages = [*head, record["summary"], *tail]
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
         new_estimate = kept_estimate + message_tokens(record["summary"])
-        old_estimate = kept_estimate + sum(message_tokens(m) for m in middle)
+        old_estimate = kept_estimate + sum(message_tokens(m) for m in replaced)
         self._measured = (len(self.messages), round(tokens_before * new_estimate / old_estimate))
         record["tokens_after"] = self.context_tokens
         record["status"] = "compacted"
         return record["status"]
 
-    def _turn_starts(self) -> list[int]:
-        """Indices of the user's own messages, each of which starts a turn."""
-        return [i for i, m in enumerate(self.messages) if isinstance(m, UserMessage) and not is_synthetic(m)]
-
-    def _middle(self) -> tuple[int, int] | None:
-        """(start, end) of the messages a compaction would replace, or None if they hold no turn of the user's."""
-        starts = self._turn_starts()
-        if self.head_end is None or len(starts) < self.keep_last:
-            return None
-        end = starts[-self.keep_last]
-        if not any(self.head_end <= i < end for i in starts):
-            return None  # nothing new: at most an earlier summary
-        return self.head_end, end
-
     def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
-        """The one place the agent calls the model. Books the call, then refuses a response that reported no cost.
+        """The one place the agent calls the model. Books the call, and warns if the response reported no cost.
 
         Raises:
             MalformedResponse: The response couldn't be used. The call isn't booked.
-            RuntimeError: The response reported no cost, so spend can't be tracked. The call is booked first.
         """
         self.last_request = request
         completion = self.client.complete(request)
         call = self._book(completion, kind)
         if call.cost is None:
-            raise RuntimeError(f"model call {call.generation_id} reported no cost, so spend can't be tracked")
+            log.warning("model call %s reported no cost, so spend can't be tracked", call.generation_id)
         return completion
 
     def _book(self, completion: Completion, kind: str | None) -> ModelCall:
@@ -378,7 +335,11 @@ class Agent:
         own: dict[str, Callable] = {}
         own |= self.skills.tools()
         if self.subagents:
-            own |= {"spawn": self.subagents.spawn, "subagent": self.subagents.subagent}
+            own |= {
+                "spawn": self.subagents.spawn,
+                "subagent": self.subagents.subagent,
+                "resume": self.subagents.resume,
+            }
         if clash := sorted(self.tool_map.keys() & own.keys()):
             raise ValueError(f"tools named like the agent's own: {', '.join(clash)}")
         if unmarked := [name for name, fn in self.tool_map.items() if not is_tool(fn)]:

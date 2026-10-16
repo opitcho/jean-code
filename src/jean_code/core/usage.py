@@ -125,8 +125,9 @@ class Budget:
     of its node. With `log_path` set on the root, each call is also appended to that file as it's charged,
     whichever agent made it and whenever.
 
-    `cancel()` stops a subtree for good: its agents make no further call. Unlike an agent's interrupt, which
-    every turn clears, nothing clears it, so a cancel sent before a turn starts still holds.
+    `cancel()` stops a subtree's work now: its agents make no further call. Unlike an agent's interrupt, which
+    every turn clears, nothing clears it during a turn, so a cancel sent before a turn starts still holds.
+    `reopen()` clears it between turns, for a subagent that is resumed.
 
     Thread-safe: one lock per tree, shared by all its nodes.
     """
@@ -146,7 +147,7 @@ class Budget:
         self.log_path = log_path  # read at the root only; settable, e.g. by a UI once it has built the agent
         self.children: list[Budget] = []
         self.entries: list[ModelCall] = []  # this node's own calls: its agent's usage
-        self._cancelled = False  # set once by cancel(), never cleared
+        self._cancelled = False  # set by cancel(), cleared only by reopen()
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
         self._journal: list[ModelCall] = parent._journal if parent else []
 
@@ -184,8 +185,14 @@ class Budget:
             append_log(path, [call])
 
     def cancel(self) -> None:
-        """No more model calls in this subtree. Never cleared: a cancelled node stays cancelled."""
+        """No more model calls in this subtree, until `reopen()`. Stops work from outside it: a parent dropping a
+        run, an interrupted wait, a close."""
         self._cancelled = True
+
+    def reopen(self) -> None:
+        """Clear this node's cancel, so a resumed run can call the model again. Only this node: a cancelled
+        ancestor still stops it. Call it only between turns, so a cancel sent to a turn holds for that turn."""
+        self._cancelled = False
 
     @property
     def spent(self) -> float:

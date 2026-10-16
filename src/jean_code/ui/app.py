@@ -26,7 +26,7 @@ from jean_code.agents.coding import coding_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core import llm
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent
-from jean_code.core.compaction_prompts import HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
 from jean_code.core.llm import Message, render_message
 from jean_code.core.subagents import Run
 from jean_code.core.usage import human, usage_line
@@ -526,7 +526,9 @@ def agent_caption(view: View) -> str:
         f"{len(view.agent.usage)} calls · ${view.agent.total_cost:.4f}",
     ]
     if view.run is not None:
-        parts.append(clip(re.sub(r"[*_`#>\[\]]+", "", view.run.task), 48))  # plain text: captions are markdown
+        # The spawn task, which the budget node keeps: a resumed run's own task is its follow-up message
+        task = view.agent.budget.task
+        parts.append(clip(re.sub(r"[*_`#>\[\]]+", "", task), 48))  # plain text: captions are markdown
     return " · ".join(parts)
 
 

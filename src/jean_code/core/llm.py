@@ -1,12 +1,11 @@
 """The chat-completions wire format: typed messages and usage, and OpenRouter clients, plain and streaming.
 
-`parse_completion` is the only code that reads a response, and `render_request` and `render_message` the only code
-that writes one; a streamed reply is first rebuilt into the response it stands for. The message types mirror the
-OpenAI chat format field for field and keep unknown fields as pydantic extras, so a message renders back to exactly
-the dict it was parsed from.
+`parse_completion` reads a response and `_parse_chunk` a streamed chunk, and `render_request` and `render_message`
+are the only code that writes one; a streamed reply is rebuilt from its chunks by `_join_chunks`. The message types
+mirror the OpenAI chat format field for field and keep unknown fields as pydantic extras, so a message renders back
+to exactly the dict it was parsed from.
 """
 
-import copy
 import json
 import os
 import time
@@ -171,56 +170,124 @@ def parse_completion(data: object) -> Completion:
     return Completion(choice.message, choice.finish_reason, r.id, r.provider, r.model, r.created, r.usage)
 
 
-def _find_by_index(entries: list[dict], index: object) -> dict | None:
-    """The entry whose `index` field equals `index`, or None if none has arrived yet."""
-    for entry in entries:
-        if entry.get("index") == index:
-            return entry
-    return None
+class _FunctionDelta(BaseModel):
+    """The `function` of a tool-call fragment: the call's first fragment brings the `name`, and each fragment the
+    next piece of the `arguments`."""
+
+    name: str | None = None
+    arguments: Annotated[str, _null_as("")] = ""
 
 
-def _merge_tool_calls(calls: list[dict], fragments: list[dict]) -> None:
-    """Add one chunk's tool-call fragments to `calls`. A call is spread over several chunks whose fragments share its
-    `index`: the first brings the call's `id` and `name`, each later one the next piece of its `arguments`."""
-    for fragment in fragments:
-        call = _find_by_index(calls, fragment.get("index"))
-        if call is None:
-            calls.append(copy.deepcopy(fragment))
-            continue
-        function = fragment.get("function") or {}
-        call["function"]["arguments"] += function.get("arguments") or ""
+class _ToolCallDelta(BaseModel):
+    """A fragment of one tool call. A call's fragments share its `index` and arrive in order: the first brings the
+    call's `id`, `type` and `name`, the later ones the rest of its `arguments`."""
+
+    index: int
+    id: str | None = None
+    type: str | None = None
+    function: _FunctionDelta = Field(default_factory=_FunctionDelta)
 
 
-def _merge_reasoning_details(details: list[dict], fragments: list[dict]) -> None:
-    """Add one chunk's reasoning-detail fragments to `details`. Fragments of one entry share its `index`, each
-    carrying the next piece of its `text`."""
-    for fragment in fragments:
-        entry = _find_by_index(details, fragment.get("index"))
-        if entry is None:
-            details.append(dict(fragment))
-            continue
-        text = entry.get("text") or ""
-        entry["text"] = text + (fragment.get("text") or "")
+class _Delta(BaseModel):
+    """What one chunk adds to the reply; null reads as nothing added. `reasoning_details` fragments stay plain dicts,
+    kept as sent: their fields differ by provider (`text`, `summary`, encrypted `data`)."""
+
+    content: Annotated[str, _null_as("")] = ""
+    reasoning: Annotated[str, _null_as("")] = ""
+    tool_calls: Annotated[list[_ToolCallDelta], _null_as([])] = []
+    reasoning_details: Annotated[list[dict], _null_as([])] = []
 
 
-def _apply_delta(message: dict, delta: dict) -> None:
-    """Merge one chunk's delta into the message being rebuilt. Null fields are skipped; a field that isn't text,
-    a tool call or reasoning details (`role`, `refusal`, …) keeps its latest value."""
-    for key, value in delta.items():
-        if value is None:
-            continue
-        if key in ("content", "reasoning"):
-            message[key] = message.get(key, "") + value
-        elif key == "tool_calls":
-            calls = message.get("tool_calls", [])
-            _merge_tool_calls(calls, value)
-            message["tool_calls"] = calls
-        elif key == "reasoning_details":
-            details = message.get("reasoning_details", [])
-            _merge_reasoning_details(details, value)
-            message["reasoning_details"] = details
-        else:
-            message[key] = value
+class _ChunkChoice(BaseModel):
+    delta: _Delta = Field(default_factory=_Delta)
+    finish_reason: str | None = None
+
+
+class _Chunk(BaseModel):
+    """One streamed chunk. `id`, `provider`, `model` and `created` repeat on every chunk; `usage` comes on the last."""
+
+    id: str
+    provider: str | None = None
+    model: str
+    created: int
+    usage: Usage | None = None
+    choices: list[_ChunkChoice] = []
+
+
+def _parse_chunk(line: str) -> _Chunk:
+    """One `data:` line of a stream as a chunk. Raises `RuntimeError` for a provider error reported mid-stream, and
+    `MalformedResponse` for a line that isn't a chunk."""
+    try:
+        data = json.loads(line.removeprefix("data: "))
+    except ValueError as e:
+        raise MalformedResponse(f"stream chunk is not JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise MalformedResponse(f"stream chunk is not a JSON object: {line}")
+    if "error" in data:  # OpenRouter reports a provider error mid-stream as a chunk
+        raise RuntimeError(f"model error: {data['error']}")
+    try:
+        return _Chunk.model_validate(data)
+    except ValidationError as e:
+        raise MalformedResponse(f"malformed stream chunk {data.get('id')!r}: {describe(e)}") from e
+
+
+def _join_tool_calls(deltas: list[_Delta]) -> list[dict]:
+    """The tool calls of a streamed reply, each joined from its fragments: a new `index` starts a new call, and a
+    fragment with the last call's `index` adds to its `arguments`."""
+    calls: list[dict] = []
+    for delta in deltas:
+        for fragment in delta.tool_calls:
+            if calls and calls[-1]["index"] == fragment.index:
+                calls[-1]["function"]["arguments"] += fragment.function.arguments
+            else:
+                calls.append(fragment.model_dump(exclude_none=True))
+    return calls
+
+
+def _join_reasoning_details(deltas: list[_Delta]) -> list[dict]:
+    """The `reasoning_details` of a streamed reply. A fragment with the same `index` as the last entry adds to its
+    `text` (DeepSeek streams its reasoning this way); any other fragment is a new entry, kept as sent."""
+    details: list[dict] = []
+    for delta in deltas:
+        for fragment in delta.reasoning_details:
+            index = fragment.get("index")
+            if details and index is not None and details[-1].get("index") == index:
+                details[-1]["text"] = details[-1].get("text", "") + fragment.get("text", "")
+            else:
+                details.append(dict(fragment))
+    return details
+
+
+def _join_chunks(chunks: list[_Chunk]) -> Completion:
+    """The completion a streamed reply stands for, rebuilt from its chunks. Raises `MalformedResponse` for a stream
+    with no chunk, or a reply that isn't a valid message (a tool call without an `id` or a `name`)."""
+    if not chunks:
+        raise MalformedResponse("stream ended without a chunk")
+    deltas: list[_Delta] = []
+    finish_reason = None
+    usage = None
+    for chunk in chunks:
+        if chunk.usage is not None:
+            usage = chunk.usage
+        for choice in chunk.choices:
+            deltas.append(choice.delta)
+            if choice.finish_reason is not None:
+                finish_reason = choice.finish_reason
+
+    message: dict = {
+        "content": "".join(delta.content for delta in deltas),
+        "reasoning": "".join(delta.reasoning for delta in deltas) or None,
+        "tool_calls": _join_tool_calls(deltas),
+    }
+    reasoning_details = _join_reasoning_details(deltas)
+    if reasoning_details:
+        message["reasoning_details"] = reasoning_details
+    last = chunks[-1]
+    try:
+        reply = AssistantMessage.model_validate(message)
+    except ValidationError as e:
+        raise MalformedResponse(f"malformed streamed reply {last.id!r}: {describe(e)}") from e
+    return Completion(reply, finish_reason, last.id, last.provider, last.model, last.created, usage)
 
 
 def render_message(message: Message) -> dict:
@@ -304,37 +371,23 @@ class StreamingClient(ChatClient):
         """Send `request` with streaming on: yield each piece of reasoning and answer as it arrives, then the parsed
         `Completion`. Nothing is sent until the first item is asked for, and stopping early closes the connection.
         Raises like `complete`."""
-        data: dict = {}
-        message: dict = {"role": "assistant"}
-        finish_reason = None
+        chunks: list[_Chunk] = []
         response = self._send({**self.extra, **render_request(request), "stream": True})
         try:
             for line in response.iter_lines():
                 # Blank separators, ": OPENROUTER PROCESSING" keep-alives and the end marker carry no chunk
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
-                try:
-                    chunk = json.loads(line.removeprefix("data: "))
-                except ValueError as e:
-                    raise MalformedResponse(f"stream chunk is not JSON: {e}") from e
-                if not isinstance(chunk, dict):
-                    raise MalformedResponse(f"stream chunk is not a JSON object: {line}")
-                if "error" in chunk:  # OpenRouter reports a provider error mid-stream as a chunk
-                    raise RuntimeError(f"model error: {chunk['error']}")
-                data.update((key, value) for key, value in chunk.items() if key != "choices" and value is not None)
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    _apply_delta(message, delta)
-                    finish_reason = choice.get("finish_reason") or finish_reason
-                    if delta.get("reasoning"):
-                        yield TextDelta("reasoning", delta["reasoning"])
-                    if delta.get("content"):
-                        yield TextDelta("content", delta["content"])
+                chunk = _parse_chunk(line)
+                chunks.append(chunk)
+                for choice in chunk.choices:
+                    if choice.delta.reasoning:
+                        yield TextDelta("reasoning", choice.delta.reasoning)
+                    if choice.delta.content:
+                        yield TextDelta("content", choice.delta.content)
         finally:
             response.close()
-        if not data:
-            raise MalformedResponse("stream ended without a chunk")
-        yield parse_completion({**data, "choices": [{"message": message, "finish_reason": finish_reason}]})
+        yield _join_chunks(chunks)
 
 
 def openrouter(api_key: str | None = None) -> ChatClient:

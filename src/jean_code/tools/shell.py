@@ -53,7 +53,7 @@ class Shell:
     def __init__(self, workdir: str | Path, jobs_dir: str | Path, max_timeout: int = 600):
         self.workdir = Path(workdir).resolve()
         self.jobs_dir = Path(jobs_dir).resolve()
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._make_jobs_dir()
         self.max_timeout = max_timeout
         self.jobs: dict[str, int] = {}  # job id -> how much of its log was already returned
 
@@ -75,6 +75,7 @@ class Shell:
             The exit code followed by stdout and stderr, or the id of the background job.
         """
         if background:
+            self._make_jobs_dir()  # close() deletes it, and a resumed agent runs on the same shell
             job_id = str(len(self.jobs) + 1)
             for kind in ("pid", "log", "exit"):  # ids restart each session: clear files from an older job
                 self._job_file(job_id, kind).unlink(missing_ok=True)
@@ -121,10 +122,12 @@ class Shell:
         raise NotImplementedError
 
     def close(self) -> None:
-        """Kill background jobs that are still running."""
+        """Kill background jobs that are still running, and forget them. The shell can be used again afterwards: a
+        subagent's agent is closed after every turn, and may be resumed."""
         for job_id in self.jobs:
             if self._exit_code(job_id) is None:
                 self._kill_job(job_id)
+        self.jobs.clear()  # their files go with the jobs folder, so new jobs count from 1 again
 
     def _exec(self, command: str, timeout: int) -> tuple[int, str, bool]:
         """Run `command` to completion: (exit code, stdout+stderr, timed out)."""
@@ -133,6 +136,10 @@ class Shell:
     def _spawn(self, command: str) -> None:
         """Start `command` detached and return immediately."""
         raise NotImplementedError
+
+    def _make_jobs_dir(self) -> None:
+        # Owner-only, as LocalShell's mkdtemp folder was: its path in /tmp is known in advance
+        self.jobs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     # A job writes `<id>.pid`, `.log` and `.exit` into `jobs_dir`, on the host, so `job` reads the files directly:
     # a temp folder for the host shell (to keep them out of the user's project), and `workspace/.jobs/<shell id>`
@@ -327,11 +334,14 @@ class DockerShell(Shell):
         return f"/workspace/{self._jobs_folder}"
 
     def close(self) -> None:
-        """Remove the container, which also ends its background jobs, and their files."""
+        """Remove the container, which also ends its background jobs, and their files. The next command starts a
+        new container, with the same workspace."""
         if self._remove:
             self._remove()
             self.container = self._remove = None
         shutil.rmtree(self.jobs_dir, ignore_errors=True)
+        # Not Shell.close: killing each job would start a new container just to reach the old one's processes
+        self.jobs.clear()
 
     def __enter__(self):
         self.start()

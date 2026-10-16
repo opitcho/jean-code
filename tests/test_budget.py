@@ -260,8 +260,8 @@ def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
 # ---------------------------------------------------------------- cancel, limits along the chain, logging
 
 
-def test_cancel_stops_the_subtree_for_good():
-    # Catches a cancel that misses descendants, reaches the parent, or wears off.
+def test_cancel_stops_the_subtree_until_reopened():
+    # Catches a cancel that misses descendants, reaches the parent, or wears off by itself.
     root = Budget()
     run = root.child(1.0, "1")
     below = run.child(None, "1")
@@ -281,6 +281,32 @@ def test_an_agent_on_a_cancelled_budget_makes_no_call():
     end = agent.run_turn("hello")
     assert client.requests == []
     assert agent.over_budget and end == "cancelled"
+
+
+def test_reopen_clears_only_this_nodes_cancel():
+    # Catches reopen clearing an ancestor's cancel, or a child reopened past a parent that is still cancelled.
+    root = Budget()
+    parent = root.child(1.0, "1")
+    child = parent.child(None, "1")
+    parent.cancel()
+    child.cancel()
+    child.reopen()
+    assert child.cancelled and child.exhausted  # the parent's cancel still reaches it
+    parent.reopen()
+    assert not parent.cancelled and not child.cancelled and not child.exhausted
+
+
+def test_a_cancel_after_reopen_still_holds():
+    # Catches reopen leaving the node unable to be cancelled again.
+    budget = Budget().child(1.0, "1")
+    client = FakeClient([response("never")])
+    agent = Agent(client=client, budget=budget)
+    budget.cancel()
+    budget.reopen()
+    budget.cancel()
+    end = agent.run_turn("hello")
+    assert client.requests == []
+    assert end == "cancelled"
 
 
 def test_remaining_is_the_tightest_limit_on_the_chain():

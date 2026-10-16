@@ -65,6 +65,7 @@ ignore = [
 "tests/test_research.py" = ["E501"]  # verbatim quotes from real pages, split across literals
 "src/jean_code/ui/repl.py" = ["T20"]  # the terminal front-end prints
 "src/jean_code/tools/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH
+"tests/test_shell.py" = ["S603"]  # asks docker whether the sandbox image exists, with a fixed command
 
 [tool.pyright]
 include = ["src", "tests"]

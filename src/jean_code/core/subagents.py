@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 MAX_RUNNING = 8  # runs per parent at once: bounds the overshoot past a limit, and parallel requests to the provider
 MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`
 POLL_SECONDS = 0.2  # how often a wait checks whether the parent was interrupted
+FOLLOW_UP = "Follow-up from the agent that started you:\n\n"  # starts a resumed run's message: its note says one task
 
 
 # TODO: Customized tools per profile
@@ -38,7 +39,7 @@ class Profile:
     description: str  # one line, listed in the parent's system prompt
     start: Callable[[str, Budget], Run]  # (task, budget) → a new running Run; each call is a new run
     max_cost: float  # default limit per run, in USD; required, so no run is unlimited
-    max_cost_cap: float | None = None  # the most a caller may give one run; None → max_cost
+    max_cost_cap: float | None = None  # the most a caller may give one run (a spawn or a follow-up); None → max_cost
 
     def __post_init__(self):
         if self.max_cost <= 0:
@@ -69,6 +70,8 @@ class Outcome:
       which may be incomplete but can still help.
     - "failed": the agent, its report or its cleanup raised; `text` is the error, followed by the report when the
       agent raised and the profile has one.
+
+    However a run ended, cancelled included, its agent can be resumed with a follow-up.
     """
 
     status: Literal["done", "stopped", "failed"]
@@ -78,14 +81,16 @@ class Outcome:
 
 @dataclass(frozen=True, eq=False)
 class Run:
-    """One subagent working on one task: the running agent and the future of its `Outcome`.
+    """One task a subagent worked on: the agent and the future of that task's `Outcome`. A subagent that is resumed
+    has one Run per task, all on the same agent.
 
     Only `Run.start` creates one, and it starts the run's thread. Nothing about a Run changes afterwards except its
     future.
     """
 
     agent: Agent
-    task: str
+    task: str  # this turn's user message: the spawn task, or a follow-up
+    report: Callable[[], str] | None = None  # kept on the run, so a resumed run reports the same way
     _future: futures.Future[Outcome] = field(default_factory=futures.Future, repr=False)
 
     @classmethod
@@ -98,20 +103,33 @@ class Run:
         if agent.needs_approval:  # nobody can approve a subagent's calls: refuse rather than wait at the first one
             names = ", ".join(sorted(agent.needs_approval))
             raise ValueError(f"a subagent can't have tools that need approval: {names}")
-        run = cls(agent, task)
+        run = cls(agent, task, report)
         # A daemon thread, like the REPL's worker: close() is the orderly stop, and a crashed process doesn't hang
         # on it.
-        threading.Thread(target=run._work, args=(report,), name=f"subagent {agent.budget.path}", daemon=True).start()
+        threading.Thread(target=run._work, name=f"subagent {agent.budget.path}", daemon=True).start()
         return run
 
-    def _work(self, report: Callable[[], str] | None) -> None:
+    def resume(self, message: str) -> Run:
+        """The agent's next turn, on `message`: a new Run on the same agent, started at once, however this run ended.
+        Clears a cancel on the agent's own budget node first; topping up its limit is the caller's job.
+
+        Raises:
+            ValueError: This run is still running: the agent takes one turn at a time.
+        """
+        if not self.done():
+            raise ValueError(f"run {self.path} is still running; wait for it to finish first")
+        # Between turns, on the caller's thread: a cancel sent once the new turn exists still holds for it
+        self.agent.budget.reopen()
+        return Run.start(self.agent, message, self.report)
+
+    def _work(self) -> None:
         """The run's own thread: run the agent, close it, then publish how the run ended.
 
         The one place a run's errors are caught: whatever the agent, its report or its cleanup raises (code this
         module doesn't control) becomes a "failed" outcome, so the future is always completed, with a value.
         """
         try:
-            outcome = self._finish(report)
+            outcome = self._finish()
         except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
             outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         try:
@@ -121,8 +139,9 @@ class Run:
                 outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         self._future.set_result(outcome)
 
-    def _finish(self, report: Callable[[], str] | None) -> Outcome:
+    def _finish(self) -> Outcome:
         """Run the agent's turn and say how it ended, with the report's text in place of its last reply if given."""
+        report = self.report
         try:
             end = self.agent.run_turn(self.task)
         except BaseException as e:
@@ -161,7 +180,8 @@ class Run:
         return self._future.result() if self.wait(timeout) else None
 
     def cancel(self) -> None:
-        """No more model calls in this run or below it: it stops after the call in flight. Can't be lost or undone."""
+        """No more model calls in this run or below it: it stops after the call in flight. Holds until the run is
+        resumed, which clears it."""
         self.agent.budget.cancel()
 
 
@@ -188,7 +208,8 @@ def subagents_prompt(profiles: dict[str, Profile]) -> str:
     lines = [
         "## Subagents",
         "A subagent is a separate agent you start with spawn to work on one task. It sees only the task you give "
-        "it, so put everything it needs in the task. Its final reply comes back to you as the result.",
+        "it, so put everything it needs in the task. Its final reply comes back to you as the result. Once it has "
+        "stopped, however it stopped, you can send it a follow-up with resume; it keeps everything it saw and did.",
         "",
     ]
     lines += [f"- {name}: {profile.description}" for name, profile in profiles.items()]
@@ -206,27 +227,29 @@ def agent_tree(agent: Agent) -> dict[str, Agent]:
 
 
 class Subagents:
-    """An agent's subagents: the two tools its model calls, and the methods the agent and UIs use to manage its runs.
+    """An agent's subagents: the three tools its model calls, and the methods the agent and UIs use to manage its runs.
 
     Tools:
         spawn     start a subagent, and wait for its result or let it run in the background
         subagent  check on a run, wait for it, or cancel it
+        resume    send a stopped run's agent a follow-up: its next turn, under the same id
 
     Only here do runs have ids and results become text. Waits end early when the agent is interrupted (its
     `interrupted` event is the agent's own); background runs keep going.
 
     A background result is delivered once: a finished background run is pending until `claim` or `subagent`
-    marks it delivered.
+    marks it delivered. Delivery is tracked per `Run`, not per id, because a resumed id gets a new run.
     """
 
     def __init__(self, profiles: dict[str, Profile], budget: Budget, interrupted: threading.Event):
         self.profiles = profiles
         self.budget = budget
         self._interrupted = interrupted  # the parent agent's interrupt flag: waits end when it's set
-        self.runs: dict[int, tuple[str, Run]] = {}  # id → (profile name, run); append-only; only spawn inserts
+        # id → (profile name, its latest run); only spawn adds ids, resume replaces an id's run with the next one
+        self.runs: dict[int, tuple[str, Run]] = {}
         self._ids = itertools.count(1)  # only spawn uses it, on the parent's thread
-        self._background: set[int] = set()  # ids of runs started in the background
-        self._delivered: set[int] = set()  # ids whose result the model has received; never removed
+        self._background: set[Run] = set()  # runs started in the background; never removed
+        self._delivered: set[Run] = set()  # runs whose result the model has received; never removed
         self._lock = threading.Lock()  # guards runs, _background and _delivered
 
     # ---------------------------------------------------------------- tools
@@ -239,7 +262,7 @@ class Subagents:
             profile: Name of the kind of subagent to start, exactly as listed under "## Subagents" in your
                 instructions. It fixes the subagent's model, tools and default budget. An unknown name starts
                 nothing and returns an error listing the valid names.
-            task: The prompt the subagent receives. It becomes the subagent's first and only user message: it sees
+            task: The prompt the subagent receives. It becomes the subagent's first user message: it sees
                 none of this conversation, none of your tool results and none of the files you read. Put in every
                 fact, file path and constraint it needs, and say what its answer should contain, because its final
                 reply is what you get back.
@@ -279,7 +302,7 @@ class Subagents:
         with self._lock:
             self.runs[id] = (profile, run)
             if background:
-                self._background.add(id)
+                self._background.add(run)
         if background:
             return f"started run {id} with ${node.remaining:.2f}"
         if not self._wait(run, None):  # interrupted: stop the run; it ends after the call it's making
@@ -298,12 +321,13 @@ class Subagents:
                 its result; otherwise you get a progress line (model calls made and USD spent so far) and the run
                 keeps going. If the user interrupts you, the wait ends early.
             cancel: True stops the run: it ends after the model call it is making now, and any subagents it started
-                are stopped too. Its result then says status="stopped". Pass wait as well to receive that result
-                in this call; otherwise it arrives like any finished background run.
+                are stopped too. Its result then says status="stopped" reason="cancelled". Pass wait as well to
+                receive that result in this call; otherwise it arrives like any finished background run. A
+                cancelled run can still be resumed later.
 
         Returns:
-            Finished: the same <subagent-result …> block spawn would have returned; asking again returns it again.
-            Still running: the progress line.
+            Finished: the same <subagent-result …> block spawn would have returned, for the run's latest task;
+            asking again returns it again. Still running: the progress line.
         """
         with self._lock:
             entry = self.runs.get(run_id)
@@ -323,6 +347,60 @@ class Subagents:
         self.claim(run_id)
         return result_block(run_id, profile, outcome)
 
+    @tool
+    def resume(self, run_id: int, message: str, background: bool = False, max_cost: float | None = None) -> str:
+        """Send a subagent you started with spawn a follow-up: it carries on with its whole conversation so far
+        (everything it read, did and answered), and `message` becomes its next user message.
+
+        Args:
+            run_id: The number spawn gave the run. It keeps that number: the follow-up's result comes back under it.
+            message: Its next user message. It already has everything from its earlier task, so say only what's
+                new: what to fix, what to add, or to carry on. This works however the run ended, including a run
+                that was cancelled, failed or ran out of budget.
+            background: As for spawn. False (the default) blocks until the follow-up finishes and returns its
+                result; True returns at once, and the result arrives like any background run's.
+            max_cost: Extra USD for this follow-up, on top of what the subagent has spent so far. Must be positive.
+                If omitted, the profile's default is used; a value above the profile's cap is lowered to the cap,
+                and it can't exceed what you have left yourself.
+
+        Returns:
+            Foreground: the same <subagent-result run="N" …> block as spawn, for the follow-up. Background:
+            "resumed run N with $X". An error, and nothing started, if the run is still running (wait for it with
+            subagent first) or has a background result you haven't read yet (read it with subagent first).
+        """
+        with self._lock:
+            entry = self.runs.get(run_id)
+            ids = ", ".join(map(str, self.runs)) or "none"
+        if entry is None:
+            raise ValueError(f"unknown run {run_id}; runs: {ids}")
+        profile, run = entry
+        if max_cost is not None and max_cost <= 0:
+            raise ValueError(f"max_cost must be positive, got {max_cost}")
+        if not run.done():
+            raise ValueError(f"run {run_id} is still running; wait for it with subagent({run_id}, wait=…) first")
+        with self._lock:
+            unread = run_id in self._pending_ids()
+        if unread:  # resuming would replace a result the model never saw
+            raise ValueError(f"run {run_id} has a result you haven't read; read it with subagent({run_id}) first")
+        if (running := self.running()) >= MAX_RUNNING:
+            raise ValueError(
+                f"{running} subagents are running, the most at once; collect one with subagent(run_id, wait=…) first"
+            )
+        spec = self.profiles[profile]
+        node = run.agent.budget
+        # Before the new thread starts, so its first budget check sees the new limit; every ancestor still caps it
+        node.limit = node.spent + min(spec.max_cost if max_cost is None else max_cost, spec.cap)
+        new = run.resume(FOLLOW_UP + message)
+        with self._lock:
+            self.runs[run_id] = (profile, new)
+            if background:
+                self._background.add(new)
+        if background:
+            return f"resumed run {run_id} with ${node.remaining:.2f}"
+        if not self._wait(new, None):  # interrupted: stop the run; it ends after the call it's making
+            new.cancel()
+        return result_block(run_id, profile, new.outcome())
+
     def _wait(self, run: Run, timeout: float | None) -> bool:
         """Wait until the run is done, the parent is interrupted, or `timeout` seconds pass (None: no timeout).
         Returns whether the run is done."""
@@ -337,11 +415,11 @@ class Subagents:
     # ---------------------------------------------------------------- management
 
     def claim(self, run_id: int | None = None) -> list[tuple[int, str, Run]]:
-        """Take the pending background results, in id order: all of them, or only `run_id`'s, and mark them
+        """Take the pending background results, in id order: all of them, or only `run_id`'s if specified, and mark them
         delivered. Each run is returned by one claim at most; reading a result again with `subagent` needs none."""
         with self._lock:
             ids = self._pending_ids() if run_id is None else [i for i in self._pending_ids() if i == run_id]
-            self._delivered.update(ids)
+            self._delivered.update(self.runs[i][1] for i in ids)
             return [(i, *self.runs[i]) for i in ids]
 
     @property
@@ -354,7 +432,11 @@ class Subagents:
         """Finished background runs not yet delivered, in id order. The caller holds the lock."""
         # Derived from the runs' futures, not recorded by a callback: a future wakes its waiters before it runs its
         # callbacks, so a result read in between would be delivered twice.
-        return sorted(i for i in self._background - self._delivered if self.runs[i][1].done())
+        return sorted(
+            i
+            for i, (_, run) in self.runs.items()
+            if run in self._background and run not in self._delivered and run.done()
+        )
 
     def running(self) -> int:
         """Runs that haven't finished."""
@@ -366,9 +448,9 @@ class Subagents:
             return [(i, name, run) for i, (name, run) in self.runs.items()]
 
     def close(self) -> None:
-        """Cancel every run, then wait for all of them: each stops after the model call it is making."""
+        """Cancel every run, then wait for all of them before returning: each stops after the model call it is making."""
         runs = [run for _, _, run in self.snapshot()]
         for run in runs:
-            run.cancel()
+            run.cancel() 
         for run in runs:
             run.wait()
