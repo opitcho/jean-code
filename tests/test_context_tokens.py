@@ -9,7 +9,8 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core import agent as agent_module
 from jean_code.core.agent import Agent, estimate_tokens
-from jean_code.core.llm import UserMessage, tool
+from jean_code.core.llm import UserMessage
+from jean_code.core.tool_schema import tool
 
 
 @tool

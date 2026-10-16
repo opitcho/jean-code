@@ -10,7 +10,8 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
-from jean_code.core.llm import parse_receipt, tool
+from jean_code.core.llm import parse_receipt
+from jean_code.core.tool_schema import tool
 from jean_code.core.usage import Budget, ModelCall, breakdown_lines
 from jean_code.ui.repl import print_cost
 from test_compaction import compacted_session

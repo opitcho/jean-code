@@ -11,8 +11,8 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
-from jean_code.core.llm import tool
 from jean_code.core.subagents import MAX_RUNNING, MAX_WAIT, Profile, Subagents, agent_profile, agent_tree
+from jean_code.core.tool_schema import tool
 from jean_code.core.usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang

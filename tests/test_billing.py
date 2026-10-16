@@ -9,7 +9,8 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core import llm
 from jean_code.core.agent import Agent
-from jean_code.core.llm import ChatClient, ChatRequest, MalformedResponse, UserMessage, tool
+from jean_code.core.llm import ChatClient, ChatRequest, MalformedResponse, UserMessage
+from jean_code.core.tool_schema import tool
 from jean_code.core.usage import ModelCall
 
 

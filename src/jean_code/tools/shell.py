@@ -21,7 +21,7 @@ import weakref
 from pathlib import Path
 
 from jean_code.config import WORKSPACE_DIR
-from jean_code.core.llm import tool
+from jean_code.core.tool_schema import tool
 
 JOBS_DIR = ".jobs"
 MAX_OUTPUT_CHARS = 10000

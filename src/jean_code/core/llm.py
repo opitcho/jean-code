@@ -1,21 +1,18 @@
-"""The chat-completions wire format: typed messages and usage, an OpenRouter client, and tool schemas.
+"""The chat-completions wire format: typed messages and usage, and an OpenRouter client.
 
 `parse_completion` is the only code that reads a response, and `render_request` and `render_message` the only code
 that writes one. The message types mirror the OpenAI chat format field for field and keep unknown fields as pydantic
 extras, so a message renders back to exactly the dict it was parsed from.
 """
 
-import inspect
 import json
 import os
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Protocol, get_type_hints, runtime_checkable
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 import httpx
-from griffe import Docstring, DocstringSectionKind
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 # DeepSeek's own endpoint: unquantized, cheapest cache reads, and every request lands on the same cache.
@@ -24,24 +21,15 @@ OPENROUTER_ROUTING = {"provider": {"order": ["deepseek"], "allow_fallbacks": Tru
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
-def _empty_if_null(value: object) -> object:
-    """Null `content` reads as empty, as the agent has always treated it; the field stays a plain `str`."""
-    return "" if value is None else value
+def _null_as(empty: object) -> BeforeValidator:
+    """Null reads as the field's empty value, as the agent has always treated it; the field keeps its plain type."""
+    return BeforeValidator(lambda value: empty if value is None else value)
 
 
-def _none_if_null(value: object) -> object:
-    """Null `tool_calls` reads as none, as the agent has always treated it; the field stays a tuple."""
-    return () if value is None else value
-
-
-def _arguments_text(value: object) -> object:
-    """Arguments as the JSON text the tool boundary parses: null reads as empty, and an object from a provider that
-    didn't encode it is encoded here."""
-    if value is None:
-        return ""
-    if isinstance(value, dict | list):
-        return json.dumps(value)
-    return value
+def _json_text(value: object) -> object:
+    """Arguments as the JSON text the tool boundary parses: an object from a provider that didn't encode it is
+    encoded here."""
+    return json.dumps(value) if isinstance(value, dict | list) else value
 
 
 def _lenient(kind: type) -> BeforeValidator:
@@ -54,7 +42,7 @@ class FunctionCall(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
     name: str
-    arguments: Annotated[str, BeforeValidator(_arguments_text)] = ""
+    arguments: Annotated[str, _null_as(""), BeforeValidator(_json_text)] = ""
 
 
 class ToolCall(BaseModel):
@@ -71,9 +59,9 @@ class AssistantMessage(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
     role: Literal["assistant"] = "assistant"
-    content: Annotated[str, BeforeValidator(_empty_if_null)] = ""
+    content: Annotated[str, _null_as("")] = ""
     reasoning: str | None = None
-    tool_calls: Annotated[tuple[ToolCall, ...], BeforeValidator(_none_if_null)] = Field(
+    tool_calls: Annotated[tuple[ToolCall, ...], _null_as(())] = Field(
         default=(), exclude_if=lambda calls: not calls
     )  # a plain reply has none
 
@@ -101,15 +89,14 @@ Message = Annotated[SystemMessage | UserMessage | AssistantMessage | ToolMessage
 
 
 class TokenDetails(BaseModel):
-    model_config = ConfigDict(extra="allow")
     cached_tokens: int | None = None
     reasoning_tokens: int | None = None
 
 
 class Usage(BaseModel):
-    """The provider's usage object as sent: None means "not reported", which is not the same as 0."""
+    """The provider's usage object as sent: None means "not reported", which is not the same as 0. Fields we don't
+    read (`cost_details`, `is_byok`, …) are dropped: usage is never sent back."""
 
-    model_config = ConfigDict(extra="allow")
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cost: float | None = None
@@ -121,7 +108,7 @@ class Receipt(BaseModel):
     """What the provider says it served and charged: everything needed to book the call. Read from the response's
     `id`, `provider`, `model`, `created` and `usage`; the rest of the response is ignored here."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+    model_config = ConfigDict(frozen=True)
     generation_id: Annotated[str | None, _lenient(str)] = Field(default=None, alias="id")
     provider: Annotated[str | None, _lenient(str)] = None
     model: Annotated[str | None, _lenient(str)] = None
@@ -278,72 +265,3 @@ def openrouter(api_key: str | None = None) -> ChatClient:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set; run with `uv run --env-file .env ...`")
     return ChatClient(OPENROUTER_URL, api_key, extra=OPENROUTER_ROUTING)
-
-
-ARG_SECTIONS = (DocstringSectionKind.parameters, DocstringSectionKind.other_parameters)  # Args, Keyword Args, …
-DATA_KEYWORDS = {"default", "examples", "const", "enum"}  # schema keywords whose values are data, not schemas
-
-
-def parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
-    """Split a Google-style docstring into its description and its argument descriptions by name.
-
-    Arguments come from `Args:` and `Keyword Args:`; other sections (Returns, Raises, Note, …) are left out.
-    """
-    sections = Docstring(inspect.cleandoc(doc or ""), lineno=1).parse("google", warnings=False)
-    description = [s.value for s in sections if s.kind is DocstringSectionKind.text]
-    args = {p.name: " ".join(p.description.split()) for s in sections if s.kind in ARG_SECTIONS for p in s.value}
-    return "\n\n".join(description).strip(), args
-
-
-def drop_titles(schema: Any) -> Any:
-    """Remove the `title` strings pydantic adds; they only cost tokens. Properties named `title` are kept."""
-    if isinstance(schema, dict):
-        return {
-            k: v if k in DATA_KEYWORDS else drop_titles(v)
-            for k, v in schema.items()
-            if not (k == "title" and isinstance(v, str))
-        }
-    if isinstance(schema, list):
-        return [drop_titles(v) for v in schema]
-    return schema
-
-
-def tool_schema(name: str, fn: Callable) -> dict:
-    """The OpenAI tool definition for `fn`, from its type hints and Google-style docstring.
-
-    Arguments with defaults are optional and show their default. Pass bound methods, so `self` is not an argument.
-    `*args` and `**kwargs` are left out; positional-only parameters are refused, since tools are called by keyword.
-    """
-    description, arg_docs = parse_docstring(inspect.getdoc(fn))
-    hints = get_type_hints(fn, include_extras=True)  # keeps Annotated[..., Field(...)] constraints
-    fields = {}
-    for i, param in enumerate(inspect.signature(fn).parameters.values()):
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-            continue
-        if param.kind is param.POSITIONAL_ONLY:
-            raise ValueError(
-                f"tool {name!r}: parameter {param.name!r} is positional-only, but tools are called by keyword"
-            )
-        default = ... if param.default is param.empty else param.default
-        # Passing description=None would erase one given in Annotated[..., Field(description=...)].
-        docs: dict[str, Any] = {"description": arg_docs[param.name]} if arg_docs.get(param.name) else {}
-        # A neutral field name with the real name as alias: pydantic refuses names like `_x` and warns on ones
-        # like `json`.
-        fields[f"arg{i}"] = (hints.get(param.name, Any), Field(default, alias=param.name, **docs))
-    parameters = create_model(f"{name}_args", **fields).model_json_schema()
-    return {
-        "type": "function",
-        "function": {"name": name, "description": description, "parameters": drop_titles(parameters)},
-    }
-
-
-def tool(fn: Callable) -> Callable:
-    """Mark `fn` as a tool: a function a model calls. Its name, parameters and docstring are what the model sees, so
-    changing any of them changes the model's API. `Agent` refuses tools without the mark."""
-    fn.is_tool = True  # pyright: ignore[reportFunctionMemberAccess] - functions take attributes; the stubs don't say
-    return fn
-
-
-def is_tool(fn: Callable) -> bool:
-    """Whether `fn` was marked with `@tool`. A bound method has its function's mark."""
-    return getattr(fn, "is_tool", False) is True

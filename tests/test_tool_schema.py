@@ -1,4 +1,4 @@
-"""Tests for the docstring parser and tool-schema builder in `llm.py`.
+"""Tests for the docstring parser and tool-schema builder in `tool_schema.py`.
 
 Expectations follow the Google docstring style as Sphinx napoleon reads it, and the JSON schema
 an OpenAI-compatible endpoint needs to call the tool correctly.
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from conftest import FakeClient
 from jean_code.core.agent import Agent
-from jean_code.core.llm import drop_titles, is_tool, parse_docstring, tool, tool_schema
+from jean_code.core.tool_schema import drop_titles, is_tool, parse_docstring, tool, tool_schema
 
 # ---------------------------------------------------------------- parse_docstring
 

@@ -9,8 +9,8 @@ import pytest
 
 from conftest import FakeClient, response
 from jean_code.core.agent import Agent
-from jean_code.core.llm import is_tool
 from jean_code.core.skills import Skills
+from jean_code.core.tool_schema import is_tool
 
 
 @pytest.fixture

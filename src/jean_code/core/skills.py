@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from jean_code.core.llm import tool
+from jean_code.core.tool_schema import tool
 
 
 @dataclass

@@ -6,7 +6,7 @@ Each test names the bug it would catch.
 
 from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core.agent import NOT_RUN, Agent
-from jean_code.core.llm import tool
+from jean_code.core.tool_schema import tool
 from jean_code.ui.approval import Approvals
 from jean_code.ui.repl import print_cost, repl, run_and_print
 

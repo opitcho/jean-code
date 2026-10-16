@@ -18,7 +18,8 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
-from jean_code.core.llm import AssistantMessage, tool
+from jean_code.core.llm import AssistantMessage
+from jean_code.core.tool_schema import tool
 from jean_code.core.usage import Budget
 
 if TYPE_CHECKING:

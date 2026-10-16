@@ -27,13 +27,12 @@ from jean_code.core.llm import (
     ToolCall,
     ToolMessage,
     UserMessage,
-    is_tool,
     openrouter,
     render_message,
-    tool_schema,
 )
 from jean_code.core.skills import Skills
 from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
+from jean_code.core.tool_schema import is_tool, tool_schema
 from jean_code.core.usage import Budget, ModelCall
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"

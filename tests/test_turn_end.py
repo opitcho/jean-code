@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent, TurnEnd, TurnStopped
-from jean_code.core.llm import tool
+from jean_code.core.tool_schema import tool
 from jean_code.core.usage import Budget
 
 

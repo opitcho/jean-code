@@ -15,7 +15,8 @@ from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core import agent as agent_module
 from jean_code.core.agent import Agent, estimate_tokens, is_synthetic, message_tokens
 from jean_code.core.compaction_prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
-from jean_code.core.llm import AssistantMessage, Message, ToolMessage, render_request, tool
+from jean_code.core.llm import AssistantMessage, Message, ToolMessage, render_request
+from jean_code.core.tool_schema import tool
 
 
 @tool
