@@ -152,9 +152,10 @@ class Notebook:
         start, end = pages.window(text, start, max_chars)
         with self._lock:
             index = self._index()
-            entry = index.setdefault(
-                page_key(url), {"file": f"P{len(index) + 1}.txt", "length": 0, "windows": [], "by": []}
-            )
+            key = page_key(url)
+            if key not in index:
+                index[key] = {"file": f"P{len(index) + 1}.txt", "length": 0, "windows": [], "by": []}
+            entry = index[key]
             entry["length"] = len(text)
             if end > start and [start, end] not in entry["windows"]:
                 entry["windows"].append([start, end])
@@ -291,10 +292,12 @@ def render_report(dir: str | Path) -> str:
     sources: dict[str, list[Fact]] = {}  # page key → the facts numbered under it, in order
 
     def number(fact: Fact) -> int:
-        listed = sources.setdefault(page_key(fact.url), [])
-        if fact not in listed:
-            listed.append(fact)
-        return list(sources).index(page_key(fact.url)) + 1
+        key = page_key(fact.url)
+        if key not in sources:
+            sources[key] = []
+        if fact not in sources[key]:
+            sources[key].append(fact)
+        return list(sources).index(key) + 1
 
     def cite(match: re.Match) -> str:
         unverified: dict[str, bool] = {}  # source number (or "F99?") → every fact cited from it is unverified

@@ -171,30 +171,36 @@ def parse_completion(data: object) -> Completion:
     return Completion(choice.message, choice.finish_reason, r.id, r.provider, r.model, r.created, r.usage)
 
 
-def _entry_at(entries: list[dict], index: object) -> dict | None:
-    return next((entry for entry in entries if entry.get("index") == index), None)
+def _find_by_index(entries: list[dict], index: object) -> dict | None:
+    """The entry whose `index` field equals `index`, or None if none has arrived yet."""
+    for entry in entries:
+        if entry.get("index") == index:
+            return entry
+    return None
 
 
 def _merge_tool_calls(calls: list[dict], fragments: list[dict]) -> None:
-    """Fragments of one call share its `index`: the first brings the `id` and `name`, the rest more `arguments`."""
+    """Add one chunk's tool-call fragments to `calls`. A call is spread over several chunks whose fragments share its
+    `index`: the first brings the call's `id` and `name`, each later one the next piece of its `arguments`."""
     for fragment in fragments:
-        call = _entry_at(calls, fragment.get("index"))
+        call = _find_by_index(calls, fragment.get("index"))
         if call is None:
             calls.append(copy.deepcopy(fragment))
             continue
-        function = call.setdefault("function", {})
-        piece = (fragment.get("function") or {}).get("arguments") or ""
-        function["arguments"] = (function.get("arguments") or "") + piece
+        function = fragment.get("function") or {}
+        call["function"]["arguments"] += function.get("arguments") or ""
 
 
 def _merge_reasoning_details(details: list[dict], fragments: list[dict]) -> None:
-    """Fragments of one reasoning entry share its `index`, each carrying the next piece of its `text`."""
+    """Add one chunk's reasoning-detail fragments to `details`. Fragments of one entry share its `index`, each
+    carrying the next piece of its `text`."""
     for fragment in fragments:
-        entry = _entry_at(details, fragment.get("index"))
+        entry = _find_by_index(details, fragment.get("index"))
         if entry is None:
             details.append(dict(fragment))
-        else:
-            entry["text"] = (entry.get("text") or "") + (fragment.get("text") or "")
+            continue
+        text = entry.get("text") or ""
+        entry["text"] = text + (fragment.get("text") or "")
 
 
 def _apply_delta(message: dict, delta: dict) -> None:
@@ -204,11 +210,15 @@ def _apply_delta(message: dict, delta: dict) -> None:
         if value is None:
             continue
         if key in ("content", "reasoning"):
-            message[key] = (message.get(key) or "") + value
+            message[key] = message.get(key, "") + value
         elif key == "tool_calls":
-            _merge_tool_calls(message.setdefault("tool_calls", []), value)
+            calls = message.get("tool_calls", [])
+            _merge_tool_calls(calls, value)
+            message["tool_calls"] = calls
         elif key == "reasoning_details":
-            _merge_reasoning_details(message.setdefault("reasoning_details", []), value)
+            details = message.get("reasoning_details", [])
+            _merge_reasoning_details(details, value)
+            message["reasoning_details"] = details
         else:
             message[key] = value
 
