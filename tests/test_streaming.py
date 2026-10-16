@@ -7,16 +7,7 @@ import pytest
 
 from conftest import REAL_ASSISTANT, usage
 from jean_code.core import llm
-from jean_code.core.llm import (
-    ChatBackend,
-    ChatRequest,
-    Completion,
-    MalformedResponse,
-    StreamingBackend,
-    StreamingClient,
-    TextDelta,
-    render_message,
-)
+from jean_code.core.llm import ChatRequest, Completion, MalformedResponse, StreamingClient, TextDelta, render_message
 
 REQUEST = ChatRequest("m", (), (), None)
 # The chunks of a real streamed reply, from `.experiments/output/openrouter_stream_roundtrip.txt` (round 1).
@@ -196,12 +187,3 @@ def test_a_stream_with_no_chunk_is_malformed(monkeypatch):
     client = streaming_client(monkeypatch, sse())
     with pytest.raises(MalformedResponse, match="without a chunk"):
         list(client.stream(REQUEST))
-
-
-def test_the_streaming_client_satisfies_each_backend_protocol():
-    # The return annotation is the check, made by pyright: it fails if a protocol method is missing or mismatched.
-    def backends(client: StreamingClient) -> tuple[StreamingBackend, ChatBackend]:
-        return client, client
-
-    client = StreamingClient("https://example.test/api", "key")
-    assert backends(client) == (client, client)

@@ -236,13 +236,6 @@ class ChatBackend(Protocol):
     def complete(self, request: ChatRequest) -> Completion: ...
 
 
-class StreamingBackend(Protocol):
-    """An endpoint that streams its reply: each `TextDelta` as it arrives, then the whole `Completion`, always last.
-    `StreamingClient` is the real one."""
-
-    def stream(self, request: ChatRequest) -> Iterator[TextDelta | Completion]: ...
-
-
 class ChatClient:
     """Sends chat completions to an OpenAI-compatible endpoint and returns the parsed response.
 
