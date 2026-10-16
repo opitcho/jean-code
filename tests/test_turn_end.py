@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent, TurnEnd, TurnStopped
+from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
-from jean_code.core.usage import Budget
 
 
 class AskingAgent(Agent):
@@ -75,9 +75,9 @@ def tool_reply(name="add", cost=0.004, prompt=100, **args) -> dict:
 
 
 def cancelled_agent() -> Agent:
-    budget = Budget().child(1.0, "1")
-    budget.cancel()
-    return make_agent([response("never")], budget=budget)
+    node = AgentNode().child(1.0, "1")
+    node.cancel()
+    return make_agent([response("never")], node=node)
 
 
 # What each scenario's turn must return. The keys are checked against `TurnEnd` below.

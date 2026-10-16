@@ -75,7 +75,7 @@ STATE_HIDDEN = {
     "skills",
     *STATE_CONFIG,
     *CONTEXT_CONFIG,
-    "budget",
+    "node",
     "subagents",
 }  # the sidebar; their trees link back up (child.parent), so vars() would recurse
 USAGE_COLUMNS = {
@@ -102,7 +102,7 @@ class Entry:
 class View:
     """An agent the UI can show: the main agent (no `run`), or a subagent run somewhere in its tree."""
 
-    path: str  # its budget path: "main", "main/1", "main/1/2"
+    path: str  # its path: "main", "main/1", "main/1/2"
     agent: Agent
     run: Run | None = None
     profile: str = ""
@@ -110,8 +110,8 @@ class View:
 
 
 def agent_views(agent) -> dict[str, View]:
-    """The main agent, then every subagent run below it depth-first, keyed by budget path."""
-    views = {agent.budget.path: View(agent.budget.path, agent)}
+    """The main agent, then every subagent run below it depth-first, keyed by path."""
+    views = {agent.node.path: View(agent.node.path, agent)}
 
     def walk(parent) -> None:
         for id, profile, run in parent.subagents.snapshot() if parent.subagents else []:
@@ -322,7 +322,7 @@ def tree_state(agent) -> tuple[tuple[tuple[str, bool], ...], int]:
 def start_run(fn, *args) -> None:
     """Run `agent.run_turn` or `compact_now` off the script thread; the UI polls the agent's state.
 
-    The model calls it makes are logged as they're charged, through `agent.budget.log_path` (set in `new_chat`).
+    The model calls it makes are logged as they're charged, through `agent.node.log_path` (set in `new_chat`).
     """
     run = st.session_state.run
 
@@ -341,7 +341,7 @@ def start_run(fn, *args) -> None:
 def follow_run() -> None:
     """The run's thread has work to do: poll until it stops, showing the main agent's latest block."""
     st.session_state.was_running = True
-    st.session_state.selected[st.session_state.agent.budget.path] = None
+    st.session_state.selected[st.session_state.agent.node.path] = None
 
 
 def answer_approval(refusal: str | None = None) -> None:
@@ -374,10 +374,10 @@ def new_chat() -> None:
         reasoning=reasoning_effort(),
         approve=st.session_state.approvals.ask,
     )
-    st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
-    st.session_state.histories = {}  # budget path -> that agent's list[Entry]
-    st.session_state.selected = {}  # budget path -> selected uid; None or missing follows the latest
-    st.session_state.view = st.session_state.agent.budget.path  # the agent picker's value
+    st.session_state.agent.node.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
+    st.session_state.histories = {}  # path -> that agent's list[Entry]
+    st.session_state.selected = {}  # path -> selected uid; None or missing follows the latest
+    st.session_state.view = st.session_state.agent.node.path  # the agent picker's value
     st.session_state.run = {"thread": None, "error": None, "notice": None, "end": None}
     st.session_state.compactions_seen = 0
 
@@ -501,11 +501,9 @@ def render_sidebar(agent) -> None:
             help="Sent with each of the main agent's requests, from the next one on, "
             "so it can change mid-chat. Subagents keep their own (medium).",
         )
-        budget = agent.budget  # the agent and any subagents
-        if budget.limit:
-            st.progress(
-                min(budget.spent / budget.limit, 1.0), text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget"
-            )
+        node = agent.node  # the agent and any subagents
+        if node.limit:
+            st.progress(min(node.spent / node.limit, 1.0), text=f"${node.spent:.4f} of ${node.limit:.2f} budget")
         render_agents(agent)
 
 
@@ -526,8 +524,8 @@ def agent_caption(view: View) -> str:
         f"{len(view.agent.usage)} calls · ${view.agent.total_cost:.4f}",
     ]
     if view.run is not None:
-        # The spawn task, which the budget node keeps: a resumed run's own task is its follow-up message
-        task = view.agent.budget.task
+        # The spawn task, which the node keeps: a resumed run's own task is its follow-up message
+        task = view.agent.node.task
         parts.append(clip(re.sub(r"[*_`#>\[\]]+", "", task), 48))  # plain text: captions are markdown
     return " · ".join(parts)
 
@@ -594,7 +592,7 @@ def render_header(view: View, entries: list[Entry], ctx: list, running: bool) ->
             )
         else:
             st.button(
-                "Back to main", icon=":material/arrow_back:", on_click=show, args=(st.session_state.agent.budget.path,)
+                "Back to main", icon=":material/arrow_back:", on_click=show, args=(st.session_state.agent.node.path,)
             )
 
     if view.run is not None:  # a run's warnings are in how it ended
@@ -945,7 +943,7 @@ def live_view() -> None:
     for path, ctx in contexts.items():  # every agent, not only the one on view, so none misses a compaction
         sync_history(st.session_state.histories.setdefault(path, []), ctx)
 
-    view = views.get(st.session_state.view) or views[agent.budget.path]
+    view = views.get(st.session_state.view) or views[agent.node.path]
     entries, ctx = st.session_state.histories[view.path], contexts[view.path]
     running = is_running() if view.run is None else not view.run.done()
     pending = view.run is None and st.session_state.approvals.waiting is not None  # only the main agent asks

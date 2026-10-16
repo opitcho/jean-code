@@ -1,5 +1,5 @@
 """Tests for what the REPL prints about spend and stops, and that it wires the usage log.
-Logging itself is tested through `Budget` in `test_budget.py`.
+Logging itself is tested through `AgentNode` in `test_budget.py`.
 
 Each test names the bug it would catch.
 """
@@ -138,7 +138,7 @@ def test_the_usage_line_sums_the_turns_calls(capsys):
 
 
 def test_repl_logs_every_call(monkeypatch, capsys, tmp_path):
-    # Catches the REPL not wiring the usage log into the agent's budget.
+    # Catches the REPL not wiring the usage log into the agent's node.
     path = tmp_path / "usage.jsonl"
     agent = make_agent([tool_reply(), tool_reply(), response("done")])
     monkeypatch.setattr("builtins.input", scripted_input(["go"]))

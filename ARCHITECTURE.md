@@ -3,7 +3,7 @@
 
 - **Most classes take their collaborators through dependency injection**, so each subcomponent can be tested
   on its own with a fake in its place. For example, `Agent` takes its `client` (a fake model in the tests) and its
-  `budget` as constructor arguments instead of building them itself.
+  `node` (its place in the agent tree) as constructor arguments instead of building them itself.
 - **OpenRouter backend.** Every model call goes through one chat-completions client (`core/llm.py`), so any
   OpenRouter model works.
 - **Streaming or plain completions.** `ChatClient.complete` returns the whole reply at once;

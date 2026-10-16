@@ -29,9 +29,9 @@ from jean_code.agents.prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
 from jean_code.config import RESEARCH_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.llm import ChatBackend, render_message
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Profile, Run, agent_tree, last_reply
 from jean_code.core.tool_schema import tool
-from jean_code.core.usage import Budget
 from jean_code.tools import pages, web
 
 MIN_QUOTE_WORDS = 6  # shorter quotes ("MIT", "10x faster") match too many pages to check anything…
@@ -71,7 +71,7 @@ class Fact:
     url: str
     quote: str
     verified: bool
-    by: str  # the budget path of the researcher that recorded it
+    by: str  # the path of the researcher that recorded it
     problem: str | None = None  # why it isn't verified
     date: str | None = None  # the page's publication date, as the page gives it
     time: str = ""  # when it was recorded
@@ -111,7 +111,7 @@ class Notebook:
     # ---------------------------------------------------------------- researcher tools
 
     def tools_for(self, by: str) -> dict[str, Callable]:
-        """The researcher tools, bound to this folder and to `by`, the researcher's budget path."""
+        """The researcher tools, bound to this folder and to `by`, the researcher's path."""
 
         @tool
         def fetch_page(url: str, max_chars: int = 8000, start: int = 0) -> str:
@@ -440,14 +440,14 @@ def write_text(path: Path, text: str) -> None:
 
 
 def researcher(
-    notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
 ) -> Agent:
     """A researcher: web search, plus the notebook's `fetch_page` and `record_fact`."""
     return Agent(
         model,
         system_prompt=RESEARCHER_PROMPT,
-        tools={"web_search": web.web_search, **notebook.tools_for(budget.path)},
-        budget=budget,
+        tools={"web_search": web.web_search, **notebook.tools_for(node.path)},
+        node=node,
         max_tool_rounds=15,
         compact_at=None,
         client=client,
@@ -455,7 +455,7 @@ def researcher(
 
 
 def research_lead(
-    notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
 ) -> Agent:
     """The lead: it reads the facts, writes the draft and starts researchers. It has no web tools."""
     # max_tool_rounds=40: the default 10 runs out on 3 spawns + 3 collects + 4 sections.
@@ -464,7 +464,7 @@ def research_lead(
         system_prompt=RESEARCH_LEAD_PROMPT,
         tools={"facts": notebook.facts, "write_section": notebook.write_section, "read_draft": notebook.read_draft},
         subagent_profiles={"researcher": researcher_profile(notebook, model, client)},
-        budget=budget,
+        node=node,
         max_tool_rounds=40,
         compact_at=None,
         client=client,
@@ -474,8 +474,8 @@ def research_lead(
 def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: ChatBackend | None = None) -> Profile:
     """The lead's profile: researchers that all write into this lead's notebook."""
 
-    def start(task: str, budget: Budget) -> Run:
-        agent = researcher(notebook, budget, model, client)
+    def start(task: str, node: AgentNode) -> Run:
+        agent = researcher(notebook, node, model, client)
         return Run.start(agent, task, report=lambda: researcher_result(agent, notebook))
 
     return Profile(RESEARCHER_DESCRIPTION, start, max_cost=0.10, max_cost_cap=0.25)
@@ -485,11 +485,11 @@ def research_profile(
     model: str = DEFAULT_MODEL, client: ChatBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
 ) -> Profile:
     """The caller's profile: each run gets a fresh folder under `runs_dir` and a lead bound to it. Outside an agent,
-    e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, Budget(…))`."""
+    e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, AgentNode(…))`."""
 
-    def start(task: str, budget: Budget) -> Run:
-        notebook = Notebook.create(runs_dir, brief=task, path=budget.path, model=model)
-        lead = research_lead(notebook, budget, model, client)
+    def start(task: str, node: AgentNode) -> Run:
+        notebook = Notebook.create(runs_dir, brief=task, path=node.path, model=model)
+        lead = research_lead(notebook, node, model, client)
         return Run.start(lead, task, report=lambda: research_result(lead, notebook))
 
     return Profile(RESEARCH_DESCRIPTION, start, max_cost=0.50, max_cost_cap=2.0)
@@ -497,7 +497,7 @@ def research_profile(
 
 def researcher_result(agent: Agent, notebook: Notebook) -> str:
     """What the lead gets back from a researcher: every fact it recorded, in full, then its last reply as the note."""
-    mine = [f for f in read_facts(notebook.dir) if f.by == agent.budget.path]
+    mine = [f for f in read_facts(notebook.dir) if f.by == agent.node.path]
     return f"Facts recorded ({len(mine)}):\n{format_facts(mine)}\n\nNote:\n{last_reply(agent) or '(none)'}"
 
 
@@ -516,14 +516,14 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
             notebook.dir / "agents" / f"{path.replace('/', '-')}.json",
             {
                 "path": path,
-                "task": agent.budget.task,
+                "task": agent.node.task,
                 "messages": [render_message(m) for m in agent.messages],
                 "usage": [asdict(c) for c in agent.usage],
             },
         )
     write_json(
         notebook.dir / "budget.json",
-        {"limit": lead.budget.limit, "spent": lead.budget.spent, "breakdown": lead.budget.breakdown()},
+        {"limit": lead.node.limit, "spent": lead.node.spent, "breakdown": lead.node.breakdown()},
     )
     return f"Report: {notebook.dir / 'report.md'}\n\n{summary_of(report)}\n\n{footer(notebook.dir)}"
 

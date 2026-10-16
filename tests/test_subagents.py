@@ -11,6 +11,7 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import (
     FOLLOW_UP,
     MAX_RUNNING,
@@ -21,7 +22,6 @@ from jean_code.core.subagents import (
     agent_tree,
 )
 from jean_code.core.tool_schema import tool
-from jean_code.core.usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -40,8 +40,8 @@ def add(a: int, b: int) -> int:
 def echo_profile(max_cost=1.0, max_cost_cap=None):
     """Answers "answer to <task>" in one call."""
 
-    def build(task: str, budget: Budget) -> Agent:
-        return Agent(client=FakeClient([response(f"answer to {task}")]), budget=budget)
+    def build(task: str, node: AgentNode) -> Agent:
+        return Agent(client=FakeClient([response(f"answer to {task}")]), node=node)
 
     return agent_profile("answers at once", build, max_cost, max_cost_cap)
 
@@ -55,22 +55,22 @@ def held_profile(release: threading.Event):
         release.wait(TIMEOUT)
         return "released"
 
-    def build(task: str, budget: Budget) -> Agent:
+    def build(task: str, node: AgentNode) -> Agent:
         client = FakeClient([response(tool_calls=[call("hold")]), response(f"did {task}")])
-        return Agent(client=client, tools={"hold": hold}, budget=budget)
+        return Agent(client=client, tools={"hold": hold}, node=node)
 
     return agent_profile("blocks until released", build, max_cost=1.0)
 
 
 def scripted_profile(responses):
-    def build(task: str, budget: Budget) -> Agent:
-        return Agent(client=FakeClient(list(responses)), tools={"add": add}, budget=budget)
+    def build(task: str, node: AgentNode) -> Agent:
+        return Agent(client=FakeClient(list(responses)), tools={"add": add}, node=node)
 
     return agent_profile("scripted", build, max_cost=1.0)
 
 
-def make_subagents(budget=None, **profiles) -> Subagents:
-    return Subagents(profiles or {"echo": echo_profile()}, budget or Budget(), threading.Event())
+def make_subagents(node=None, **profiles) -> Subagents:
+    return Subagents(profiles or {"echo": echo_profile()}, node or AgentNode(), threading.Event())
 
 
 def run_of(subagents: Subagents, run_id: int):
@@ -125,7 +125,7 @@ def test_background_spawn_returns_at_once_and_subagent_collects():
 
 def test_ids_count_up_and_a_failed_start_skips_its_id():
     # Catches reused ids, or a half-registered run after its start failed.
-    def broken_start(task, budget):
+    def broken_start(task, node):
         raise RuntimeError("no model")
 
     sub = make_subagents(echo=echo_profile(), broken=Profile("broken", broken_start, max_cost=1.0))
@@ -145,13 +145,13 @@ def test_unknown_names_list_the_valid_ones():
         sub.subagent(7)
 
 
-def test_a_profile_that_ignores_its_budget_is_refused():
+def test_a_profile_that_ignores_its_node_is_refused():
     # Catches a run whose spend escapes the tree: no limit, missing from `spent`, `breakdown()` and the log.
     rogue = agent_profile(
-        "rogue", lambda task, budget: Agent(client=FakeClient([response("hi")]), budget=Budget()), max_cost=1.0
+        "rogue", lambda task, node: Agent(client=FakeClient([response("hi")]), node=AgentNode()), max_cost=1.0
     )
     sub = make_subagents(rogue=rogue)
-    with pytest.raises(ValueError, match="didn't build its agent on the budget it was given"):
+    with pytest.raises(ValueError, match="didn't build its agent on the node it was given"):
         sub.spawn("rogue", "x")
     assert sub.runs == {}
 
@@ -161,10 +161,10 @@ def test_a_profile_that_ignores_its_budget_is_refused():
 
 def test_max_cost_defaults_is_clamped_and_states_what_applies():
     # Catches a limit above the cap, or the model told it has more than its parent has left.
-    sub = make_subagents(Budget(0.3), echo=echo_profile(max_cost=0.5, max_cost_cap=1.0))
+    sub = make_subagents(AgentNode(0.3), echo=echo_profile(max_cost=0.5, max_cost_cap=1.0))
     assert sub.spawn("echo", "a", background=True) == "started run 1 with $0.30"  # the parent's 0.3 applies
     sub.spawn("echo", "b", background=True, max_cost=5.0)
-    assert [run_of(sub, i).agent.budget.limit for i in (1, 2)] == [0.5, 1.0]
+    assert [run_of(sub, i).agent.node.limit for i in (1, 2)] == [0.5, 1.0]
     with pytest.raises(ValueError, match="positive"):
         sub.spawn("echo", "c", max_cost=0)
 
@@ -247,11 +247,11 @@ def test_fan_out_runs_in_parallel():
         barrier.wait()
         return "met"
 
-    def build(task: str, budget: Budget) -> Agent:
+    def build(task: str, node: AgentNode) -> Agent:
         return Agent(
             client=FakeClient([response(tool_calls=[call("meet")]), response(f"{task} done")]),
             tools={"meet": meet},
-            budget=budget,
+            node=node,
         )
 
     parent = Agent(
@@ -312,11 +312,11 @@ def test_the_listing_and_tools_come_only_with_profiles():
 
 
 def test_agent_tree_follows_the_budget_paths():
-    # Catches the tree and the budget disagreeing on a run's path.
-    def lead(task: str, budget: Budget) -> Agent:
+    # Catches the tree and the nodes' breakdown disagreeing on a run's path.
+    def lead(task: str, node: AgentNode) -> Agent:
         return Agent(
             client=FakeClient([response(tool_calls=[call("spawn", profile="echo", task="dig")]), response("led")]),
-            budget=budget,
+            node=node,
             subagent_profiles={"echo": echo_profile()},
         )
 
@@ -326,7 +326,7 @@ def test_agent_tree_follows_the_budget_paths():
     )
     parent.run_turn("go")
     assert list(agent_tree(parent)) == ["main", "main/1", "main/1/1"]
-    assert [row["path"] for row in parent.budget.breakdown()] == ["main", "main/1", "main/1/1"]
+    assert [row["path"] for row in parent.node.breakdown()] == ["main", "main/1", "main/1/1"]
 
 
 # ---------------------------------------------------------------- interrupts and close
@@ -344,7 +344,7 @@ def test_an_interrupt_ends_a_wait_and_leaves_the_run_going():
     sub._interrupted.set()
     waiter.join(1)
     assert not waiter.is_alive() and answers[0].startswith("run 1 is still running")
-    assert not run_of(sub, 1).agent.budget.cancelled  # background runs keep going, like shell jobs
+    assert not run_of(sub, 1).agent.node.cancelled  # background runs keep going, like shell jobs
     release.set()
 
 
@@ -356,7 +356,7 @@ def test_an_interrupt_stops_a_foreground_run():
     spawner.start()
     eventually(lambda: 1 in sub.runs)
     sub._interrupted.set()
-    eventually(lambda: run_of(sub, 1).agent.budget.cancelled)  # spawn noticed within a poll, and cancelled its run
+    eventually(lambda: run_of(sub, 1).agent.node.cancelled)  # spawn noticed within a poll, and cancelled its run
     release.set()  # the call in flight (the hold) ends; the run makes no further call
     spawner.join(TIMEOUT)
     assert answers == [
@@ -377,7 +377,7 @@ def test_close_stops_every_run_and_waits_for_them():
     release.set()
     closer.join(TIMEOUT)
     assert not closer.is_alive() and parent.subagents.running() == 0
-    assert all(run.agent.budget.cancelled for _, _, run in parent.subagents.snapshot())
+    assert all(run.agent.node.cancelled for _, _, run in parent.subagents.snapshot())
 
 
 def test_a_tool_named_like_spawn_is_refused():
@@ -408,8 +408,8 @@ def test_a_tool_named_like_resume_is_refused():
 def turns_profile(*replies, max_cost=1.0, max_cost_cap=None, tools=None):
     """Each agent gets the same scripted replies, one or more per turn."""
 
-    def build(task: str, budget: Budget) -> Agent:
-        return Agent(client=FakeClient(list(replies)), tools=tools or {"add": add}, budget=budget)
+    def build(task: str, node: AgentNode) -> Agent:
+        return Agent(client=FakeClient(list(replies)), tools=tools or {"add": add}, node=node)
 
     return agent_profile("scripted turns", build, max_cost, max_cost_cap)
 
@@ -485,15 +485,17 @@ def test_a_cancelled_run_can_be_resumed():
     assert sub.resume(1, "carry on") == (
         '<subagent-result run="1" profile="held" status="done">\npicked up\n</subagent-result>'
     )
-    assert not run_of(sub, 1).agent.budget.cancelled
+    assert not run_of(sub, 1).agent.node.cancelled
 
 
 def test_resume_tops_up_the_budget():
     # Catches a follow-up to a spent run that stops at once, or a top-up past the profile's cap.
     spend = response("let me check", tool_calls=[call("add", a=1, b=2)], usage=usage(cost=0.4))
-    sub = make_subagents(Budget(1.0), tiny=turns_profile(spend, response("finished"), max_cost=0.4, max_cost_cap=1.0))
+    sub = make_subagents(
+        AgentNode(1.0), tiny=turns_profile(spend, response("finished"), max_cost=0.4, max_cost_cap=1.0)
+    )
     assert 'reason="budget spent"' in sub.spawn("tiny", "go")
-    node = run_of(sub, 1).agent.budget
+    node = run_of(sub, 1).agent.node
     assert sub.resume(1, "carry on", max_cost=5.0, background=True) == "resumed run 1 with $0.60"
     assert node.limit == pytest.approx(1.4)  # spent + the cap; the parent's $0.60 left is what binds
     assert 'status="done">\nfinished\n' in sub.subagent(1, wait=TIMEOUT)
@@ -503,7 +505,7 @@ def test_resume_refuses_a_non_positive_max_cost():
     # Catches a limit set below what was spent, which would stop the follow-up before its first call.
     sub = make_subagents(chat=turns_profile(response("first"), response("second")))
     sub.spawn("chat", "go")
-    node = run_of(sub, 1).agent.budget
+    node = run_of(sub, 1).agent.node
     for bad in (0, -1):
         with pytest.raises(ValueError, match="positive"):
             sub.resume(1, "more", max_cost=bad)
@@ -527,7 +529,7 @@ def test_an_interrupt_stops_a_foreground_resume():
     resumer.start()
     eventually(lambda: run_of(sub, 1) is not first)
     sub._interrupted.set()
-    eventually(lambda: run_of(sub, 1).agent.budget.cancelled)
+    eventually(lambda: run_of(sub, 1).agent.node.cancelled)
     release.set()
     resumer.join(TIMEOUT)
     assert answers == [
@@ -541,7 +543,7 @@ def test_a_resumed_agent_can_resume_its_own_runs():
     # Catches a grandchild left unresumable by its parent's close, which cancels every child after each turn.
     digger = turns_profile(response("dug"), response("dug more"))
 
-    def lead(task: str, budget: Budget) -> Agent:
+    def lead(task: str, node: AgentNode) -> Agent:
         client = FakeClient(
             [
                 response(tool_calls=[call("spawn", profile="digger", task="dig")]),
@@ -550,7 +552,7 @@ def test_a_resumed_agent_can_resume_its_own_runs():
                 response("led again"),
             ]
         )
-        return Agent(client=client, budget=budget, subagent_profiles={"digger": digger})
+        return Agent(client=client, node=node, subagent_profiles={"digger": digger})
 
     parent = Agent(
         client=FakeClient(
@@ -565,7 +567,7 @@ def test_a_resumed_agent_can_resume_its_own_runs():
     )
     parent.run_turn("go")
     tree = agent_tree(parent)
-    assert tree["main/1/1"].budget.cancelled  # the lead's close after its turn
+    assert tree["main/1/1"].node.cancelled  # the lead's close after its turn
     parent.run_turn("again")
     assert 'status="done">\ndug more\n' in tool_results(tree["main/1"])[-1]
     assert 'status="done">\nled again\n' in tool_results(parent)[-1]

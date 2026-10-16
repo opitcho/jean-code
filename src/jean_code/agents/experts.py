@@ -15,8 +15,8 @@ from jean_code.agents.prompts import (
     SUBAGENT_NOTE,
 )
 from jean_code.core.agent import DEFAULT_MODEL, Agent
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Profile, agent_profile
-from jean_code.core.usage import Budget
 from jean_code.tools.shell import DockerShell
 from jean_code.tools.web import fetch_page, web_search
 
@@ -61,7 +61,7 @@ def expert_profiles(model: str = DEFAULT_MODEL, network: bool = True) -> dict[st
         # prompt=prompt binds each prompt now: a closure would see only the loop's last one
         name: agent_profile(
             description,
-            lambda task, budget, prompt=prompt: expert_agent(prompt, model, budget, network),
+            lambda task, node, prompt=prompt: expert_agent(prompt, model, node, network),
             max_cost=max_cost,
             max_cost_cap=cap,
         )
@@ -69,7 +69,7 @@ def expert_profiles(model: str = DEFAULT_MODEL, network: bool = True) -> dict[st
     }
 
 
-def expert_agent(role_prompt: str, model: str, budget: Budget, network: bool = True) -> Agent:
+def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = True) -> Agent:
     """An expert: `general_agent`'s tools in its own sandbox container, with `role_prompt` and no skills."""
     shell = DockerShell(network=network)  # its own container; the sandbox is why its bash needs no approval
     # max_tool_rounds=40: the default 10 runs out on an engineer writing a project and running its tests.
@@ -78,6 +78,6 @@ def expert_agent(role_prompt: str, model: str, budget: Budget, network: bool = T
         system_prompt=f"{role_prompt}\n{SUBAGENT_NOTE}\n{shell.describe()}",
         tools={"bash": shell.bash, "job": shell.job, "web_search": web_search, "fetch_page": fetch_page},
         cleanup=[shell.close],
-        budget=budget,
+        node=node,
         max_tool_rounds=40,
     )

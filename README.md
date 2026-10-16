@@ -105,7 +105,7 @@ when it runs out of tool rounds. Whatever notices raises `TurnStopped`, and `run
 which: "answered", "interrupted", "budget spent", "cancelled", "context full" or "out of tool rounds".
 
 The front-ends don't get events from the agent. They run the turn on a thread, read the agent's state as it
-grows (`messages`, `usage` with one entry per model call, and `budget`), and keep what the call returned.
+grows (`messages`, `usage` with one entry per model call, and `node` with the spend), and keep what the call returned.
 
 Everything else is built on that loop:
 
@@ -116,7 +116,7 @@ Everything else is built on that loop:
 | Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `core/skills.py` |
 | Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `core/subagents.py` |
 | Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact`, `core/compaction.py` |
-| Budget | A tree of spending limits that mirrors the agents | `core/usage.py` |
+| Budget | A tree of spending limits that mirrors the agents: each agent's node holds its path, task and limit | `core/node.py` |
 
 ## Layout
 
@@ -126,7 +126,8 @@ src/jean_code/
   core/                    the agent machinery; imports nothing from the packages below
     agent.py               the agent loop: tool calls, and running compactions
     llm.py                 OpenRouter client, and tool schemas built from functions
-    usage.py               cost records, logging and budgets
+    usage.py               cost records and logging
+    node.py                the agent tree: paths, spend, limits, cancel
     subagents.py           starting, waiting for and managing subagent runs
     skills.py              skills: discovery, the load tools and /name commands
     compaction.py          compaction's prompts, and which turns it replaces

@@ -76,7 +76,7 @@ def repl(agent: Agent, approvals: Approvals | None = None, usage_log: str | Path
     background subagents' calls between turns included.
     """
     if usage_log:
-        agent.budget.log_path = usage_log
+        agent.node.log_path = usage_log
     print(f"Chatting with {agent.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
     announced = 0  # finished background results already announced
     while True:
@@ -143,7 +143,7 @@ def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = N
     def on_sigint(signum, frame):
         agent.interrupt()
 
-    journal = agent.budget.journal
+    journal = agent.node.journal
     start = len(journal)
     worker = threading.Thread(target=target, daemon=True)
     previous = signal.signal(signal.SIGINT, on_sigint)
@@ -177,10 +177,10 @@ def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = N
 def print_cost(agent: Agent) -> None:
     """The session's spend (the agent and any subagents), where it went once there are several agents, and the
     key's credits."""
-    budget = agent.budget
-    print(f"session: ${budget.spent:.4f} over {len(budget.journal)} model calls")
-    if len(budget.nodes()) > 1:
-        for line in breakdown_lines(budget.breakdown()):
+    node = agent.node
+    print(f"session: ${node.spent:.4f} over {len(node.journal)} model calls")
+    if len(node.nodes()) > 1:
+        for line in breakdown_lines(node.breakdown()):
             print(dim(line))
     credits = getattr(agent.client, "credits", None)  # only OpenRouter reports credits
     if credits is None:

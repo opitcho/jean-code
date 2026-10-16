@@ -11,9 +11,9 @@ import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core.agent import Agent
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Outcome, Profile, Run, agent_profile
 from jean_code.core.tool_schema import tool
-from jean_code.core.usage import Budget
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -40,8 +40,8 @@ def tool_reply(cost=0.001, content="") -> dict:
     return response(content, tool_calls=[call("add", a=1, b=2)], usage=usage(cost=cost))
 
 
-def make_agent(responses, budget=None, **kwargs) -> Agent:
-    return Agent(client=FakeClient(responses), tools={"add": add}, budget=budget or Budget(1.0), **kwargs)
+def make_agent(responses, node=None, **kwargs) -> Agent:
+    return Agent(client=FakeClient(responses), tools={"add": add}, node=node or AgentNode(1.0), **kwargs)
 
 
 def gated(agent: Agent) -> threading.Event:
@@ -66,12 +66,12 @@ def test_each_start_is_a_new_run():
     # Catches a profile that shares an agent (or its state) between runs.
     built = []
 
-    def build(task: str, budget: Budget) -> Agent:
-        built.append(make_agent([response(f"answer to {task}")], budget))
+    def build(task: str, node: AgentNode) -> Agent:
+        built.append(make_agent([response(f"answer to {task}")], node))
         return built[-1]
 
     profile = agent_profile("helper", build, max_cost=1.0)
-    root = Budget()
+    root = AgentNode()
     a = profile.start("a", root.child(1.0, "1"))
     b = profile.start("b", root.child(1.0, "2"))
     assert (a.outcome(TIMEOUT), b.outcome(TIMEOUT)) == (done("answer to a"), done("answer to b"))
@@ -98,7 +98,7 @@ def test_no_outcome_while_running():
 
 def test_profile_limits_are_checked():
     # Catches an unlimited profile (no default) or a cap that lowers the default.
-    def start(task: str, budget: Budget) -> Run:
+    def start(task: str, node: AgentNode) -> Run:
         raise AssertionError("no run starts in this test")
 
     with pytest.raises(ValueError, match="positive"):
@@ -120,14 +120,14 @@ def test_a_subagent_that_would_need_approval_is_refused():
 
 def test_budget_spent_is_stopped_with_the_last_remark():
     # Catches a mid-task remark handed back as the answer after the budget ran out.
-    agent = make_agent([tool_reply(cost=0.004, content="let me check"), response("never")], Budget(0.004))
+    agent = make_agent([tool_reply(cost=0.004, content="let me check"), response("never")], AgentNode(0.004))
     run = Run.start(agent, "go")
     assert run.outcome(TIMEOUT) == Outcome("stopped", "let me check", "budget spent")
 
 
 def test_an_answer_that_spends_the_last_of_the_budget_is_done():
     # Catches a finished answer labelled "budget spent" because the answering call used the budget up.
-    run = Run.start(make_agent([response("the answer", usage=usage(cost=0.004))], Budget(0.004)), "go")
+    run = Run.start(make_agent([response("the answer", usage=usage(cost=0.004))], AgentNode(0.004)), "go")
     assert run.outcome(TIMEOUT) == done("the answer")
 
 
@@ -219,7 +219,7 @@ def test_a_finished_run_stops_the_runs_it_started():
     grandchild_client = FakeClient([response(tool_calls=[call("slow")])] * 20 + [response("dug")])
     grandchild = agent_profile(
         "digger",
-        lambda task, budget: Agent(client=grandchild_client, tools={"slow": slow}, budget=budget),
+        lambda task, node: Agent(client=grandchild_client, tools={"slow": slow}, node=node),
         max_cost=1.0,
     )
     child = Agent(
@@ -229,7 +229,7 @@ def test_a_finished_run_stops_the_runs_it_started():
                 response("handed off"),
             ]
         ),
-        budget=Budget(1.0),
+        node=AgentNode(1.0),
         subagent_profiles={"digger": grandchild},
     )
     run = Run.start(child, "go")
@@ -244,7 +244,7 @@ def test_a_malformed_response_fails_the_run():
     # Catches a subagent's broken response escaping the run.
     bad = response("x", usage=usage(cost=0.005))
     bad["choices"] = []
-    root = Budget(1.0)
+    root = AgentNode(1.0)
     run = Run.start(make_agent([bad], root.child(0.5, "1")), "go")
     outcome = run.outcome(TIMEOUT)
     assert outcome is not None and outcome.status == "failed" and outcome.text.startswith("MalformedResponse:")
@@ -254,7 +254,7 @@ def test_a_malformed_response_fails_the_run():
 
 
 def test_resume_continues_the_same_agent():
-    # Catches a follow-up that starts a fresh agent, a new budget node, or drops the earlier turn from the context.
+    # Catches a follow-up that starts a fresh agent, a new node, or drops the earlier turn from the context.
     agent = make_agent([response("first")])
     run = Run.start(agent, "go")
     assert run.outcome(TIMEOUT) == done("first")
@@ -295,7 +295,7 @@ def cancelled_run() -> Run:
 
 
 def budget_spent_run() -> Run:
-    return Run.start(make_agent([tool_reply(cost=0.004, content="let me check")], Budget(0.004)), "go")
+    return Run.start(make_agent([tool_reply(cost=0.004, content="let me check")], AgentNode(0.004)), "go")
 
 
 def tool_rounds_run() -> Run:
@@ -316,11 +316,11 @@ def test_resume_after_every_ending(start, first):
     run = start()
     outcome = run.outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == first
-    run.agent.max_cost = run.agent.budget.spent + 1.0  # a spent budget is topped up, as Subagents.resume does
+    run.agent.max_cost = run.agent.node.spent + 1.0  # a spent budget is topped up, as Subagents.resume does
     scripted(run.agent).responses.append(response("carried on"))
     again = run.resume("carry on")
     assert again.outcome(TIMEOUT) == done("carried on")
-    assert not run.agent.budget.cancelled
+    assert not run.agent.node.cancelled
 
 
 def test_resume_after_a_full_context_stops_again():

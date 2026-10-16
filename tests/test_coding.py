@@ -8,8 +8,8 @@ from types import MethodType
 import pytest
 
 from jean_code.agents.coding import coding_agent, general_agent, searcher_agent, subagent_profiles
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Run
-from jean_code.core.usage import Budget
 from jean_code.tools.shell import DockerShell
 
 
@@ -38,20 +38,20 @@ def test_the_coding_agent_offers_its_subagents():
 def test_subagents_have_no_subagents_of_their_own():
     # Catches unbounded recursion: a general subagent that can spawn more general subagents.
     for build in (lambda b: searcher_agent("m", b), lambda b: general_agent("m", b, skills_dir=None)):
-        agent = build(Budget(1.0))
+        agent = build(AgentNode(1.0))
         assert agent.subagents is None
         agent.close()
 
 
 def test_the_general_subagent_runs_bash_in_docker_without_approval():
     # Catches a general subagent that Run.start refuses (host bash needs approval) or that runs on the host.
-    budget = Budget().child(0.5, "1")
-    agent = general_agent("m", budget, skills_dir=None)
+    node = AgentNode().child(0.5, "1")
+    agent = general_agent("m", node, skills_dir=None)
     try:
         assert agent.needs_approval == set() and "bash" in agent.tool_map
         bash = agent.tool_map["bash"]
         assert isinstance(bash, MethodType) and isinstance(bash.__self__, DockerShell)
-        assert agent.budget is budget  # spawn's check that the profile used its node
+        assert agent.node is node  # spawn's check that the profile used its node
         assert "## You are a subagent" in agent.messages[0].content
     finally:
         agent.close()
@@ -65,8 +65,8 @@ def test_profile_limits():
 
 def test_a_searcher_run_starts():
     # Catches a profile whose agent Run.start refuses.
-    agent = searcher_agent("m", Budget(1.0))
-    agent.budget.cancel()  # makes no call: the run stops at once
+    agent = searcher_agent("m", AgentNode(1.0))
+    agent.node.cancel()  # makes no call: the run stops at once
     assert Run.start(agent, "q").wait(5)
 
 

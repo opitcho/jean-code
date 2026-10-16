@@ -25,8 +25,8 @@ from jean_code.agents.research import (
     summary_of,
 )
 from jean_code.core.llm import ChatRequest, Completion, UserMessage, parse_completion
+from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Run
-from jean_code.core.usage import Budget
 from jean_code.tools.pages import html_text
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -494,7 +494,7 @@ def test_a_researcher_stopped_by_its_budget_keeps_its_facts(tmp_path, pages):
     notebook = new_notebook(tmp_path)
     pages["https://a.test"] = PAGE_A
     client = TaskClient({"find alpha": researcher_script("https://a.test", QUOTE_A, "Alpha is Rust", cost=1.0)})
-    run = researcher_profile(notebook, client=client).start("find alpha", Budget(0.10, name="main/1"))
+    run = researcher_profile(notebook, client=client).start("find alpha", AgentNode(0.10, name="main/1"))
     outcome = run.outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
     assert [f.claim for f in read_facts(notebook.dir)] == ["Alpha is Rust"]
@@ -528,7 +528,7 @@ def test_end_to_end_a_lead_and_two_researchers_leave_a_complete_run_folder(tmp_p
             "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML"),
         }
     )
-    run = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(1.0))
+    run = research_profile(client=client, runs_dir=tmp_path).start("the brief", AgentNode(1.0))
     outcome = run.outcome(TIMEOUT)
     assert outcome.status == "done", outcome.text
     dir = outcome_dir(outcome.text)
@@ -569,7 +569,7 @@ def test_researchers_that_spend_the_whole_budget_still_leave_a_report(tmp_path, 
             "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML", cost=0.15),
         }
     )
-    outcome = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(0.25)).outcome(TIMEOUT)
+    outcome = research_profile(client=client, runs_dir=tmp_path).start("the brief", AgentNode(0.25)).outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
     report = (outcome_dir(outcome.text) / "report.md").read_text()
     for text in (report, outcome.text):
@@ -594,7 +594,7 @@ def test_a_lead_stopped_after_drafting_hands_back_its_summary(tmp_path, pages):
             ]
         }
     )
-    lead = research_lead(notebook, Budget(0.5), client=client)
+    lead = research_lead(notebook, AgentNode(0.5), client=client)
     outcome = Run.start(lead, "the brief", report=lambda: research_result(lead, notebook)).outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
     assert "## Summary\n- Beta uses TOML [1], Alpha is Rust [2].\n\nFacts: 2 recorded" in outcome.text
@@ -634,7 +634,7 @@ def test_a_researcher_the_lead_never_collected_is_stopped_before_the_report(tmp_
             ],
         }
     )
-    run = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(1.0))
+    run = research_profile(client=client, runs_dir=tmp_path).start("the brief", AgentNode(1.0))
     outcome = run.outcome(TIMEOUT)
     assert outcome.status == "done"
     researcher = run.agent.subagents.runs[1][1].outcome(0)
@@ -648,6 +648,6 @@ def test_one_research_profile_gives_each_run_its_own_folder(tmp_path):
     # Catches a notebook built once per profile, which two app chats (or two spawns) would then share.
     client = TaskClient({"brief one": [response("done")], "brief two": [response("done")]})
     profile = research_profile(client=client, runs_dir=tmp_path)
-    runs = [profile.start("brief one", Budget(1.0)), profile.start("brief two", Budget(1.0))]
+    runs = [profile.start("brief one", AgentNode(1.0)), profile.start("brief two", AgentNode(1.0))]
     dirs = [outcome_dir(run.outcome(TIMEOUT).text) for run in runs]
     assert dirs[0] != dirs[1] and [(d / "brief.md").read_text() for d in dirs] == ["brief one", "brief two"]

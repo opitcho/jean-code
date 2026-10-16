@@ -22,10 +22,11 @@ from jean_code.core.llm import (
     openrouter,
     render_message,
 )
+from jean_code.core.node import AgentNode
 from jean_code.core.skills import Skills
 from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
 from jean_code.core.tool_schema import is_tool, tool_schema
-from jean_code.core.usage import Budget, ModelCall
+from jean_code.core.usage import ModelCall
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,8 @@ class Agent:
     early. Call `close()` at the end.
 
     Callers read its state directly. `messages` is the transcript as typed `Message`s (llm.py), with each reply as
-    the provider sent it. `usage` has one `ModelCall` per paid model call, and `budget` holds the spend.
+    the provider sent it. `usage` has one `ModelCall` per paid model call, and `node`, its place in the agent tree,
+    holds the spend.
 
     Args:
         model: OpenRouter model id.
@@ -88,8 +90,8 @@ class Agent:
         max_tool_rounds: A turn makes at most 1 + this many model calls.
         client: Where requests are sent. OpenRouter by default.
         skills_dir: Folder of skills the model can load
-        max_cost: Limit in USD for this agent and its subagents. Not together with `budget`.
-        budget: This agent's node in an existing budget tree (usage.py). Subagents get one from their parent.
+        max_cost: Limit in USD for this agent and its subagents. Not together with `node`.
+        node: This agent's node in an existing agent tree (node.py). Subagents get one from their parent.
         subagent_profiles: The kinds of subagent the model may start, by name (subagents.py).
         compact_at: Context size in tokens at which the agent compacts after a turn. None: never on its own.
         keep_first: Turns at the start that a compaction keeps verbatim.
@@ -110,7 +112,7 @@ class Agent:
         client: ChatBackend | None = None,
         skills_dir: str | Path | None = None,
         max_cost: float | None = None,
-        budget: Budget | None = None,
+        node: AgentNode | None = None,
         subagent_profiles: dict[str, Profile] | None = None,
         compact_at: int | None = 256_000,
         keep_first: int = 1,
@@ -144,9 +146,9 @@ class Agent:
 
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
-        if max_cost is not None and budget is not None:
-            raise ValueError("pass max_cost or budget, not both: a given budget carries its own limit")
-        self.budget = budget or Budget(max_cost)  # this agent's node; a new root unless a parent's tree is given
+        if max_cost is not None and node is not None:
+            raise ValueError("pass max_cost or node, not both: a given node carries its own limit")
+        self.node = node or AgentNode(max_cost)  # this agent's node; a new root unless a parent's tree is given
         self.usage: list[ModelCall] = []  # one per paid model call, in call order
 
         if compact_at is not None and compact_at > context_window // 2:
@@ -164,7 +166,7 @@ class Agent:
         self.last_request: ChatRequest | None = None
         self._interrupt = threading.Event()
         # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
-        self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
+        self.subagents = Subagents(subagent_profiles, self.node, self._interrupt) if subagent_profiles else None
         # Every tool the model can call, as (validating wrapper, schema) by name. Should never be changed: the schemas
         # sit near the top of the prompt, so any change would invalidate the cache.
         self._tools: dict[str, tuple[Callable, dict]] = {
@@ -178,17 +180,17 @@ class Agent:
 
     @property
     def max_cost(self) -> float | None:
-        """This agent's limit in USD: its budget node's. Settable, e.g. to raise it mid-session."""
-        return self.budget.limit
+        """This agent's limit in USD: its node's. Settable, e.g. to raise it mid-session."""
+        return self.node.limit
 
     @max_cost.setter
     def max_cost(self, value: float | None) -> None:
-        self.budget.limit = value
+        self.node.limit = value
 
     @property
     def over_budget(self) -> bool:
-        """True once this agent's budget node, or any ancestor's, has spent its limit."""
-        return self.budget.exhausted
+        """True once this agent's node, or any ancestor's, has spent its limit."""
+        return self.node.exhausted
 
     @property
     def context_tokens(self) -> int:
@@ -324,9 +326,9 @@ class Agent:
 
     def _book(self, completion: Completion, kind: str | None) -> ModelCall:
         """Record a paid call in `usage` and charge it to the budget."""
-        call = ModelCall.from_completion(completion, budget=self.budget.path, kind=kind)
+        call = ModelCall.from_completion(completion, path=self.node.path, kind=kind)
         self.usage.append(call)
-        self.budget.charge(call)
+        self.node.charge(call)
         return call
 
     def _all_tools(self) -> dict[str, Callable]:
@@ -374,7 +376,7 @@ class Agent:
         Once the model has answered, compact the context if it's over `compact_at`.
         """
         for calls in itertools.count():
-            if self.budget.cancelled:  # before the budget: a cancelled one also counts as spent
+            if self.node.cancelled:  # before the budget: a cancelled one also counts as spent
                 raise TurnStopped("cancelled")
             if self.over_budget:
                 raise TurnStopped("budget spent")

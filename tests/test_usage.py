@@ -1,4 +1,4 @@
-"""Tests for `usage.py`: the `ModelCall` record, the log and the one-line summary. `Budget` is in `test_budget.py`.
+"""Tests for `usage.py`: the `ModelCall` record, the log and the one-line summary. `AgentNode` is in `test_budget.py`.
 
 Each test names the bug it would catch.
 """
@@ -12,12 +12,12 @@ from jean_code.core.usage import ModelCall, append_log, human, usage_line
 
 def model_call(**kwargs) -> ModelCall:
     """A booked call with the given usage, as `Agent._book` builds it."""
-    return ModelCall.from_completion(parse_completion(response(usage=usage(**kwargs))), budget="main")
+    return ModelCall.from_completion(parse_completion(response(usage=usage(**kwargs))), path="main")
 
 
 def real_call(**kwargs) -> ModelCall:
     completion = parse_completion({**response(), **REAL_META, "usage": REAL_USAGE})
-    return ModelCall.from_completion(completion, budget="main", **kwargs)
+    return ModelCall.from_completion(completion, path="main", **kwargs)
 
 
 # ---------------------------------------------------------------- ModelCall
@@ -57,7 +57,7 @@ def test_kind_is_logged_only_when_set(utc):
 )
 def test_null_or_missing_counts_read_as_zero(raw):
     # Catches a crash after a paid call when a provider sends nulls or leaves the details out.
-    c = ModelCall.from_completion(parse_completion(response(usage=raw)), budget="main")
+    c = ModelCall.from_completion(parse_completion(response(usage=raw)), path="main")
     assert (c.prompt_tokens, c.cached_tokens, c.completion_tokens, c.reasoning_tokens) == (0, 0, 0, 0)
     assert c.cost is None
     usage_line([c])  # sums without a TypeError

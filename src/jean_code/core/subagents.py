@@ -1,7 +1,7 @@
 """Subagents: letting an agent start other agents, wait for them, or hand work off and carry on.
 
 Two layers. The Python API is for code: a `Profile` is the spec of one kind of subagent, and
-`profile.start(task, budget)` returns a `Run`, one subagent working on one task on its own thread, whose result
+`profile.start(task, node)` returns a `Run`, one subagent working on one task on its own thread, whose result
 is a future. `Subagents` is the boundary with a model: the `spawn` and `subagent` tools, which give runs small
 ids and turn results into text, plus the methods the agent and UIs use to manage those runs.
 
@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
 from jean_code.core.llm import AssistantMessage
+from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
-from jean_code.core.usage import Budget
 
 if TYPE_CHECKING:
     from jean_code.core.agent import Agent, TurnEnd
@@ -37,7 +37,7 @@ class Profile:
     """The spec of one kind of subagent: what it's for, what it may spend, and how to start one on a task."""
 
     description: str  # one line, listed in the parent's system prompt
-    start: Callable[[str, Budget], Run]  # (task, budget) → a new running Run; each call is a new run
+    start: Callable[[str, AgentNode], Run]  # (task, node) → a new running Run; each call is a new run
     max_cost: float  # default limit per run, in USD; required, so no run is unlimited
     max_cost_cap: float | None = None  # the most a caller may give one run (a spawn or a follow-up); None → max_cost
 
@@ -54,11 +54,11 @@ class Profile:
 
 
 def agent_profile(
-    description: str, build: Callable[[str, Budget], Agent], max_cost: float, max_cost_cap: float | None = None
+    description: str, build: Callable[[str, AgentNode], Agent], max_cost: float, max_cost_cap: float | None = None
 ) -> Profile:
-    """A profile for the common case: build a fresh agent on the given budget, run it on the task, and hand back its
-    last reply. `build(task, budget)` must pass `budget=budget` to the `Agent`."""
-    return Profile(description, lambda task, budget: Run.start(build(task, budget), task), max_cost, max_cost_cap)
+    """A profile for the common case: build a fresh agent on the given node, run it on the task, and hand back its
+    last reply. `build(task, node)` must pass `node=node` to the `Agent`."""
+    return Profile(description, lambda task, node: Run.start(build(task, node), task), max_cost, max_cost_cap)
 
 
 @dataclass(frozen=True)
@@ -106,12 +106,12 @@ class Run:
         run = cls(agent, task, report)
         # A daemon thread, like the REPL's worker: close() is the orderly stop, and a crashed process doesn't hang
         # on it.
-        threading.Thread(target=run._work, name=f"subagent {agent.budget.path}", daemon=True).start()
+        threading.Thread(target=run._work, name=f"subagent {agent.node.path}", daemon=True).start()
         return run
 
     def resume(self, message: str) -> Run:
         """The agent's next turn, on `message`: a new Run on the same agent, started at once, however this run ended.
-        Clears a cancel on the agent's own budget node first; topping up its limit is the caller's job.
+        Clears a cancel on the agent's own node first; topping up its limit is the caller's job.
 
         Raises:
             ValueError: This run is still running: the agent takes one turn at a time.
@@ -119,7 +119,7 @@ class Run:
         if not self.done():
             raise ValueError(f"run {self.path} is still running; wait for it to finish first")
         # Between turns, on the caller's thread: a cancel sent once the new turn exists still holds for it
-        self.agent.budget.reopen()
+        self.agent.node.reopen()
         return Run.start(self.agent, message, self.report)
 
     def _work(self) -> None:
@@ -160,8 +160,8 @@ class Run:
 
     @property
     def path(self) -> str:
-        """The run's place in the budget tree, e.g. "main/1/2": unique in the tree."""
-        return self.agent.budget.path
+        """The run's place in the agent tree, e.g. "main/1/2": unique in the tree."""
+        return self.agent.node.path
 
     def done(self) -> bool:
         return self._future.done()
@@ -182,7 +182,7 @@ class Run:
     def cancel(self) -> None:
         """No more model calls in this run or below it: it stops after the call in flight. Holds until the run is
         resumed, which clears it."""
-        self.agent.budget.cancel()
+        self.agent.node.cancel()
 
 
 def last_reply(agent: Agent) -> str | None:
@@ -217,9 +217,9 @@ def subagents_prompt(profiles: dict[str, Profile]) -> str:
 
 
 def agent_tree(agent: Agent) -> dict[str, Agent]:
-    """Every agent under `agent`, itself included, keyed by budget path ("main", "main/1", "main/1/2"): for
+    """Every agent under `agent`, itself included, keyed by path ("main", "main/1", "main/1/2"): for
     transcripts, evals and UIs."""
-    tree = {agent.budget.path: agent}
+    tree = {agent.node.path: agent}
     if agent.subagents:
         for _, _, run in agent.subagents.snapshot():
             tree |= agent_tree(run.agent)
@@ -241,9 +241,9 @@ class Subagents:
     marks it delivered. Delivery is tracked per `Run`, not per id, because a resumed id gets a new run.
     """
 
-    def __init__(self, profiles: dict[str, Profile], budget: Budget, interrupted: threading.Event):
+    def __init__(self, profiles: dict[str, Profile], node: AgentNode, interrupted: threading.Event):
         self.profiles = profiles
-        self.budget = budget
+        self.node = node
         self._interrupted = interrupted  # the parent agent's interrupt flag: waits end when it's set
         # id → (profile name, its latest run); only spawn adds ids, resume replaces an id's run with the next one
         self.runs: dict[int, tuple[str, Run]] = {}
@@ -294,17 +294,17 @@ class Subagents:
             )
         id = next(self._ids)  # taken before start: a start that fails skips its id
         limit = min(spec.max_cost if max_cost is None else max_cost, spec.cap)
-        node = self.budget.child(limit, name=str(id), task=task)
-        run = spec.start(task, node)
-        if run.agent.budget is not node:  # otherwise its spend would escape this tree, its limit and the log
+        child = self.node.child(limit, name=str(id), task=task)
+        run = spec.start(task, child)
+        if run.agent.node is not child:  # otherwise its spend would escape this tree, its limit and the log
             run.cancel()
-            raise ValueError(f"profile '{profile}' didn't build its agent on the budget it was given")
+            raise ValueError(f"profile '{profile}' didn't build its agent on the node it was given")
         with self._lock:
             self.runs[id] = (profile, run)
             if background:
                 self._background.add(run)
         if background:
-            return f"started run {id} with ${node.remaining:.2f}"
+            return f"started run {id} with ${child.remaining:.2f}"
         if not self._wait(run, None):  # interrupted: stop the run; it ends after the call it's making
             run.cancel()
         return result_block(id, profile, run.outcome())
@@ -342,7 +342,7 @@ class Subagents:
         if outcome is None:
             return (
                 f"run {run_id} is still running: {len(run.agent.usage)} model calls, "
-                f"${run.agent.budget.spent:.4f} spent so far"
+                f"${run.agent.node.spent:.4f} spent so far"
             )
         self.claim(run_id)
         return result_block(run_id, profile, outcome)
@@ -387,7 +387,7 @@ class Subagents:
                 f"{running} subagents are running, the most at once; collect one with subagent(run_id, wait=…) first"
             )
         spec = self.profiles[profile]
-        node = run.agent.budget
+        node = run.agent.node
         # Before the new thread starts, so its first budget check sees the new limit; every ancestor still caps it
         node.limit = node.spent + min(spec.max_cost if max_cost is None else max_cost, spec.cap)
         new = run.resume(FOLLOW_UP + message)
