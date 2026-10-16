@@ -40,8 +40,9 @@ def coding_agent(
     )
 
 
-def subagent_profiles(model: str = DEFAULT_MODEL, network: bool = True,
-                      skills_dir: str | Path | None = SKILLS_DIR) -> dict[str, Profile]:
+def subagent_profiles(
+    model: str = DEFAULT_MODEL, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
+) -> dict[str, Profile]:
     """The coding agent's subagents, on its model:
 
     - `searcher`: web tools only, answers one question with sources. Cheap, and safe anywhere.
@@ -53,24 +54,32 @@ def subagent_profiles(model: str = DEFAULT_MODEL, network: bool = True,
     return {
         "searcher": agent_profile(
             "looks something up on the web and answers with its sources; give it one clear question",
-            lambda task, budget: searcher_agent(model, budget), max_cost=0.05, max_cost_cap=0.25),
+            lambda task, budget: searcher_agent(model, budget),
+            max_cost=0.05,
+            max_cost_cap=0.25,
+        ),
         "general": agent_profile(
             "a coding agent like you, with bash, jobs and the web, but its shell runs in a Docker sandbox in "
             "/workspace (the project's workspace/ folder, not the user's directory); for self-contained work: "
             "prototypes, experiments, trying a library, long runs",
-            lambda task, budget: general_agent(model, budget, network, skills_dir), max_cost=0.50, max_cost_cap=2.0),
+            lambda task, budget: general_agent(model, budget, network, skills_dir),
+            max_cost=0.50,
+            max_cost_cap=2.0,
+        ),
         "research": research_profile(model),
     }
 
 
 def searcher_agent(model: str, budget: Budget) -> Agent:
     """The `searcher` subagent: web tools only."""
-    return Agent(model, system_prompt=SEARCHER_PROMPT,
-                 tools={"web_search": web_search, "fetch_page": fetch_page}, budget=budget)
+    return Agent(
+        model, system_prompt=SEARCHER_PROMPT, tools={"web_search": web_search, "fetch_page": fetch_page}, budget=budget
+    )
 
 
-def general_agent(model: str, budget: Budget, network: bool = True,
-                  skills_dir: str | Path | None = SKILLS_DIR) -> Agent:
+def general_agent(
+    model: str, budget: Budget, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
+) -> Agent:
     """The `general` subagent: the coding agent's tools, in its own sandbox container, without subagents."""
     shell = DockerShell(network=network)  # its own container; the sandbox is why its bash needs no approval
     return Agent(

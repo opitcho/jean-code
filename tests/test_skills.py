@@ -95,10 +95,12 @@ def load_call(id: str, name: str) -> dict:
 
 def test_agent_runs_load_skill_calls_and_returns_errors_to_the_model(skills_dir):
     # Catches the skill tools missing from the agent's tools, or an unknown name crashing the turn.
-    client = FakeClient([
-        response(tool_calls=[load_call("c1", "demo"), load_call("c2", "nope")]),
-        response("done"),
-    ])
+    client = FakeClient(
+        [
+            response(tool_calls=[load_call("c1", "demo"), load_call("c2", "nope")]),
+            response("done"),
+        ]
+    )
     agent = Agent(client=client, skills_dir=skills_dir)
     assert agent.run_turn("hi") == "answered"
     results = [m["content"] for m in agent.messages if m["role"] == "tool"]

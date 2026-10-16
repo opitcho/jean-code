@@ -101,8 +101,11 @@ def parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
 def drop_titles(schema: Any) -> Any:
     """Remove the `title` strings pydantic adds; they only cost tokens. Properties named `title` are kept."""
     if isinstance(schema, dict):
-        return {k: v if k in DATA_KEYWORDS else drop_titles(v)
-                for k, v in schema.items() if not (k == "title" and isinstance(v, str))}
+        return {
+            k: v if k in DATA_KEYWORDS else drop_titles(v)
+            for k, v in schema.items()
+            if not (k == "title" and isinstance(v, str))
+        }
     if isinstance(schema, list):
         return [drop_titles(v) for v in schema]
     return schema
@@ -121,8 +124,9 @@ def tool_schema(name: str, fn: Callable) -> dict:
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
         if param.kind is param.POSITIONAL_ONLY:
-            raise ValueError(f"tool {name!r}: parameter {param.name!r} is positional-only, "
-                             "but tools are called by keyword")
+            raise ValueError(
+                f"tool {name!r}: parameter {param.name!r} is positional-only, but tools are called by keyword"
+            )
         default = ... if param.default is param.empty else param.default
         # Passing description=None would erase one given in Annotated[..., Field(description=...)].
         docs: dict[str, Any] = {"description": arg_docs[param.name]} if arg_docs.get(param.name) else {}
@@ -130,8 +134,10 @@ def tool_schema(name: str, fn: Callable) -> dict:
         # like `json`.
         fields[f"arg{i}"] = (hints.get(param.name, Any), Field(default, alias=param.name, **docs))
     parameters = create_model(f"{name}_args", **fields).model_json_schema()
-    return {"type": "function", "function": {"name": name, "description": description,
-                                             "parameters": drop_titles(parameters)}}
+    return {
+        "type": "function",
+        "function": {"name": name, "description": description, "parameters": drop_titles(parameters)},
+    }
 
 
 def tool(fn: Callable) -> Callable:

@@ -107,8 +107,14 @@ class Budget:
     Thread-safe: one lock per tree, shared by all its nodes.
     """
 
-    def __init__(self, limit: float | None = None, parent: "Budget | None" = None, name: str = "main", task: str = "",
-                 log_path: str | Path | None = None):
+    def __init__(
+        self,
+        limit: float | None = None,
+        parent: "Budget | None" = None,
+        name: str = "main",
+        task: str = "",
+        log_path: str | Path | None = None,
+    ):
         self.limit = limit  # settable: the REPL and tests raise it mid-session
         self.parent = parent
         self.name = name
@@ -188,18 +194,20 @@ class Budget:
         for path, task, entries in snapshot:
             records = [record(entry) for entry in entries]
             known = [r["cost"] for r in records if r["cost"] is not None]
-            rows.append({
-                "path": path,
-                "task": task,
-                "calls": len(records),
-                "prompt_tokens": sum(r["prompt_tokens"] for r in records),
-                "cached_tokens": sum(r["cached_tokens"] for r in records),
-                "peak_prompt_tokens": max((r["prompt_tokens"] for r in records), default=0),
-                "completion_tokens": sum(r["completion_tokens"] for r in records),
-                "reasoning_tokens": sum(r["reasoning_tokens"] for r in records),
-                "cost": sum(known),
-                "unknown_costs": len(records) - len(known),
-            })
+            rows.append(
+                {
+                    "path": path,
+                    "task": task,
+                    "calls": len(records),
+                    "prompt_tokens": sum(r["prompt_tokens"] for r in records),
+                    "cached_tokens": sum(r["cached_tokens"] for r in records),
+                    "peak_prompt_tokens": max((r["prompt_tokens"] for r in records), default=0),
+                    "completion_tokens": sum(r["completion_tokens"] for r in records),
+                    "reasoning_tokens": sum(r["reasoning_tokens"] for r in records),
+                    "cost": sum(known),
+                    "unknown_costs": len(records) - len(known),
+                }
+            )
         return rows
 
     def _chain(self) -> list["Budget"]:
@@ -219,13 +227,17 @@ class Budget:
 
 def breakdown_lines(rows: list[dict]) -> list[str]:
     """`Budget.breakdown()` rows as a table, most expensive first: which agent took the money, and why."""
-    lines = [f"{'path':<12} {'task':<40} {'calls':>5} {'prompt':>7} {'cached':>6} {'peak ctx':>8} "
-             f"{'out':>6} {'reason':>6} {'cost':>9}"]
+    lines = [
+        f"{'path':<12} {'task':<40} {'calls':>5} {'prompt':>7} {'cached':>6} {'peak ctx':>8} "
+        f"{'out':>6} {'reason':>6} {'cost':>9}"
+    ]
     for r in sorted(rows, key=lambda r: r["cost"], reverse=True):
         cached = f"{r['cached_tokens'] / r['prompt_tokens']:.0%}" if r["prompt_tokens"] else "-"
         cost = f"${r['cost']:.4f}" + ("+?" if r["unknown_costs"] else "")
         task = " ".join(r["task"].split())[:40] or "-"
-        lines.append(f"{r['path']:<12} {task:<40} {r['calls']:>5} {human(r['prompt_tokens']):>7} {cached:>6} "
-                     f"{human(r['peak_prompt_tokens']):>8} {human(r['completion_tokens']):>6} "
-                     f"{human(r['reasoning_tokens']):>6} {cost:>9}")
+        lines.append(
+            f"{r['path']:<12} {task:<40} {r['calls']:>5} {human(r['prompt_tokens']):>7} {cached:>6} "
+            f"{human(r['peak_prompt_tokens']):>8} {human(r['completion_tokens']):>6} "
+            f"{human(r['reasoning_tokens']):>6} {cost:>9}"
+        )
     return lines

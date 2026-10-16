@@ -147,8 +147,9 @@ def test_repl_logs_every_call(monkeypatch, capsys, tmp_path):
 
 
 def test_print_cost_with_a_limit(capsys):
-    agent = make_agent([response("hi", usage=usage(cost=0.0021))],
-                       credit_data={"usage": 1.5, "limit": 10.0, "limit_remaining": 8.5})
+    agent = make_agent(
+        [response("hi", usage=usage(cost=0.0021))], credit_data={"usage": 1.5, "limit": 10.0, "limit_remaining": 8.5}
+    )
     agent.run_turn("hello")
     print_cost(agent)
     assert capsys.readouterr().out.splitlines() == [

@@ -56,8 +56,9 @@ def make_agent(responses, client_class=FakeClient, **kwargs) -> AskingAgent:
         agent.interrupt()
         return "stopped"
 
-    agent = AskingAgent(client=client_class(responses), tools={"add": add, "rm": rm, "stop": stop},
-                        approve=approve, **kwargs)
+    agent = AskingAgent(
+        client=client_class(responses), tools={"add": add, "rm": rm, "stop": stop}, approve=approve, **kwargs
+    )
     agent.asked = asked
     return agent
 

@@ -18,8 +18,13 @@ from usage import Budget, breakdown_lines, record
 
 def entry(cost: float | None = 0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:
     """A usage entry as `Agent._record_usage` stores it."""
-    return {**usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost),
-            "id": "gen-1", "provider": "DeepSeek", "model": "m", "created": 1789748403}
+    return {
+        **usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost),
+        "id": "gen-1",
+        "provider": "DeepSeek",
+        "model": "m",
+        "created": 1789748403,
+    }
 
 
 @tool
@@ -135,9 +140,16 @@ def test_breakdown_has_one_row_per_node_with_its_own_numbers():
     rows = {row["path"]: row for row in root.breakdown()}
     assert rows["main"]["calls"] == 0 and rows["main"]["cost"] == 0
     assert rows["main/1"] == {
-        "path": "main/1", "task": "Compare uv, Poetry and PDM", "calls": 2,
-        "prompt_tokens": 4000, "cached_tokens": 1400, "peak_prompt_tokens": 3000,
-        "completion_tokens": 120, "reasoning_tokens": 50, "cost": pytest.approx(0.002), "unknown_costs": 1,
+        "path": "main/1",
+        "task": "Compare uv, Poetry and PDM",
+        "calls": 2,
+        "prompt_tokens": 4000,
+        "cached_tokens": 1400,
+        "peak_prompt_tokens": 3000,
+        "completion_tokens": 120,
+        "reasoning_tokens": 50,
+        "cost": pytest.approx(0.002),
+        "unknown_costs": 1,
     }
 
 

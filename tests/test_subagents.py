@@ -31,13 +31,16 @@ def add(a: int, b: int) -> int:
 
 def echo_profile(max_cost=1.0, max_cost_cap=None):
     """Answers "answer to <task>" in one call."""
+
     def build(task: str, budget: Budget) -> Agent:
         return Agent(client=FakeClient([response(f"answer to {task}")]), budget=budget)
+
     return agent_profile("answers at once", build, max_cost, max_cost_cap)
 
 
 def held_profile(release: threading.Event):
     """Calls `hold`, which blocks until `release` is set, then answers "did <task>"."""
+
     @tool
     def hold() -> str:
         """Wait until released."""
@@ -47,12 +50,14 @@ def held_profile(release: threading.Event):
     def build(task: str, budget: Budget) -> Agent:
         client = FakeClient([response(tool_calls=[call("hold")]), response(f"did {task}")])
         return Agent(client=client, tools={"hold": hold}, budget=budget)
+
     return agent_profile("blocks until released", build, max_cost=1.0)
 
 
 def scripted_profile(responses):
     def build(task: str, budget: Budget) -> Agent:
         return Agent(client=FakeClient(list(responses)), tools={"add": add}, budget=budget)
+
     return agent_profile("scripted", build, max_cost=1.0)
 
 
@@ -80,16 +85,19 @@ def tool_results(agent: Agent) -> list[str]:
 
 def test_foreground_spawn_returns_the_result_block():
     assert make_subagents().spawn("echo", "x") == (
-        '<subagent-result run="1" profile="echo" status="done">\nanswer to x\n</subagent-result>')
+        '<subagent-result run="1" profile="echo" status="done">\nanswer to x\n</subagent-result>'
+    )
 
 
 def test_a_stopped_run_is_labelled_with_its_reason():
     # Catches the model receiving a mid-task remark as status="done".
-    sub = make_subagents(tiny=scripted_profile(
-        [response("let me check", tool_calls=[call("add", a=1, b=2)], usage=usage(cost=1.0))]))
+    sub = make_subagents(
+        tiny=scripted_profile([response("let me check", tool_calls=[call("add", a=1, b=2)], usage=usage(cost=1.0))])
+    )
     assert sub.spawn("tiny", "go") == (
         '<subagent-result run="1" profile="tiny" status="stopped" reason="budget spent">\nlet me check\n'
-        '</subagent-result>')
+        "</subagent-result>"
+    )
 
 
 def test_a_failed_run_is_labelled_with_its_error():
@@ -131,8 +139,9 @@ def test_unknown_names_list_the_valid_ones():
 
 def test_a_profile_that_ignores_its_budget_is_refused():
     # Catches a run whose spend escapes the tree: no limit, missing from `spent`, `breakdown()` and the log.
-    rogue = agent_profile("rogue", lambda task, budget: Agent(client=FakeClient([response("hi")]), budget=Budget()),
-                          max_cost=1.0)
+    rogue = agent_profile(
+        "rogue", lambda task, budget: Agent(client=FakeClient([response("hi")]), budget=Budget()), max_cost=1.0
+    )
     sub = make_subagents(rogue=rogue)
     with pytest.raises(ValueError, match="didn't build its agent on the budget it was given"):
         sub.spawn("rogue", "x")
@@ -180,17 +189,23 @@ def test_waits_are_capped(monkeypatch):
 
 def test_a_background_result_is_delivered_once_with_the_next_message():
     # Catches a result injected twice, or never.
-    parent = Agent(client=FakeClient([
-        response(tool_calls=[call("spawn", profile="echo", task="x", background=True)]),
-        response("started it"),
-        response("got it"),
-        response("fine"),
-    ]), subagent_profiles={"echo": echo_profile()})
+    parent = Agent(
+        client=FakeClient(
+            [
+                response(tool_calls=[call("spawn", profile="echo", task="x", background=True)]),
+                response("started it"),
+                response("got it"),
+                response("fine"),
+            ]
+        ),
+        subagent_profiles={"echo": echo_profile()},
+    )
     parent.run_turn("start something")
     eventually(lambda: parent.subagents.pending == 1)
     parent.run_turn("any news?")
     assert parent.messages[-2]["content"] == (
-        'any news?\n\n<subagent-result run="1" profile="echo" status="done">\nanswer to x\n</subagent-result>')
+        'any news?\n\n<subagent-result run="1" profile="echo" status="done">\nanswer to x\n</subagent-result>'
+    )
     assert parent.subagents.pending == 0
     parent.run_turn("and now?")
     assert parent.messages[-2]["content"] == "and now?"
@@ -225,14 +240,22 @@ def test_fan_out_runs_in_parallel():
         return "met"
 
     def build(task: str, budget: Budget) -> Agent:
-        return Agent(client=FakeClient([response(tool_calls=[call("meet")]), response(f"{task} done")]),
-                     tools={"meet": meet}, budget=budget)
+        return Agent(
+            client=FakeClient([response(tool_calls=[call("meet")]), response(f"{task} done")]),
+            tools={"meet": meet},
+            budget=budget,
+        )
 
-    parent = Agent(client=FakeClient([
-        response(tool_calls=[call("spawn", profile="p", task=t, background=True) for t in "abc"]),
-        response(tool_calls=[call("subagent", run_id=i, wait=TIMEOUT) for i in (1, 2, 3)]),
-        response("all done"),
-    ]), subagent_profiles={"p": agent_profile("meets", build, max_cost=1.0)})
+    parent = Agent(
+        client=FakeClient(
+            [
+                response(tool_calls=[call("spawn", profile="p", task=t, background=True) for t in "abc"]),
+                response(tool_calls=[call("subagent", run_id=i, wait=TIMEOUT) for i in (1, 2, 3)]),
+                response("all done"),
+            ]
+        ),
+        subagent_profiles={"p": agent_profile("meets", build, max_cost=1.0)},
+    )
     parent.run_turn("fan out")
     assert [r.split(">\n")[1].split("\n")[0] for r in tool_results(parent)[3:]] == ["a done", "b done", "c done"]
     # The runs answer even when the barrier breaks (the tool error goes back to them as text), so the proof is
@@ -246,12 +269,22 @@ def test_fan_out_runs_in_parallel():
 
 def test_the_tools_take_loose_json_and_answer_errors_as_text():
     # Catches a string id rejected, or a bad call crashing the turn instead of informing the model.
-    parent = Agent(client=FakeClient([
-        response(tool_calls=[call("spawn", profile="echo", task="x", background=True)]),
-        response(tool_calls=[call("subagent", run_id="1", wait=TIMEOUT), call("subagent", run_id=7),
-                             call("spawn", profile="nope", task="y")]),
-        response("done"),
-    ]), subagent_profiles={"echo": echo_profile()})
+    parent = Agent(
+        client=FakeClient(
+            [
+                response(tool_calls=[call("spawn", profile="echo", task="x", background=True)]),
+                response(
+                    tool_calls=[
+                        call("subagent", run_id="1", wait=TIMEOUT),
+                        call("subagent", run_id=7),
+                        call("spawn", profile="nope", task="y"),
+                    ]
+                ),
+                response("done"),
+            ]
+        ),
+        subagent_profiles={"echo": echo_profile()},
+    )
     parent.run_turn("go")
     started, by_string, unknown_id, unknown_profile = tool_results(parent)
     assert started == "started run 1 with $1.00"
@@ -273,13 +306,16 @@ def test_the_listing_and_tools_come_only_with_profiles():
 def test_agent_tree_follows_the_budget_paths():
     # Catches the tree and the budget disagreeing on a run's path.
     def lead(task: str, budget: Budget) -> Agent:
-        return Agent(client=FakeClient([response(tool_calls=[call("spawn", profile="echo", task="dig")]),
-                                        response("led")]),
-                     budget=budget, subagent_profiles={"echo": echo_profile()})
+        return Agent(
+            client=FakeClient([response(tool_calls=[call("spawn", profile="echo", task="dig")]), response("led")]),
+            budget=budget,
+            subagent_profiles={"echo": echo_profile()},
+        )
 
-    parent = Agent(client=FakeClient([response(tool_calls=[call("spawn", profile="lead", task="lead it")]),
-                                      response("done")]),
-                   subagent_profiles={"lead": agent_profile("leads", lead, max_cost=1.0)})
+    parent = Agent(
+        client=FakeClient([response(tool_calls=[call("spawn", profile="lead", task="lead it")]), response("done")]),
+        subagent_profiles={"lead": agent_profile("leads", lead, max_cost=1.0)},
+    )
     parent.run_turn("go")
     assert list(agent_tree(parent)) == ["main", "main/1", "main/1/1"]
     assert [row["path"] for row in parent.budget.breakdown()] == ["main", "main/1", "main/1/1"]
@@ -315,8 +351,9 @@ def test_an_interrupt_stops_a_foreground_run():
     eventually(lambda: run_of(sub, 1).agent.budget.cancelled)  # spawn noticed within a poll, and cancelled its run
     release.set()  # the call in flight (the hold) ends; the run makes no further call
     spawner.join(TIMEOUT)
-    assert answers == ['<subagent-result run="1" profile="held" status="stopped" reason="cancelled">\n(no reply)\n'
-                       '</subagent-result>']
+    assert answers == [
+        '<subagent-result run="1" profile="held" status="stopped" reason="cancelled">\n(no reply)\n</subagent-result>'
+    ]
 
 
 def test_close_stops_every_run_and_waits_for_them():
@@ -344,4 +381,3 @@ def test_a_tool_named_like_spawn_is_refused():
 
     with pytest.raises(ValueError, match="named like the agent's own: spawn"):
         Agent(client=FakeClient([]), tools={"spawn": spawn}, subagent_profiles={"echo": echo_profile()})
-

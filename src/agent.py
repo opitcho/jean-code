@@ -52,7 +52,7 @@ def is_synthetic(message: dict) -> bool:
 
 
 def ordinal(n: int) -> str:
-    return "last" if n == 1 else f"{n}{ {2: 'nd', 3: 'rd'}.get(n, 'th')}-to-last"
+    return "last" if n == 1 else f"{n}{ {2: 'nd', 3: 'rd'}.get(n, 'th') }-to-last"
 
 
 class Agent:
@@ -113,8 +113,9 @@ class Agent:
         self.tool_map: dict[str, Callable] = dict(tools or {})
         self.needs_approval: set[str] = set(needs_approval or ())
         if self.needs_approval and approve is None:
-            raise ValueError(f"no `approve` function for the tools that need approval: "
-                             f"{', '.join(sorted(self.needs_approval))}")
+            raise ValueError(
+                f"no `approve` function for the tools that need approval: {', '.join(sorted(self.needs_approval))}"
+            )
         self.approve = approve
         self.cleanup: list[Callable[[], None]] = list(cleanup or [])
 
@@ -275,12 +276,17 @@ class Agent:
             return record["status"]
 
         request = self._build_request()
-        request["messages"].append({"role": "user", "content": COMPACTION_PROMPT.format(
-            head_tag=HEAD_MARKER_TAG,
-            ordinal=ordinal(self.keep_last),
-            tail_quote=" ".join(tail[0]["content"].split())[:80],
-            earlier_summary=EARLIER_SUMMARY_NOTE if is_synthetic(middle[0]) else "",
-        )})
+        request["messages"].append(
+            {
+                "role": "user",
+                "content": COMPACTION_PROMPT.format(
+                    head_tag=HEAD_MARKER_TAG,
+                    ordinal=ordinal(self.keep_last),
+                    tail_quote=" ".join(tail[0]["content"].split())[:80],
+                    earlier_summary=EARLIER_SUMMARY_NOTE if is_synthetic(middle[0]) else "",
+                ),
+            }
+        )
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
@@ -361,8 +367,10 @@ class Agent:
         if clash := sorted(self.tool_map.keys() & own.keys()):
             raise ValueError(f"tools named like the agent's own: {', '.join(clash)}")
         if unmarked := [name for name, fn in self.tool_map.items() if not is_tool(fn)]:
-            raise ValueError(f"tools not marked @tool: {', '.join(unmarked)}; mark them, so it's clear where they're "
-                             "defined that a model sees their name, parameters and docstring")
+            raise ValueError(
+                f"tools not marked @tool: {', '.join(unmarked)}; mark them, so it's clear where they're "
+                "defined that a model sees their name, parameters and docstring"
+            )
         return self.tool_map | own
 
     def _build_request(self) -> dict:

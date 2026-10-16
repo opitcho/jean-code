@@ -61,14 +61,20 @@ def test_usage_entry_has_the_response_metadata():
     u = usage(prompt=500, cost=0.002)
     agent, _ = make_agent([response("hi", usage=u, id="gen-abc", created=1789748403)])
     agent.run_turn("hello")
-    assert agent.usage == [{**u, "id": "gen-abc", "provider": "DeepSeek",
-                            "model": "deepseek/deepseek-v4.1-flash", "created": 1789748403}]
+    assert agent.usage == [
+        {**u, "id": "gen-abc", "provider": "DeepSeek", "model": "deepseek/deepseek-v4.1-flash", "created": 1789748403}
+    ]
 
 
 def test_every_call_of_a_turn_is_recorded_in_order():
     # Catches keeping usage only for the final call of a turn.
-    agent, client = make_agent([tool_reply(cost=0.001, id="gen-1"), tool_reply(cost=0.002, id="gen-2"),
-                                response("done", usage=usage(cost=0.003), id="gen-3")])
+    agent, client = make_agent(
+        [
+            tool_reply(cost=0.001, id="gen-1"),
+            tool_reply(cost=0.002, id="gen-2"),
+            response("done", usage=usage(cost=0.003), id="gen-3"),
+        ]
+    )
     agent.run_turn("go")
     assert len(client.requests) == 3
     assert [e["id"] for e in agent.usage] == ["gen-1", "gen-2", "gen-3"]
@@ -100,7 +106,8 @@ def test_calls_after_an_approval_decision_are_recorded(refusal):
     # Catches usage lost for the calls made after a question was answered.
     agent, _ = make_agent(
         [response(tool_calls=[call("rm", path="x")], id="gen-1"), response("ok", id="gen-2")],
-        needs_approval={"rm"}, approve=lambda name, arguments: refusal,
+        needs_approval={"rm"},
+        approve=lambda name, arguments: refusal,
     )
     agent.run_turn("delete x")
     assert [e["id"] for e in agent.usage] == ["gen-1", "gen-2"]
@@ -139,7 +146,8 @@ def test_approval_over_budget_runs_the_tool_but_calls_no_model():
     # Catches an approved call skipped, or the model called again, when the reply that asked spent the budget.
     agent, client = make_agent(
         [response(tool_calls=[call("rm", path="x")], usage=usage(cost=0.02)), tool_reply()],
-        needs_approval={"rm"}, max_cost=0.01,
+        needs_approval={"rm"},
+        max_cost=0.01,
     )
     end = agent.run_turn("delete x")
     assert agent.ran == [{"path": "x"}]
@@ -155,10 +163,14 @@ def test_no_budget_runs_to_the_round_limit():
     assert end == "out of tool rounds"
 
 
-@pytest.mark.parametrize("unknown", [
-    response(tool_calls=[call("add", a=1, b=2)], no_usage=True),
-    response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=None)),
-], ids=["no usage", "cost None"])
+@pytest.mark.parametrize(
+    "unknown",
+    [
+        response(tool_calls=[call("add", a=1, b=2)], no_usage=True),
+        response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=None)),
+    ],
+    ids=["no usage", "cost None"],
+)
 @pytest.mark.parametrize("max_cost", [1.0, None], ids=["budget", "no budget"])
 def test_unknown_cost_ends_the_turn_with_an_error(unknown, max_cost):
     # Catches a call of unknown cost counting as free and the turn carrying on, with or without a budget.
@@ -200,8 +212,11 @@ def mock_client(monkeypatch, *replies: httpx.Response) -> ChatClient:
 def test_retry_returns_the_successful_body(monkeypatch):
     # Catches the failed attempt's body being returned as the response.
     ok = response("hi", id="gen-ok")
-    client = mock_client(monkeypatch, httpx.Response(429, json={"id": "gen-rate-limited", "usage": usage()}),
-                         httpx.Response(200, json=ok))
+    client = mock_client(
+        monkeypatch,
+        httpx.Response(429, json={"id": "gen-rate-limited", "usage": usage()}),
+        httpx.Response(200, json=ok),
+    )
     assert client.complete({"messages": []}) == ok
 
 

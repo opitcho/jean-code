@@ -12,11 +12,14 @@ def test_fetch_page_returns_the_window_from_start_and_says_where_it_is(serve):
     # Catches a `start` that's ignored, an off-by-one window, or a position line the model can't continue from.
     serve["https://x.test/a"] = (b"0123456789" * 3, "text/plain")
     assert fetch_page("https://x.test/a", max_chars=10) == (
-        "0123456789\n\n[characters 0–10 of 30; fetch again with start=10 for more]")
+        "0123456789\n\n[characters 0–10 of 30; fetch again with start=10 for more]"
+    )
     assert fetch_page("https://x.test/a", max_chars=12, start=10) == (
-        "012345678901\n\n[characters 10–22 of 30; fetch again with start=22 for more]")
+        "012345678901\n\n[characters 10–22 of 30; fetch again with start=22 for more]"
+    )
     assert fetch_page("https://x.test/a", max_chars=10, start=25) == (
-        "56789\n\n[characters 25–30 of 30; the end of the page]")
+        "56789\n\n[characters 25–30 of 30; the end of the page]"
+    )
 
 
 def test_a_page_that_fits_is_returned_whole_and_a_start_past_the_end_says_so(serve):

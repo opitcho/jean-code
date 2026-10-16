@@ -42,11 +42,13 @@ SUMMARY_CHARS = 3000  # the most of the report's Summary a result hands back
 
 RESEARCH_DESCRIPTION = (
     "researches a scoped question on the web and writes a cited report file; give it the brief from the research "
-    "skill and run it in the background")
+    "skill and run it in the background"
+)
 RESEARCHER_DESCRIPTION = (
     "searches the web for one sub-question and records facts, with quotes checked against the pages, into this "
     "run's notebook; give it the sub-question, what's in and out of scope, what the others cover and what facts "
-    "to return")
+    "to return"
+)
 
 # What `normalize` removes. Without it, correct quotes from real pages fail on typography, on how HTML extraction
 # splits inline elements onto their own lines ("splitting\n, merging", "page. extract_text (", "PyMuPD F"), on PDF
@@ -150,8 +152,9 @@ class Notebook:
         start, end = pages.window(text, start, max_chars)
         with self._lock:
             index = self._index()
-            entry = index.setdefault(page_key(url), {"file": f"P{len(index) + 1}.txt", "length": 0,
-                                                     "windows": [], "by": []})
+            entry = index.setdefault(
+                page_key(url), {"file": f"P{len(index) + 1}.txt", "length": 0, "windows": [], "by": []}
+            )
             entry["length"] = len(text)
             if end > start and [start, end] not in entry["windows"]:
                 entry["windows"].append([start, end])
@@ -218,8 +221,10 @@ class Notebook:
         if not title:
             raise ValueError("the title is empty")
         if re.search(r"^## ", content, re.MULTILINE):
-            raise ValueError("the content has a line starting with '## ', which would split the section in two; "
-                             "use ### for headings inside a section")
+            raise ValueError(
+                "the content has a line starting with '## ', which would split the section in two; "
+                "use ### for headings inside a section"
+            )
         with self._lock:
             sections = parse_sections(self.read_draft())
             titles = [t.casefold() for t, _ in sections]
@@ -332,8 +337,10 @@ def footer(dir: str | Path) -> str:
     draft = (dir / "draft.md").read_text() if (dir / "draft.md").exists() else ""
     cited = set(cited_ids(draft))
     known = {f.id for f in facts}
-    line = (f"Facts: {len(facts)} recorded, {sum(f.verified for f in facts)} verified, "
-            f"{len(cited & known)} cited, {len(known - cited)} unused.")
+    line = (
+        f"Facts: {len(facts)} recorded, {sum(f.verified for f in facts)} verified, "
+        f"{len(cited & known)} cited, {len(known - cited)} unused."
+    )
     if unverified := [f.id for f in facts if not f.verified]:
         line += f" Unverified (⚠): {', '.join(unverified)}."
     if unknown := [id for id in cited_ids(draft) if id not in known]:
@@ -429,42 +436,59 @@ def write_text(path: Path, text: str) -> None:
 # ---------------------------------------------------------------- agents and profiles
 
 
-def researcher(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
-               client: ChatBackend | None = None) -> Agent:
+def researcher(
+    notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+) -> Agent:
     """A researcher: web search, plus the notebook's `fetch_page` and `record_fact`."""
-    return Agent(model, system_prompt=RESEARCHER_PROMPT,
-                 tools={"web_search": tools.web_search, **notebook.tools_for(budget.path)},
-                 budget=budget, max_tool_rounds=15, compact_at=None, client=client)
+    return Agent(
+        model,
+        system_prompt=RESEARCHER_PROMPT,
+        tools={"web_search": tools.web_search, **notebook.tools_for(budget.path)},
+        budget=budget,
+        max_tool_rounds=15,
+        compact_at=None,
+        client=client,
+    )
 
 
-def research_lead(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
-                  client: ChatBackend | None = None) -> Agent:
+def research_lead(
+    notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+) -> Agent:
     """The lead: it reads the facts, writes the draft and starts researchers. It has no web tools."""
     # max_tool_rounds=40: the default 10 runs out on 3 spawns + 3 collects + 4 sections.
-    return Agent(model, system_prompt=RESEARCH_LEAD_PROMPT,
-                 tools={"facts": notebook.facts, "write_section": notebook.write_section,
-                        "read_draft": notebook.read_draft},
-                 subagent_profiles={"researcher": researcher_profile(notebook, model, client)},
-                 budget=budget, max_tool_rounds=40, compact_at=None, client=client)
+    return Agent(
+        model,
+        system_prompt=RESEARCH_LEAD_PROMPT,
+        tools={"facts": notebook.facts, "write_section": notebook.write_section, "read_draft": notebook.read_draft},
+        subagent_profiles={"researcher": researcher_profile(notebook, model, client)},
+        budget=budget,
+        max_tool_rounds=40,
+        compact_at=None,
+        client=client,
+    )
 
 
-def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL,
-                       client: ChatBackend | None = None) -> Profile:
+def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: ChatBackend | None = None) -> Profile:
     """The lead's profile: researchers that all write into this lead's notebook."""
+
     def start(task: str, budget: Budget) -> Run:
         agent = researcher(notebook, budget, model, client)
         return Run.start(agent, task, report=lambda: researcher_result(agent, notebook))
+
     return Profile(RESEARCHER_DESCRIPTION, start, max_cost=0.10, max_cost_cap=0.25)
 
 
-def research_profile(model: str = DEFAULT_MODEL, client: ChatBackend | None = None,
-                     runs_dir: str | Path = RESEARCH_DIR) -> Profile:
+def research_profile(
+    model: str = DEFAULT_MODEL, client: ChatBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
+) -> Profile:
     """The caller's profile: each run gets a fresh folder under `runs_dir` and a lead bound to it. Outside an agent,
     e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, Budget(…))`."""
+
     def start(task: str, budget: Budget) -> Run:
         notebook = Notebook.create(runs_dir, brief=task, path=budget.path, model=model)
         lead = research_lead(notebook, budget, model, client)
         return Run.start(lead, task, report=lambda: research_result(lead, notebook))
+
     return Profile(RESEARCH_DESCRIPTION, start, max_cost=0.50, max_cost_cap=2.0)
 
 
@@ -485,10 +509,14 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
     write_text(notebook.dir / "report.md", report)
     (notebook.dir / "agents").mkdir(exist_ok=True)
     for path, agent in agent_tree(lead).items():
-        write_json(notebook.dir / "agents" / f"{path.replace('/', '-')}.json",
-                   {"path": path, "task": agent.budget.task, "messages": agent.messages, "usage": agent.usage})
-    write_json(notebook.dir / "budget.json", {"limit": lead.budget.limit, "spent": lead.budget.spent,
-                                              "breakdown": lead.budget.breakdown()})
+        write_json(
+            notebook.dir / "agents" / f"{path.replace('/', '-')}.json",
+            {"path": path, "task": agent.budget.task, "messages": agent.messages, "usage": agent.usage},
+        )
+    write_json(
+        notebook.dir / "budget.json",
+        {"limit": lead.budget.limit, "spent": lead.budget.spent, "breakdown": lead.budget.breakdown()},
+    )
     return f"Report: {notebook.dir / 'report.md'}\n\n{summary_of(report)}\n\n{footer(notebook.dir)}"
 
 

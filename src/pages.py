@@ -39,8 +39,21 @@ def html_text(html: str) -> str:
     """An HTML page's title and the text a reader sees, one line per text node. Also dropped: MathML's TeX source
     (arXiv math would read "333 × \\times"), and screen-reader-only text like "(opens in a new window)"."""
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "aside", "form", "annotation",
-                     "annotation-xml"]):
+    for tag in soup(
+        [
+            "script",
+            "style",
+            "noscript",
+            "svg",
+            "header",
+            "footer",
+            "nav",
+            "aside",
+            "form",
+            "annotation",
+            "annotation-xml",
+        ]
+    ):
         tag.decompose()
     for tag in soup.select(".sr-only, .visually-hidden"):
         tag.decompose()

@@ -102,8 +102,11 @@ def response(content="", tool_calls=None, usage=None, id=None, created=178974840
 
 def call(name: str, id: str | None = None, **args) -> dict:
     """A tool call with JSON-string arguments, as the API sends it."""
-    return {"id": id or f"call-{next(_ids)}", "type": "function",
-            "function": {"name": name, "arguments": json.dumps(args)}}
+    return {
+        "id": id or f"call-{next(_ids)}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(args)},
+    }
 
 
 @pytest.fixture
@@ -144,8 +147,9 @@ def serve(monkeypatch):
 
     def get(url, **kwargs):
         body, content_type = served[url]
-        return httpx.Response(200, content=body, headers={"content-type": content_type},
-                              request=httpx.Request("GET", url))
+        return httpx.Response(
+            200, content=body, headers={"content-type": content_type}, request=httpx.Request("GET", url)
+        )
 
     monkeypatch.setattr(pages.httpx, "get", get)
     pages.read_page.cache_clear()  # tests reuse URLs with different bodies

@@ -428,7 +428,11 @@ def test_annotated_constraints_are_kept():
         """
 
     assert params(f)["properties"]["n"] == {
-        "type": "integer", "minimum": 1, "maximum": 10, "default": 5, "description": "How many.",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 5,
+        "description": "How many.",
     }
 
 
@@ -457,6 +461,7 @@ def test_wrapped_function_uses_the_original_signature():
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             return fn(*args, **kwargs)
+
         return wrapper
 
     @deco
@@ -527,4 +532,3 @@ def test_an_agent_refuses_a_tool_not_marked_tool():
 
     with pytest.raises(ValueError, match="not marked @tool: helper"):
         Agent(client=FakeClient([]), tools={"helper": helper})
-

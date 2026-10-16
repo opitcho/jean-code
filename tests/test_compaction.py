@@ -50,8 +50,14 @@ def summary(text="SUMMARY TEXT", **kwargs) -> dict:
 
 def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
     client = kwargs.pop("client", None) or FakeClient(responses)
-    kwargs = {"system_prompt": "sys", "tools": {"add": add, "rm": rm}, "compact_at": 1000,
-              "keep_first": 2, "keep_last": 2, **kwargs}
+    kwargs = {
+        "system_prompt": "sys",
+        "tools": {"add": add, "rm": rm},
+        "compact_at": 1000,
+        "keep_first": 2,
+        "keep_last": 2,
+        **kwargs,
+    }
     return Agent(client=client, **kwargs), client
 
 
@@ -102,7 +108,7 @@ def test_summary_request_extends_the_cached_prefix():
     last_step, request = client.requests[-2], client.requests[-1]
     assert is_summary_request(request)
     assert request["messages"][: len(last_step["messages"])] == last_step["messages"]
-    added = request["messages"][len(last_step["messages"]):]
+    added = request["messages"][len(last_step["messages"]) :]
     assert [m["role"] for m in added] == ["assistant", "user"]  # turn 5's reply, then the instruction
     assert added[0]["content"] == "reply 5"
     for key in ("model", "tools", "reasoning"):
@@ -155,8 +161,11 @@ def test_tool_calls_stay_with_their_results():
             response(f"reply {i}" + (BULK if i == 3 else ""), usage=SMALL),
         ]
         agent.run_turn(f"turn {i}")
-    client.responses += [response(tool_calls=[call("add", a=7, b=8)], usage=SMALL),
-                         response("reply 5", usage=BIG), summary()]
+    client.responses += [
+        response(tool_calls=[call("add", a=7, b=8)], usage=SMALL),
+        response("reply 5", usage=BIG),
+        summary(),
+    ]
     agent.run_turn("turn 5")
     assert agent.compactions[-1]["status"] == "compacted"
     assert_valid(agent.messages)
@@ -285,13 +294,16 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
 # ---------------------------------------------------------------- failures leave the transcript alone
 
 
-@pytest.mark.parametrize("reply, reason", [
-    (RuntimeError("HTTP 502"), "RuntimeError"),
-    (summary(""), "empty"),
-    (summary(tool_calls=[call("add", a=1, b=2)]), "called a tool"),
-    ({**summary(), "choices": [{**summary()["choices"][0], "finish_reason": "length"}]}, "cut off"),
-    ({"id": "gen-x", "usage": usage(cost=0.002)}, "KeyError"),
-])
+@pytest.mark.parametrize(
+    "reply, reason",
+    [
+        (RuntimeError("HTTP 502"), "RuntimeError"),
+        (summary(""), "empty"),
+        (summary(tool_calls=[call("add", a=1, b=2)]), "called a tool"),
+        ({**summary(), "choices": [{**summary()["choices"][0], "finish_reason": "length"}]}, "cut off"),
+        ({"id": "gen-x", "usage": usage(cost=0.002)}, "KeyError"),
+    ],
+)
 def test_a_failed_summary_changes_nothing(reply, reason):
     # Catches an empty, truncated or missing summary replacing turns of work.
     agent, client = make_agent([])
@@ -337,8 +349,9 @@ def test_summary_call_is_billed_and_respects_the_budget():
 
 def test_hard_limit_stops_the_turn():
     # Catches a turn running on until the provider rejects the request mid-turn.
-    agent, client = make_agent([response(tool_calls=[call("add", a=1, b=2)], usage=usage(prompt=1900))],
-                               compact_at=None, context_window=2000)
+    agent, client = make_agent(
+        [response(tool_calls=[call("add", a=1, b=2)], usage=usage(prompt=1900))], compact_at=None, context_window=2000
+    )
     end = agent.run_turn("go")
     assert len(client.requests) == 1
     assert end == "context full"

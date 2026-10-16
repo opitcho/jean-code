@@ -271,7 +271,9 @@ class DockerShell(Shell):
             return self.container
         info = subprocess.run(
             ["docker", "info", "--format", "{{.HTTPProxy}}\n{{.HTTPSProxy}}\n{{.NoProxy}}"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if info.returncode != 0:
             raise RuntimeError(

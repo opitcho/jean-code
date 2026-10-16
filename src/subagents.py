@@ -29,7 +29,7 @@ MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`
 POLL_SECONDS = 0.2  # how often a wait checks whether the parent was interrupted
 
 
-#TODO: Customized tools per profile
+# TODO: Customized tools per profile
 @dataclass(frozen=True)
 class Profile:
     """The spec of one kind of subagent: what it's for, what it may spend, and how to start one on a task."""
@@ -51,8 +51,9 @@ class Profile:
         return self.max_cost if self.max_cost_cap is None else self.max_cost_cap
 
 
-def agent_profile(description: str, build: Callable[[str, Budget], Agent], max_cost: float,
-                  max_cost_cap: float | None = None) -> Profile:
+def agent_profile(
+    description: str, build: Callable[[str, Budget], Agent], max_cost: float, max_cost_cap: float | None = None
+) -> Profile:
     """A profile for the common case: build a fresh agent on the given budget, run it on the task, and hand back its
     last reply. `build(task, budget)` must pass `budget=budget` to the `Agent`."""
     return Profile(description, lambda task, budget: Run.start(build(task, budget), task), max_cost, max_cost_cap)
@@ -264,8 +265,9 @@ class Subagents:
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
         if (running := self.running()) >= MAX_RUNNING:
-            raise ValueError(f"{running} subagents are running, the most at once; "
-                             "collect one with subagent(run_id, wait=…) first")
+            raise ValueError(
+                f"{running} subagents are running, the most at once; collect one with subagent(run_id, wait=…) first"
+            )
         id = next(self._ids)  # taken before start: a start that fails skips its id
         limit = min(spec.max_cost if max_cost is None else max_cost, spec.cap)
         node = self.budget.child(limit, name=str(id), task=task)
@@ -313,8 +315,10 @@ class Subagents:
         self._wait(run, min(max(wait, 0), MAX_WAIT))
         outcome = run.outcome(0)
         if outcome is None:
-            return (f"run {run_id} is still running: {len(run.agent.usage)} model calls, "
-                    f"${run.agent.budget.spent:.4f} spent so far")
+            return (
+                f"run {run_id} is still running: {len(run.agent.usage)} model calls, "
+                f"${run.agent.budget.spent:.4f} spent so far"
+            )
         self.claim(run_id)
         return result_block(run_id, profile, outcome)
 

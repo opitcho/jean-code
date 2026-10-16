@@ -35,12 +35,19 @@ def test_record_of_the_real_payload(utc):
     }
 
 
-@pytest.mark.parametrize("raw", [
-    {"prompt_tokens_details": None, "completion_tokens_details": None},
-    {},
-    {"prompt_tokens": None, "completion_tokens": None,
-     "prompt_tokens_details": {"cached_tokens": None}, "completion_tokens_details": {"reasoning_tokens": None}},
-])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"prompt_tokens_details": None, "completion_tokens_details": None},
+        {},
+        {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "prompt_tokens_details": {"cached_tokens": None},
+            "completion_tokens_details": {"reasoning_tokens": None},
+        },
+    ],
+)
 def test_record_reads_null_or_missing_counts_as_zero(raw):
     # Catches a crash after a paid call when a provider sends nulls or leaves the details out.
     r = record(raw)
@@ -78,8 +85,10 @@ def test_append_log_creates_dirs_and_appends(tmp_path):
 
 def test_usage_line_sums_calls():
     # Catches showing only the last call, or a cached share with the wrong denominator.
-    raws = [entry(prompt=1400, cached=1000, completion=100, cost=0.0005),
-            entry(prompt=2000, cached=1788, completion=110, cost=0.0007)]
+    raws = [
+        entry(prompt=1400, cached=1000, completion=100, cost=0.0005),
+        entry(prompt=2000, cached=1788, completion=110, cost=0.0007),
+    ]
     assert usage_line(raws) == "$0.0012 · 3.4k in (82% cached) · 210 out"
 
 
@@ -99,4 +108,3 @@ def test_usage_line_marks_unknown_cost():
 def test_human_boundary():
     assert human(999) == "999"
     assert human(1000) == "1.0k"
-

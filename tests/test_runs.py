@@ -47,6 +47,7 @@ def make_agent(responses, budget=None, **kwargs) -> Agent:
 def gated(agent: Agent) -> threading.Event:
     """Hold a run whose task starts with `/gate` just before `run_turn` clears the interrupt flag, until set."""
     gate = threading.Event()
+
     def hold(rest: str) -> None:  # None: the task goes on as typed
         gate.wait(TIMEOUT)
 
@@ -168,7 +169,8 @@ def test_the_report_still_runs_when_the_agent_raises():
     assert run.outcome(TIMEOUT) == Outcome("failed", "RuntimeError: HTTP 500\n\nthe notebook")
     both = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: str(1 / 0))
     assert both.outcome(TIMEOUT) == Outcome(
-        "failed", "RuntimeError: HTTP 500\n\nThe report failed too: ZeroDivisionError: division by zero")
+        "failed", "RuntimeError: HTTP 500\n\nThe report failed too: ZeroDivisionError: division by zero"
+    )
 
 
 def test_a_failing_cleanup_still_completes_the_run():
@@ -216,15 +218,23 @@ def test_a_finished_run_stops_the_runs_it_started():
     # Catches a run that finishes while its own background subagents keep spending.
     grandchild_client = FakeClient([response(tool_calls=[call("slow")])] * 20 + [response("dug")])
     grandchild = agent_profile(
-        "digger", lambda task, budget: Agent(client=grandchild_client, tools={"slow": slow}, budget=budget),
-        max_cost=1.0)
+        "digger",
+        lambda task, budget: Agent(client=grandchild_client, tools={"slow": slow}, budget=budget),
+        max_cost=1.0,
+    )
     child = Agent(
-        client=FakeClient([response(tool_calls=[call("spawn", profile="digger", task="dig", background=True)]),
-                           response("handed off")]),
-        budget=Budget(1.0), subagent_profiles={"digger": grandchild})
+        client=FakeClient(
+            [
+                response(tool_calls=[call("spawn", profile="digger", task="dig", background=True)]),
+                response("handed off"),
+            ]
+        ),
+        budget=Budget(1.0),
+        subagent_profiles={"digger": grandchild},
+    )
     run = Run.start(child, "go")
     assert run.outcome(TIMEOUT) == done("handed off")
-    (_, _, dig), = child.subagents.snapshot()
+    ((_, _, dig),) = child.subagents.snapshot()
     assert dig.done()  # closed before the run completed: nothing below it still running
     assert (dig.outcome(0).status, dig.outcome(0).reason) == ("stopped", "cancelled")
     assert len(grandchild_client.requests) < 21

@@ -59,8 +59,10 @@ class TurnPrinter:
 def compaction_line(record: dict) -> str:
     """`[compacted 38 messages · ~210.0k → ~24.0k tokens]`, or why a compaction didn't happen."""
     if record["status"] == "compacted":
-        return (f"[compacted {record['removed']} messages · ~{human(record['tokens_before'])} → "
-                f"~{human(record['tokens_after'])} tokens]")
+        return (
+            f"[compacted {record['removed']} messages · ~{human(record['tokens_before'])} → "
+            f"~{human(record['tokens_after'])} tokens]"
+        )
     return f"[compaction {record['status']}]"
 
 
@@ -79,8 +81,12 @@ def repl(agent: Agent, approvals: Approvals | None = None, usage_log: str | Path
     while True:
         pending = agent.subagents.pending if agent.subagents else 0
         if pending and pending != announced:
-            print(dim(f"[{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
-                      f"{'them' if pending > 1 else 'it'}]"))
+            print(
+                dim(
+                    f"[{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
+                    f"{'them' if pending > 1 else 'it'}]"
+                )
+            )
         announced = pending
         try:
             user_input = input("you> ").strip()
@@ -195,14 +201,23 @@ if __name__ == "__main__":
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenRouter model id")
     parser.add_argument("--reasoning", default="medium", help="reasoning effort: low, medium or high")
     parser.add_argument("--max-cost", type=float, default=None, help="stop once the session has spent this many USD")
-    parser.add_argument("--compact-at", type=int, default=256_000,
-                        help="compact the context after a turn that ends over this many tokens")
+    parser.add_argument(
+        "--compact-at",
+        type=int,
+        default=256_000,
+        help="compact the context after a turn that ends over this many tokens",
+    )
     cli = parser.parse_args()
 
     approvals = Approvals()
     agent = coding_agent(
-        cli.model, sandbox=cli.sandbox, network=not cli.no_network, reasoning=cli.reasoning, max_cost=cli.max_cost,
-        compact_at=cli.compact_at, approve=approvals.ask,
+        cli.model,
+        sandbox=cli.sandbox,
+        network=not cli.no_network,
+        reasoning=cli.reasoning,
+        max_cost=cli.max_cost,
+        compact_at=cli.compact_at,
+        approve=approvals.ask,
     )
     try:
         repl(agent, approvals)

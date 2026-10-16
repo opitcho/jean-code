@@ -9,8 +9,9 @@ from pages import html_text, read_page
 
 def test_html_gives_the_title_and_visible_text(serve):
     # Catches the split into read_page losing the HTML cleanup.
-    html = (b"<html><head><title>T</title><script>var x;</script></head>"
-            b"<body><nav>menu</nav><p>Body text</p></body></html>")
+    html = (
+        b"<html><head><title>T</title><script>var x;</script></head><body><nav>menu</nav><p>Body text</p></body></html>"
+    )
     serve["https://x.test/h"] = (html, "text/html; charset=utf-8")
     text = read_page("https://x.test/h")
     assert text.startswith("T\n\n") and "Body text" in text
@@ -20,9 +21,11 @@ def test_html_gives_the_title_and_visible_text(serve):
 def test_html_text_drops_math_tex_source_and_screen_reader_text():
     # Catches arXiv math read twice ("333 × \times") and links read with "(opens in a new window)", which no reader
     # of the page sees and so no researcher quotes.
-    html = ('<p>up to 333<math alttext="\\times"><semantics><mo>×</mo><annotation encoding="application/x-tex">'
-            '\\times</annotation></semantics></math> relative to a <a>hard<span class="sr-only">(opens in a new '
-            'window)</span></a> scramble</p>')
+    html = (
+        '<p>up to 333<math alttext="\\times"><semantics><mo>×</mo><annotation encoding="application/x-tex">'
+        '\\times</annotation></semantics></math> relative to a <a>hard<span class="sr-only">(opens in a new '
+        "window)</span></a> scramble</p>"
+    )
     assert html_text(html) == "up to 333\n×\nrelative to a\nhard\nscramble"
 
 

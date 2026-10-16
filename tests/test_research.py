@@ -59,7 +59,8 @@ class TaskClient:
 
     def __init__(self, scripts: dict[str, list]):
         self.scripts: dict[str, list[dict | Exception | Callable[[], dict]]] = {
-            task: list(items) for task, items in scripts.items()}
+            task: list(items) for task, items in scripts.items()
+        }
         self._lock = threading.Lock()
 
     def complete(self, request: dict) -> dict:
@@ -78,8 +79,16 @@ def new_notebook(tmp_path) -> Notebook:
     return Notebook.create(tmp_path, brief="the brief", path="main", model="m")
 
 
-def record(notebook: Notebook, url: str, page: str, pages: dict, quote: str, claim: str = "a claim",
-           by: str = "main/1", date: str | None = None) -> str:
+def record(
+    notebook: Notebook,
+    url: str,
+    page: str,
+    pages: dict,
+    quote: str,
+    claim: str = "a claim",
+    by: str = "main/1",
+    date: str | None = None,
+) -> str:
     """Fetch the page as researcher `by`, then record one fact from it."""
     pages.setdefault(url, page)
     researcher = notebook.tools_for(by)
@@ -89,9 +98,13 @@ def record(notebook: Notebook, url: str, page: str, pages: dict, quote: str, cla
 
 def researcher_script(url: str, quote: str, claim: str, cost: float = 0.001) -> list:
     """A researcher that fetches one page, records one fact from it, and ends with a note."""
-    return [response(tool_calls=[call("fetch_page", url=url), call("record_fact", claim=claim, url=url, quote=quote)],
-                     usage=usage(cost=cost)),
-            response(f"covered {claim}")]
+    return [
+        response(
+            tool_calls=[call("fetch_page", url=url), call("record_fact", claim=claim, url=url, quote=quote)],
+            usage=usage(cost=cost),
+        ),
+        response(f"covered {claim}"),
+    ]
 
 
 def outcome_dir(text: str) -> Path:
@@ -111,8 +124,9 @@ def test_fetch_page_saves_each_window_it_returned_once(tmp_path, pages):
     fetch("https://a.test/", max_chars=10)
     notebook.tools_for("main/2")["fetch_page"]("https://a.test/", max_chars=10, start=10)
     index = json.loads((notebook.dir / "pages" / "index.json").read_text())
-    assert index == {"https://a.test": {"file": "P1.txt", "length": 30, "windows": [[0, 10], [10, 20]],
-                                        "by": ["main/1", "main/2"]}}
+    assert index == {
+        "https://a.test": {"file": "P1.txt", "length": 30, "windows": [[0, 10], [10, 20]], "by": ["main/1", "main/2"]}
+    }
     assert (notebook.dir / "pages" / "P1.txt").read_text() == "x" * 20 + "\n"  # touching windows: one stretch
 
 
@@ -124,7 +138,8 @@ def test_a_quote_across_windows_fetched_in_reverse_order_verifies(tmp_path, page
     researcher["fetch_page"]("https://a.test", max_chars=31, start=30)
     researcher["fetch_page"]("https://a.test", max_chars=30)
     assert researcher["record_fact"]("a claim", "https://a.test", pages["https://a.test"]) == (
-        "F1 recorded (quote verified)")
+        "F1 recorded (quote verified)"
+    )
 
 
 def test_a_quote_joining_two_windows_across_unread_text_is_not_verified(tmp_path, pages):
@@ -135,22 +150,28 @@ def test_a_quote_joining_two_windows_across_unread_text_is_not_verified(tmp_path
     researcher["fetch_page"]("https://a.test", max_chars=48, start=48)
     researcher["fetch_page"]("https://a.test", max_chars=23)
     assert (notebook.dir / "pages" / "P1.txt").read_text() == (
-        "Alpha beta gamma delta.\n\n[…]\n\nEpsilon zeta eta theta iota.\n")
-    assert "NOT verified" in researcher["record_fact"]("a claim", "https://a.test",
-                                                       "Alpha beta gamma delta. Epsilon zeta eta theta iota.")
+        "Alpha beta gamma delta.\n\n[…]\n\nEpsilon zeta eta theta iota.\n"
+    )
+    assert "NOT verified" in researcher["record_fact"](
+        "a claim", "https://a.test", "Alpha beta gamma delta. Epsilon zeta eta theta iota."
+    )
 
 
 def test_record_fact_verifies_a_verbatim_quote_and_flags_a_paraphrase(tmp_path, pages):
     # Catches a checker that passes anything, or fails on spacing and case the page doesn't matter for.
     notebook = new_notebook(tmp_path)
     assert record(notebook, "https://a.test", PAGE_A, pages, "  alpha IS a package\nmanager written in Rust. ") == (
-        "F1 recorded (quote verified)")
+        "F1 recorded (quote verified)"
+    )
     assert record(notebook, "https://a.test", PAGE_A, pages, "Alpha is a Rust-based package manager tool.") == (
         "F2 recorded, NOT verified: the quote isn't on the page (as read so far). "
-        "Fix the quote with record_fact again, or leave it.")
+        "Fix the quote with record_fact again, or leave it."
+    )
     facts = read_facts(notebook.dir)
     assert [(f.id, f.verified, f.problem) for f in facts] == [
-        ("F1", True, None), ("F2", False, "the quote isn't on the page (as read so far)")]
+        ("F1", True, None),
+        ("F2", False, "the quote isn't on the page (as read so far)"),
+    ]
 
 
 def test_record_fact_refuses_a_page_nobody_fetched_and_writes_nothing(tmp_path, pages):
@@ -171,19 +192,28 @@ def test_record_fact_finds_the_page_under_either_spelling_of_its_url(tmp_path, p
         assert "(quote verified)" in researcher["record_fact"]("a claim", url, QUOTE_A)
 
 
-@pytest.mark.parametrize("fixture, quote", [
-    ("pep8_excerpt.txt", "One of Guido's key insights is that code is read much more often than it is written."),
-    ("pep8_excerpt.txt", 'As PEP 20 says, "Readability counts". A style guide is about consistency.'),
-    ("pep8_excerpt.txt", "However, know when to be inconsistent - sometimes style guide recommendations"),
-    ("wikipedia_python_excerpt.txt", "There should be one-and preferably only one-obvious way to do it."),
-    ("wikipedia_python_excerpt.txt", "IEEE 754 number with 53 bits of precision"),
-    # Quotes from a live run that failed before spaces before punctuation were dropped: HTML extraction puts each
-    # link on its own line, so the page says "splitting\n, merging" and "sort=True)\n.".
-    ("pypi_pypdf_page.txt", "pypdf is a free and open-source pure-python PDF library capable of splitting, merging, "
-                            "cropping, and transforming the pages of PDF files."),
-    ("pymupdf_app1_page.txt", 'you can request a reordering following the scheme "top-left to bottom-right" by '
-                              'executing page.get_text("text", sort=True).'),
-])
+@pytest.mark.parametrize(
+    "fixture, quote",
+    [
+        ("pep8_excerpt.txt", "One of Guido's key insights is that code is read much more often than it is written."),
+        ("pep8_excerpt.txt", 'As PEP 20 says, "Readability counts". A style guide is about consistency.'),
+        ("pep8_excerpt.txt", "However, know when to be inconsistent - sometimes style guide recommendations"),
+        ("wikipedia_python_excerpt.txt", "There should be one-and preferably only one-obvious way to do it."),
+        ("wikipedia_python_excerpt.txt", "IEEE 754 number with 53 bits of precision"),
+        # Quotes from a live run that failed before spaces before punctuation were dropped: HTML extraction puts each
+        # link on its own line, so the page says "splitting\n, merging" and "sort=True)\n.".
+        (
+            "pypi_pypdf_page.txt",
+            "pypdf is a free and open-source pure-python PDF library capable of splitting, merging, "
+            "cropping, and transforming the pages of PDF files.",
+        ),
+        (
+            "pymupdf_app1_page.txt",
+            'you can request a reordering following the scheme "top-left to bottom-right" by '
+            'executing page.get_text("text", sort=True).',
+        ),
+    ],
+)
 def test_quotes_verify_against_real_pages_despite_their_typography(fixture, quote):
     # Catches the checker failing correct quotes on curly quotes, dashes and non-breaking spaces, which would send
     # researchers round after round "fixing" them. The fixtures are text read_page returned from the real pages.
@@ -192,37 +222,53 @@ def test_quotes_verify_against_real_pages_despite_their_typography(fixture, quot
 
 def test_a_quote_verifies_across_the_spaces_html_extraction_adds():
     # Catches correct quotes failing where HTML extraction split a word or code tokens apart, as on a live run.
-    page = ('print(\n page. extract_text (extraction_mode = "layout"))\n'
-            'PyMuPD F and pypdfium generally outperformed others')
+    page = (
+        'print(\n page. extract_text (extraction_mode = "layout"))\nPyMuPD F and pypdfium generally outperformed others'
+    )
     quote = 'print(page.extract_text(extraction_mode="layout")) PyMuPDF and pypdfium generally'
     assert check_quote(quote, page) is None
 
 
 # Quotes that failed on a live run (facts F75, F14, F15, F16, F85, F106, F101, F32, F86, F77, F141) though the
 # sentence was on the page. The .txt fixtures are the text read_page saved; the .html ones are the pages' raw HTML.
-@pytest.mark.parametrize("fixture, quote", [
-    ("arxiv_2508_05635_excerpt.txt",
-     "At its core lies GE-Base, an instruction-conditioned, multi-view video diffusion model trained on approximately "
-     "3,000 hours of video-language paired data spanning over one million real-world robotic manipulation episodes "
-     "from the AgiBot-World-Beta dataset."),
-    ("arxiv_2511_02097_excerpt.txt",
-     "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
-     "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), latent dynamics modeling, and video generation "
-     "paradigms, each targeting distinct representational granularities and predictive mechanisms."),
-    ("arxiv_2511_02097_excerpt.txt",
-     "A central point of contention concerns its generative capability, as illustrated by NVIDIA, who define world "
-     "models as systems that learn environmental dynamics from multimodal data and generate videos capturing spatial "
-     "and physical properties."),
-    ("arxiv_2511_02097_excerpt.txt",
-     "Indeed, many recent world models adopt video generation as their core mechanism, enabling the prediction of "
-     "future states encompassing observations, actions, and environmental changes."),
-    ("arxiv_2411_14499_excerpt.txt",
-     "A key limitation is its causal reasoning ability (, ), restricting it to passively generating sequences without "
-     "actively predicting how actions might alter events."),
-    ("arxiv_2502_20694_excerpt.txt",
-     "Previous video generation evaluation mainly uses single-number metric such as Frechet Video Distance (FVD) and "
-     "CLIPSIM."),
-])
+@pytest.mark.parametrize(
+    "fixture, quote",
+    [
+        (
+            "arxiv_2508_05635_excerpt.txt",
+            "At its core lies GE-Base, an instruction-conditioned, multi-view video diffusion model trained on approximately "
+            "3,000 hours of video-language paired data spanning over one million real-world robotic manipulation episodes "
+            "from the AgiBot-World-Beta dataset.",
+        ),
+        (
+            "arxiv_2511_02097_excerpt.txt",
+            "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
+            "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), latent dynamics modeling, and video generation "
+            "paradigms, each targeting distinct representational granularities and predictive mechanisms.",
+        ),
+        (
+            "arxiv_2511_02097_excerpt.txt",
+            "A central point of contention concerns its generative capability, as illustrated by NVIDIA, who define world "
+            "models as systems that learn environmental dynamics from multimodal data and generate videos capturing spatial "
+            "and physical properties.",
+        ),
+        (
+            "arxiv_2511_02097_excerpt.txt",
+            "Indeed, many recent world models adopt video generation as their core mechanism, enabling the prediction of "
+            "future states encompassing observations, actions, and environmental changes.",
+        ),
+        (
+            "arxiv_2411_14499_excerpt.txt",
+            "A key limitation is its causal reasoning ability (, ), restricting it to passively generating sequences without "
+            "actively predicting how actions might alter events.",
+        ),
+        (
+            "arxiv_2502_20694_excerpt.txt",
+            "Previous video generation evaluation mainly uses single-number metric such as Frechet Video Distance (FVD) and "
+            "CLIPSIM.",
+        ),
+    ],
+)
 def test_a_quote_verifies_without_the_citations_the_page_has(fixture, quote):
     # Catches correct quotes failing because the researcher left out "[81]" or "(Bu et al., 2025a)", or kept only
     # the brackets of a citation whose numbers the page split onto their own lines.
@@ -237,36 +283,50 @@ def test_a_quote_that_keeps_the_citation_still_verifies():
 
 def test_a_quote_verifies_across_a_pdf_line_break_hyphen():
     # Catches "no language encoder" failing on pypdf's "no lan-\nguage encoder".
-    quote = ("On LIBERO, a 0.09B probe with no language encoder scores at or near reported SOTA, and most reported "
-             "gains are not provably statistically significant.")
+    quote = (
+        "On LIBERO, a 0.09B probe with no language encoder scores at or near reported SOTA, and most reported "
+        "gains are not provably statistically significant."
+    )
     assert check_quote(quote, (FIXTURES / "arxiv_2606_04233_pdf_excerpt.txt").read_text()) is None
 
 
-@pytest.mark.parametrize("fixture, quote", [
-    ("arxiv_2505_12705_excerpt.html",
-     "In simulation, we apply DreamGen to the RoboCasa benchmark [20], scaling synthetic data up to 333× relative to "
-     "the original human demonstrations. This yields log-linear improvements in policy performance as the number of "
-     "neural trajectories increases (Figure 4)."),
-    ("arxiv_2503_06800_excerpt.html",
-     "Our findings reveal major shortcomings, with even the best model achieving only 22% joint performance (i.e., "
-     "high semantic and physical commonsense adherence) on the hard subset of VideoPhy-2."),
-    ("openai_rubiks_cube_excerpt.html",
-     "Our robot still hasn’t perfected its technique though, as it solves the Rubik’s Cube 60% of the time (and only "
-     "20% of the time for a maximally difficult scramble)."),
-])
+@pytest.mark.parametrize(
+    "fixture, quote",
+    [
+        (
+            "arxiv_2505_12705_excerpt.html",
+            "In simulation, we apply DreamGen to the RoboCasa benchmark [20], scaling synthetic data up to 333× relative to "
+            "the original human demonstrations. This yields log-linear improvements in policy performance as the number of "
+            "neural trajectories increases (Figure 4).",
+        ),
+        (
+            "arxiv_2503_06800_excerpt.html",
+            "Our findings reveal major shortcomings, with even the best model achieving only 22% joint performance (i.e., "
+            "high semantic and physical commonsense adherence) on the hard subset of VideoPhy-2.",
+        ),
+        (
+            "openai_rubiks_cube_excerpt.html",
+            "Our robot still hasn’t perfected its technique though, as it solves the Rubik’s Cube 60% of the time (and only "
+            "20% of the time for a maximally difficult scramble).",
+        ),
+    ],
+)
 def test_a_quote_verifies_against_html_math_and_hidden_link_text(fixture, quote):
     # Catches arXiv math read as "333 × \times" (the TeX source after the symbol), and OpenAI links read as
     # "difficult⁠(opens in a new window)": text no reader of the page sees.
     assert check_quote(quote, html_text((FIXTURES / fixture).read_text())) is None
 
 
-@pytest.mark.parametrize("quote", [
-    # A word changed between citations.
-    "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
-    "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), explicit dynamics modeling",
-    # Two passages joined with "...": what the researcher prompt forbids.
-    "A central point of contention concerns its generative capability, ... who define world models as systems",
-])
+@pytest.mark.parametrize(
+    "quote",
+    [
+        # A word changed between citations.
+        "contemporary architectures for capturing world dynamics can be broadly stratified along a methodological "
+        "spectrum: implicit world modeling (e.g., LLMs, VLMs, and VLAs), explicit dynamics modeling",
+        # Two passages joined with "...": what the researcher prompt forbids.
+        "A central point of contention concerns its generative capability, ... who define world models as systems",
+    ],
+)
 def test_ignoring_citations_still_fails_a_changed_or_cut_quote(quote):
     # Catches citation stripping loose enough to verify a quote the page doesn't say.
     assert check_quote(quote, (FIXTURES / "arxiv_2511_02097_excerpt.txt").read_text()) is not None
@@ -277,7 +337,8 @@ def test_a_short_quote_is_recorded_unverified(tmp_path, pages):
     notebook = new_notebook(tmp_path)
     assert record(notebook, "https://a.test", PAGE_A, pages, "written in Rust") == (
         "F1 recorded, NOT verified: the quote has 3 words; quote at least 6. "
-        "Fix the quote with record_fact again, or leave it.")
+        "Fix the quote with record_fact again, or leave it."
+    )
 
 
 def test_a_long_quote_with_few_spaces_verifies():
@@ -341,22 +402,26 @@ def test_write_section_reports_citation_problems_when_it_saves(tmp_path, pages):
     record(notebook, "https://a.test", PAGE_A, pages, QUOTE_A)
     record(notebook, "https://a.test", PAGE_A, pages, "written in Rust")
     reply = notebook.write_section("Summary", "Alpha is Rust [F1][F2], see https://a.test and [F99].")
-    assert reply == ("Saved 'Summary' (1 of 1 sections). Cites F1, F2, F99. Unknown: F99. Unverified: F2. "
-                     "Raw URLs: 1 — cite facts instead.")
+    assert reply == (
+        "Saved 'Summary' (1 of 1 sections). Cites F1, F2, F99. Unknown: F99. Unverified: F2. "
+        "Raw URLs: 1 — cite facts instead."
+    )
 
 
 def test_render_report_numbers_sources_by_page_and_lists_their_quotes(tmp_path, pages):
     # Catches numbering by fact instead of page, the wrong order, lost quotes or dates, and a dropped ⚠.
     notebook = new_notebook(tmp_path)
-    record(notebook, "https://a.test", PAGE_A, pages, QUOTE_A, date="2025-03-14")                        # F1
-    record(notebook, "https://b.test", PAGE_B, pages, QUOTE_B)                                            # F2
+    record(notebook, "https://a.test", PAGE_A, pages, QUOTE_A, date="2025-03-14")  # F1
+    record(notebook, "https://b.test", PAGE_B, pages, QUOTE_B)  # F2
     record(notebook, "https://a.test/", PAGE_A, pages, "It installs packages ten times faster than pip.")  # F3
-    record(notebook, "https://b.test", PAGE_B, pages, "stable since two", by="main/2")                    # F4
+    record(notebook, "https://b.test", PAGE_B, pages, "stable since two", by="main/2")  # F4
     notebook.write_section("Summary", "- Beta uses TOML [F2].\n- Alpha is Rust and fast [F1][F3].\n- Gamma [F99].")
     notebook.write_section("Details", "A paragraph with no citation.\n\nAnother, cited [F2, F4].")
     notebook.write_section("Caveats", "Nothing found on Gamma [F4].")
     report = render_report(notebook.dir)
-    assert report == """\
+    assert (
+        report
+        == """\
 ## Summary
 
 - Beta uses TOML [1].
@@ -386,6 +451,7 @@ Nothing found on Gamma [1⚠].
 Facts: 4 recorded, 3 verified, 4 cited, 0 unused. Unverified (⚠): F4. Unknown ids: F99. \
 Uncited paragraphs outside Caveats: 1.
 """
+    )
 
 
 def test_render_report_lists_facts_no_section_cites(tmp_path, pages):
@@ -438,19 +504,29 @@ def test_end_to_end_a_lead_and_two_researchers_leave_a_complete_run_folder(tmp_p
     # Catches any break in the chain: spawn → facts on disk → results with each researcher's own facts → sections
     # → report.md, agents/ and budget.json, with the tree's spend adding up.
     pages.update({"https://a.test": PAGE_A, "https://b.test": PAGE_B})
-    client = TaskClient({
-        "the brief": [
-            response(tool_calls=[call("spawn", profile="researcher", task="find alpha", background=True),
-                                 call("spawn", profile="researcher", task="find beta", background=True)]),
-            response(tool_calls=[call("subagent", run_id=1, wait=600), call("subagent", run_id=2, wait=600)]),
-            response(tool_calls=[call("write_section", title="Summary", content="- Alpha and Beta [F1][F2]."),
-                                 call("write_section", title="Caveats", content="None.")]),
-            response(tool_calls=[call("facts", unused_only=True)]),
-            response("The report is done."),
-        ],
-        "find alpha": researcher_script("https://a.test", QUOTE_A, "Alpha is Rust"),
-        "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML"),
-    })
+    client = TaskClient(
+        {
+            "the brief": [
+                response(
+                    tool_calls=[
+                        call("spawn", profile="researcher", task="find alpha", background=True),
+                        call("spawn", profile="researcher", task="find beta", background=True),
+                    ]
+                ),
+                response(tool_calls=[call("subagent", run_id=1, wait=600), call("subagent", run_id=2, wait=600)]),
+                response(
+                    tool_calls=[
+                        call("write_section", title="Summary", content="- Alpha and Beta [F1][F2]."),
+                        call("write_section", title="Caveats", content="None."),
+                    ]
+                ),
+                response(tool_calls=[call("facts", unused_only=True)]),
+                response("The report is done."),
+            ],
+            "find alpha": researcher_script("https://a.test", QUOTE_A, "Alpha is Rust"),
+            "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML"),
+        }
+    )
     run = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(1.0))
     outcome = run.outcome(TIMEOUT)
     assert outcome.status == "done", outcome.text
@@ -463,8 +539,10 @@ def test_end_to_end_a_lead_and_two_researchers_leave_a_complete_run_folder(tmp_p
 
     report = (dir / "report.md").read_text()
     assert "- Alpha and Beta [1][2]." in report and "https://a.test" in report and "https://b.test" in report
-    assert outcome.text == (f"Report: {dir / 'report.md'}\n\n## Summary\n- Alpha and Beta [1][2].\n\n"
-                            "Facts: 2 recorded, 2 verified, 2 cited, 0 unused.")
+    assert outcome.text == (
+        f"Report: {dir / 'report.md'}\n\n## Summary\n- Alpha and Beta [1][2].\n\n"
+        "Facts: 2 recorded, 2 verified, 2 cited, 0 unused."
+    )
     assert sorted(p.name for p in (dir / "agents").iterdir()) == ["main-1.json", "main-2.json", "main.json"]
     budget = json.loads((dir / "budget.json").read_text())
     assert sum(row["cost"] for row in budget["breakdown"]) == pytest.approx(budget["spent"]) and budget["spent"] > 0
@@ -475,15 +553,21 @@ def test_researchers_that_spend_the_whole_budget_still_leave_a_report(tmp_path, 
     # Catches starvation losing everything: child limits aren't reserved, so researchers can empty the lead's pool
     # before it writes a word.
     pages.update({"https://a.test": PAGE_A, "https://b.test": PAGE_B})
-    client = TaskClient({
-        "the brief": [
-            response(tool_calls=[call("spawn", profile="researcher", task="find alpha", background=True),
-                                 call("spawn", profile="researcher", task="find beta", background=True)]),
-            response(tool_calls=[call("subagent", run_id=1, wait=600), call("subagent", run_id=2, wait=600)]),
-        ],
-        "find alpha": researcher_script("https://a.test", QUOTE_A, "Alpha is Rust", cost=0.15),
-        "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML", cost=0.15),
-    })
+    client = TaskClient(
+        {
+            "the brief": [
+                response(
+                    tool_calls=[
+                        call("spawn", profile="researcher", task="find alpha", background=True),
+                        call("spawn", profile="researcher", task="find beta", background=True),
+                    ]
+                ),
+                response(tool_calls=[call("subagent", run_id=1, wait=600), call("subagent", run_id=2, wait=600)]),
+            ],
+            "find alpha": researcher_script("https://a.test", QUOTE_A, "Alpha is Rust", cost=0.15),
+            "find beta": researcher_script("https://b.test", QUOTE_B, "Beta uses TOML", cost=0.15),
+        }
+    )
     outcome = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(0.25)).outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
     report = (outcome_dir(outcome.text) / "report.md").read_text()
@@ -496,10 +580,19 @@ def test_a_lead_stopped_after_drafting_hands_back_its_summary(tmp_path, pages):
     notebook = new_notebook(tmp_path)
     record(notebook, "https://a.test", PAGE_A, pages, QUOTE_A)
     record(notebook, "https://b.test", PAGE_B, pages, QUOTE_B)
-    client = TaskClient({"the brief": [response(
-        tool_calls=[call("write_section", title="Summary", content="- Beta uses TOML [F2], Alpha is Rust [F1]."),
-                    call("write_section", title="Details", content="More on Beta [F2].")],
-        usage=usage(cost=1.0))]})
+    client = TaskClient(
+        {
+            "the brief": [
+                response(
+                    tool_calls=[
+                        call("write_section", title="Summary", content="- Beta uses TOML [F2], Alpha is Rust [F1]."),
+                        call("write_section", title="Details", content="More on Beta [F2]."),
+                    ],
+                    usage=usage(cost=1.0),
+                )
+            ]
+        }
+    )
     lead = research_lead(notebook, Budget(0.5), client=client)
     outcome = Run.start(lead, "the brief", report=lambda: research_result(lead, notebook)).outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
@@ -518,18 +611,28 @@ def test_a_researcher_the_lead_never_collected_is_stopped_before_the_report(tmp_
         return PAGE_B
 
     pages.update({"https://a.test": PAGE_A, "https://slow.test": slow_page})
-    client = TaskClient({
-        "the brief": [
-            response(tool_calls=[call("spawn", profile="researcher", task="find both", background=True)]),
-            lambda: slow_started.wait(TIMEOUT) and response("The report is done."),
-        ],
-        "find both": [
-            response(tool_calls=[call("fetch_page", url="https://a.test"),
-                                 call("record_fact", claim="Alpha is Rust", url="https://a.test", quote=QUOTE_A)]),
-            response(tool_calls=[call("fetch_page", url="https://slow.test"),
-                                 call("record_fact", claim="Beta uses TOML", url="https://slow.test", quote=QUOTE_B)]),
-        ],
-    })
+    client = TaskClient(
+        {
+            "the brief": [
+                response(tool_calls=[call("spawn", profile="researcher", task="find both", background=True)]),
+                lambda: slow_started.wait(TIMEOUT) and response("The report is done."),
+            ],
+            "find both": [
+                response(
+                    tool_calls=[
+                        call("fetch_page", url="https://a.test"),
+                        call("record_fact", claim="Alpha is Rust", url="https://a.test", quote=QUOTE_A),
+                    ]
+                ),
+                response(
+                    tool_calls=[
+                        call("fetch_page", url="https://slow.test"),
+                        call("record_fact", claim="Beta uses TOML", url="https://slow.test", quote=QUOTE_B),
+                    ]
+                ),
+            ],
+        }
+    )
     run = research_profile(client=client, runs_dir=tmp_path).start("the brief", Budget(1.0))
     outcome = run.outcome(TIMEOUT)
     assert outcome.status == "done"

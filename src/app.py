@@ -63,9 +63,20 @@ EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash res
 LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
 STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
 CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window", "head_end")
-STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage", "compactions",  # shown elsewhere
-                "needs_approval", "skills", *STATE_CONFIG, *CONTEXT_CONFIG,
-                "budget", "subagents"}  # the sidebar; their trees link back up (child.parent), so vars() would recurse
+STATE_HIDDEN = {
+    "client",
+    "messages",
+    "last_request",
+    "last_response",
+    "usage",
+    "compactions",  # shown elsewhere
+    "needs_approval",
+    "skills",
+    *STATE_CONFIG,
+    *CONTEXT_CONFIG,
+    "budget",
+    "subagents",
+}  # the sidebar; their trees link back up (child.parent), so vars() would recurse
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
     "provider": st.column_config.TextColumn("provider"),
@@ -190,7 +201,7 @@ def result_summary(msg, name: str) -> str:
     content = str(mget(msg, "content") or "")
     exit_code = EXIT_CODE.match(content)
     if exit_code:
-        content = content[exit_code.end():]
+        content = content[exit_code.end() :]
     first = next((line for line in content.splitlines() if line.strip()), "(no output)")
     failed = f"exit {exit_code.group(1)} · " if exit_code and exit_code.group(1) != "0" else ""
     return f"{name} → {failed}{first}"
@@ -356,8 +367,12 @@ def new_chat() -> None:
         st.session_state.approvals.answer(NOT_RUN)  # a turn waiting for approval ends, and its thread with it
         old.close()
     st.session_state.approvals = Approvals()  # the turn's thread asks through it; the approval card answers
-    st.session_state.agent = coding_agent(MODEL, sandbox=st.session_state.get("sandbox", False),
-                                          reasoning=reasoning_effort(), approve=st.session_state.approvals.ask)
+    st.session_state.agent = coding_agent(
+        MODEL,
+        sandbox=st.session_state.get("sandbox", False),
+        reasoning=reasoning_effort(),
+        approve=st.session_state.approvals.ask,
+    )
     st.session_state.agent.budget.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
     st.session_state.histories = {}  # budget path -> that agent's list[Entry]
     st.session_state.selected = {}  # budget path -> selected uid; None or missing follows the latest
@@ -422,9 +437,10 @@ def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mon
 
 def kv_grid(rows: dict, fmt=json.dumps) -> str:
     """A two-column key/value table; values go through `fmt` (JSON by default, so strings show quoted)."""
-    cells = "".join(
-        f'<div class="k">{html.escape(str(k))}</div><div>{html.escape(fmt(v))}</div>' for k, v in rows.items()
-    ) or '<div class="k">—</div><div>none</div>'
+    cells = (
+        "".join(f'<div class="k">{html.escape(str(k))}</div><div>{html.escape(fmt(v))}</div>' for k, v in rows.items())
+        or '<div class="k">—</div><div>none</div>'
+    )
     return f'<div class="kv">{cells}</div>'
 
 
@@ -454,9 +470,13 @@ def render_sidebar_top() -> None:
             '<div><div class="brand-name">jean-code</div><div class="brand-sub">agent inspector</div></div></div>'
         )
         st.html(eyebrow("ENVIRONMENT"))
-        st.toggle("Run bash in Docker sandbox", key="sandbox", on_change=new_chat,
-                  help="Off: commands run on this machine in the directory the app was started from, and need "
-                       "approval. On: they run in the jean-code-sandbox container without asking. Starts a new chat.")
+        st.toggle(
+            "Run bash in Docker sandbox",
+            key="sandbox",
+            on_change=new_chat,
+            help="Off: commands run on this machine in the directory the app was started from, and need "
+            "approval. On: they run in the jean-code-sandbox container without asking. Starts a new chat.",
+        )
 
 
 def render_sidebar(agent) -> None:
@@ -470,14 +490,21 @@ def render_sidebar(agent) -> None:
         st.html(chips(sorted(agent.skills.catalog), on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(agent.model, cls="model") + "</div>")
-        st.segmented_control("Reasoning effort", REASONING_LEVELS, default="medium", required=True,
-                             key="reasoning", on_change=set_reasoning,
-                             help="Sent with each of the main agent's requests, from the next one on, "
-                                  "so it can change mid-chat. Subagents keep their own (medium).")
+        st.segmented_control(
+            "Reasoning effort",
+            REASONING_LEVELS,
+            default="medium",
+            required=True,
+            key="reasoning",
+            on_change=set_reasoning,
+            help="Sent with each of the main agent's requests, from the next one on, "
+            "so it can change mid-chat. Subagents keep their own (medium).",
+        )
         budget = agent.budget  # the agent and any subagents
         if budget.limit:
-            st.progress(min(budget.spent / budget.limit, 1.0),
-                        text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget")
+            st.progress(
+                min(budget.spent / budget.limit, 1.0), text=f"${budget.spent:.4f} of ${budget.limit:.2f} budget"
+            )
         render_agents(agent)
 
 
@@ -493,8 +520,10 @@ def agent_label(view: View) -> str:
 def agent_caption(view: View) -> str:
     """The picker's second line: a status dot and status, the agent's own calls and spend, and a run's task."""
     status, reason = status_of(view)
-    parts = [f":{STATUSES[status][0]}[●] " + (f"{status} ({reason})" if reason else status),
-             f"{len(view.agent.usage)} calls · ${view.agent.total_cost:.4f}"]
+    parts = [
+        f":{STATUSES[status][0]}[●] " + (f"{status} ({reason})" if reason else status),
+        f"{len(view.agent.usage)} calls · ${view.agent.total_cost:.4f}",
+    ]
     if view.run is not None:
         parts.append(clip(re.sub(r"[*_`#>\[\]]+", "", view.run.task), 48))  # plain text: captions are markdown
     return " · ".join(parts)
@@ -505,13 +534,22 @@ def render_agents(agent) -> None:
     Refreshed by full reruns, which `tree_state` triggers whenever a run starts or ends."""
     views = agent_views(agent)
     st.html(eyebrow(f"AGENTS · {len(views)}"))
-    st.radio("Agent to inspect", list(views), key="view", format_func=lambda path: agent_label(views[path]),
-             captions=[agent_caption(v) for v in views.values()], label_visibility="collapsed")
+    st.radio(
+        "Agent to inspect",
+        list(views),
+        key="view",
+        format_func=lambda path: agent_label(views[path]),
+        captions=[agent_caption(v) for v in views.values()],
+        label_visibility="collapsed",
+    )
     if agent.subagents and not agent.subagents.snapshot():
         st.caption("No subagents started yet.")
     if pending := agent.subagents.pending if agent.subagents else 0:
-        st.info(f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
-                f"{'them' if pending > 1 else 'it'}.", icon=":material/inbox:")
+        st.info(
+            f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
+            f"{'them' if pending > 1 else 'it'}.",
+            icon=":material/inbox:",
+        )
 
 
 def render_header(view: View, entries: list[Entry], ctx: list, running: bool) -> None:
@@ -522,9 +560,16 @@ def render_header(view: View, entries: list[Entry], ctx: list, running: bool) ->
     _, dot, cls = STATUSES[status]
     pills = [pill(view.path, bold=f"#{view.id} {view.profile}", cls="on")] if view.run else []
     pills += [pill(agent.model, cls="model"), pill(status, dot=dot, cls=cls)]
-    pills += [pill(label, bold=n) for n, label in
-              ((len(entries), "turns"), (tool_calls, "tool calls"), (len(ctx), "in context"), (compacted, "compacted"))
-              if n]
+    pills += [
+        pill(label, bold=n)
+        for n, label in (
+            (len(entries), "turns"),
+            (tool_calls, "tool calls"),
+            (len(ctx), "in context"),
+            (compacted, "compacted"),
+        )
+        if n
+    ]
     pills.append(pill("context", bold=context_size(agent), cls="mono"))
     if agent.usage:
         pills.append(pill(usage_line(agent.usage), cls="mono"))
@@ -537,11 +582,17 @@ def render_header(view: View, entries: list[Entry], ctx: list, running: bool) ->
             else:
                 st.button("New chat", icon=":material/refresh:", on_click=new_chat)
         elif running:
-            st.button("Cancel run", icon=":material/cancel:", on_click=view.run.cancel, type="primary",
-                      help="Stops this subagent, and any it started, after the model call it is making.")
+            st.button(
+                "Cancel run",
+                icon=":material/cancel:",
+                on_click=view.run.cancel,
+                type="primary",
+                help="Stops this subagent, and any it started, after the model call it is making.",
+            )
         else:
-            st.button("Back to main", icon=":material/arrow_back:", on_click=show,
-                      args=(st.session_state.agent.budget.path,))
+            st.button(
+                "Back to main", icon=":material/arrow_back:", on_click=show, args=(st.session_state.agent.budget.path,)
+            )
 
     if view.run is not None:  # a run's warnings are in how it ended
         outcome = view.run.outcome(0)
@@ -576,8 +627,9 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
                 flags = (("sel", selected is e), ("out", not e.in_context), ("err", err))
                 classes = " ".join(c for c, on in flags if on)
                 with st.container(key=f"blk-{kind}-{'err-' if err else ''}{e.uid}"):
-                    st.html(card(kind, preview(e.msg, kind, names), num=e.uid, classes=classes,
-                                 mono=kind in MONO_KINDS))
+                    st.html(
+                        card(kind, preview(e.msg, kind, names), num=e.uid, classes=classes, mono=kind in MONO_KINDS)
+                    )
                     st.button(" ", key=f"hit-{e.uid}", on_click=select, args=(e.uid,), width="stretch")
 
             if running:
@@ -594,8 +646,12 @@ def render_approval() -> None:
         st.html(card("approval", f"{name}() wants to run:", mono=True))
         command = arguments.get("command") if name == "bash" else None
         st.code(command or json.dumps(arguments, indent=2), language="bash" if command else "json", wrap_lines=True)
-        reason = st.text_input("Reason", key="deny_reason", placeholder="optional reason, sent to the model on deny",
-                               label_visibility="collapsed")
+        reason = st.text_input(
+            "Reason",
+            key="deny_reason",
+            placeholder="optional reason, sent to the model on deny",
+            label_visibility="collapsed",
+        )
         with st.container(horizontal=True):
             if st.button("Approve", icon=":material/check:", type="primary"):
                 answer_approval()
@@ -607,6 +663,7 @@ def render_approval() -> None:
 
 def render_args(args: dict) -> None:
     """Short arguments in a key/value table; commands and long or multi-line strings as code blocks."""
+
     def is_long(k, v):
         return isinstance(v, str) and (k == "command" or "\n" in v or len(v) > LONG_ARG)
 
@@ -648,8 +705,14 @@ def render_tool_call(entries: list[Entry], pos: int, running: bool, pending: boo
         with st.container(horizontal=True, vertical_alignment="center"):
             st.html(eyebrow("↳ RESULT"))
             if result is not None:
-                st.button("Jump to result", icon=":material/arrow_downward:", on_click=select, args=(result.uid,),
-                          key=f"jump-result-{result.uid}", type="tertiary")
+                st.button(
+                    "Jump to result",
+                    icon=":material/arrow_downward:",
+                    on_click=select,
+                    args=(result.uid,),
+                    key=f"jump-result-{result.uid}",
+                    type="tertiary",
+                )
         if result is not None:
             render_output(result)
         elif running and is_last:
@@ -667,8 +730,9 @@ def render_tool_result(entries: list[Entry], pos: int) -> None:
     with st.container(horizontal=True, vertical_alignment="center"):
         st.html(f'{eyebrow("FROM")}<div class="fn-name{err}">{html.escape(name)}()</div>')
         if call := call_of(entries, pos):
-            st.button("Jump to call", icon=":material/arrow_upward:", on_click=select, args=(call.uid,),
-                      type="tertiary")
+            st.button(
+                "Jump to call", icon=":material/arrow_upward:", on_click=select, args=(call.uid,), type="tertiary"
+            )
     render_output(result)
 
 
@@ -701,8 +765,9 @@ def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, 
         if st.session_state.selected.get(st.session_state.view) is None:
             st.html(pill("⤓ following latest"), width="content")
         else:
-            st.button("Follow latest", icon=":material/vertical_align_bottom:", on_click=select, args=(None,),
-                      type="tertiary")
+            st.button(
+                "Follow latest", icon=":material/vertical_align_bottom:", on_click=select, args=(None,), type="tertiary"
+            )
 
     if kind == "tool_call":
         render_tool_call(entries, pos, running, pending)
@@ -710,11 +775,17 @@ def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, 
         render_tool_result(entries, pos)
     else:
         if kind == "summary" and (rec := compaction_of(agent, msg)):
-            st.html(eyebrow("COMPACTION") + kv_grid({
-                "messages removed": rec["removed"],
-                "tokens": f"~{human(rec['tokens_before'])} → ~{human(rec['tokens_after'])}",
-                "summary call": compaction_cost(rec),
-            }, fmt=str))
+            st.html(
+                eyebrow("COMPACTION")
+                + kv_grid(
+                    {
+                        "messages removed": rec["removed"],
+                        "tokens": f"~{human(rec['tokens_before'])} → ~{human(rec['tokens_after'])}",
+                        "summary call": compaction_cost(rec),
+                    },
+                    fmt=str,
+                )
+            )
         render_text(msg, kind)
 
     with st.expander("Raw message", icon=":material/data_object:"):
@@ -733,8 +804,11 @@ def render_request(agent) -> None:
     reasoning = req.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, dict) else reasoning
     st.html(
-        '<div class="hdr">' + pill(req.get("model"), cls="model") + pill("reasoning", bold=effort or "none")
-        + pill("messages", bold=len(req.get("messages", []))) + "</div>"
+        '<div class="hdr">'
+        + pill(req.get("model"), cls="model")
+        + pill("reasoning", bold=effort or "none")
+        + pill("messages", bold=len(req.get("messages", [])))
+        + "</div>"
     )
     st.html(eyebrow(f"TOOLS · {len(tools)}") + chips(tools))
 
@@ -742,16 +816,27 @@ def render_request(agent) -> None:
         records = [record(raw) for raw in agent.usage]
         last = records[-1]
         cost = "—" if last["cost"] is None else f"${last['cost']:.5f}"
-        st.html(eyebrow("LAST CALL") + kv_grid({
-            "provider": last["provider"] or "—",
-            "tokens in": f"{human(last['prompt_tokens'])} ({human(last['cached_tokens'])} cached)",
-            "tokens out": f"{human(last['completion_tokens'])} ({human(last['reasoning_tokens'])} reasoning)",
-            "cost": cost,
-        }, fmt=str))
+        st.html(
+            eyebrow("LAST CALL")
+            + kv_grid(
+                {
+                    "provider": last["provider"] or "—",
+                    "tokens in": f"{human(last['prompt_tokens'])} ({human(last['cached_tokens'])} cached)",
+                    "tokens out": f"{human(last['completion_tokens'])} ({human(last['reasoning_tokens'])} reasoning)",
+                    "cost": cost,
+                },
+                fmt=str,
+            )
+        )
         st.html(eyebrow(f"USAGE · {len(agent.usage)} CALLS · {usage_line(agent.usage)}"))
         rows = [{**r, "time": (r["time"] or "")[11:19]} for r in reversed(records)]  # ISO time -> HH:MM:SS
-        st.dataframe(rows, hide_index=True, column_order=list(USAGE_COLUMNS),
-                     column_config=USAGE_COLUMNS, height=min(38 + 35 * len(agent.usage), 280))
+        st.dataframe(
+            rows,
+            hide_index=True,
+            column_order=list(USAGE_COLUMNS),
+            column_config=USAGE_COLUMNS,
+            height=min(38 + 35 * len(agent.usage), 280),
+        )
 
     st.html(eyebrow("PAYLOAD"))
     with st.expander("Messages sent", icon=":material/forum:"):
@@ -763,8 +848,10 @@ def render_request(agent) -> None:
 def render_context(agent) -> None:
     """The context's size against the compaction threshold, the settings, and every compaction attempt."""
     if agent.compact_at:
-        st.progress(min(agent.context_tokens / agent.compact_at, 1.0),
-                    text=f"context {context_size(agent)} tokens (compacts after a turn ending over the threshold)")
+        st.progress(
+            min(agent.context_tokens / agent.compact_at, 1.0),
+            text=f"context {context_size(agent)} tokens (compacts after a turn ending over the threshold)",
+        )
     else:
         st.html(pill("context", bold=context_size(agent), cls="mono") + pill("automatic compaction off"))
     st.html(eyebrow("SETTINGS") + kv_grid({k: getattr(agent, k) for k in CONTEXT_CONFIG}))
@@ -773,14 +860,17 @@ def render_context(agent) -> None:
     if not agent.compactions:
         st.caption("None yet. Type /compact to compact now.")
         return
-    rows = [{
-        "#": i + 1,
-        "status": rec["status"] or "running…",
-        "removed": rec["removed"],
-        "before": human(rec["tokens_before"]),
-        "after": human(rec["tokens_after"]) if "tokens_after" in rec else "—",
-        "cost": compaction_cost(rec),
-    } for i, rec in enumerate(agent.compactions)]
+    rows = [
+        {
+            "#": i + 1,
+            "status": rec["status"] or "running…",
+            "removed": rec["removed"],
+            "before": human(rec["tokens_before"]),
+            "after": human(rec["tokens_after"]) if "tokens_after" in rec else "—",
+            "cost": compaction_cost(rec),
+        }
+        for i, rec in enumerate(agent.compactions)
+    ]
     st.dataframe(rows, hide_index=True)
     for i, rec in enumerate(agent.compactions):
         if rec.get("summary"):
@@ -868,8 +958,14 @@ def live_view() -> None:
         render_timeline(entries, selected, running, pending, view.agent)
         if view.run is not None:
             st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
-        elif prompt := st.chat_input("Agent is working…" if running else "Approve or deny the call, or say why not…"
-                                     if pending else "Message the agent…", disabled=running):
+        elif prompt := st.chat_input(
+            "Agent is working…"
+            if running
+            else "Approve or deny the call, or say why not…"
+            if pending
+            else "Message the agent…",
+            disabled=running,
+        ):
             if pending:
                 answer_approval(denied(prompt))
             elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
