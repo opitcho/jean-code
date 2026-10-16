@@ -7,7 +7,8 @@ what the agent stores and shows.
 import inspect
 import os
 import time
-from typing import Any, Callable, get_type_hints
+from collections.abc import Callable
+from typing import Any, Protocol, get_type_hints, runtime_checkable
 
 import httpx
 from griffe import Docstring, DocstringSectionKind
@@ -18,6 +19,20 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1"
 # Pinning turns off OpenRouter's sticky routing, which only matters while DeepSeek is down.
 OPENROUTER_ROUTING = {"provider": {"order": ["deepseek"], "allow_fallbacks": True, "require_parameters": True}}
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+class ChatBackend(Protocol):
+    """What an agent needs from a model endpoint: one chat completion per call. `ChatClient` is the real one;
+    tests pass scripted ones."""
+
+    def complete(self, request: dict) -> dict: ...
+
+
+@runtime_checkable
+class HasCredits(Protocol):
+    """An endpoint that reports the API key's spend and limit, like OpenRouter's."""
+
+    def credits(self) -> dict: ...
 
 
 class ChatClient:
@@ -39,10 +54,12 @@ class ChatClient:
     def complete(self, request: dict) -> dict:
         """Send `request` and return the whole response: id, provider, choices and usage."""
         body = {**self.extra, **request}
-        for attempt in range(self.retries + 1):
+        attempt = 0
+        while True:
             response = self.http.post(f"{self.base_url}/chat/completions", json=body)
             if response.status_code in RETRY_STATUSES and attempt < self.retries:
                 time.sleep(2**attempt)
+                attempt += 1
                 continue
             if response.is_error:
                 raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
@@ -104,11 +121,13 @@ def tool_schema(name: str, fn: Callable) -> dict:
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
         if param.kind is param.POSITIONAL_ONLY:
-            raise ValueError(f"tool {name!r}: parameter {param.name!r} is positional-only, but tools are called by keyword")
+            raise ValueError(f"tool {name!r}: parameter {param.name!r} is positional-only, "
+                             "but tools are called by keyword")
         default = ... if param.default is param.empty else param.default
         # Passing description=None would erase one given in Annotated[..., Field(description=...)].
-        docs = {"description": arg_docs[param.name]} if arg_docs.get(param.name) else {}
-        # A neutral field name with the real name as alias: pydantic refuses names like `_x` and warns on ones like `json`.
+        docs: dict[str, Any] = {"description": arg_docs[param.name]} if arg_docs.get(param.name) else {}
+        # A neutral field name with the real name as alias: pydantic refuses names like `_x` and warns on ones
+        # like `json`.
         fields[f"arg{i}"] = (hints.get(param.name, Any), Field(default, alias=param.name, **docs))
     parameters = create_model(f"{name}_args", **fields).model_json_schema()
     return {"type": "function", "function": {"name": name, "description": description,
@@ -118,7 +137,7 @@ def tool_schema(name: str, fn: Callable) -> dict:
 def tool(fn: Callable) -> Callable:
     """Mark `fn` as a tool: a function a model calls. Its name, parameters and docstring are what the model sees, so
     changing any of them changes the model's API. `Agent` refuses tools without the mark."""
-    fn.is_tool = True
+    fn.is_tool = True  # pyright: ignore[reportFunctionMemberAccess] - functions take attributes; the stubs don't say
     return fn
 
 

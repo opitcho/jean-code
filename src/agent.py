@@ -1,15 +1,14 @@
 import itertools
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from pydantic import validate_call
-from functools import partial
 
-from llm import ChatClient, is_tool, openrouter, tool_schema
-from prompts import (COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE,
-                     SUMMARY_TAG)
+from llm import ChatBackend, is_tool, openrouter, tool_schema
+from prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE, SUMMARY_TAG
 from skills import Skills
 from subagents import Profile, Subagents, result_block, subagents_prompt
 from usage import Budget
@@ -27,7 +26,7 @@ class TurnStopped(Exception):
 
     def __init__(self, reason: TurnEnd):
         super().__init__(reason)
-        self.reason = reason
+        self.reason: TurnEnd = reason
 
 
 def parse_arguments(arguments: str) -> dict:
@@ -96,7 +95,7 @@ class Agent:
         cleanup: list[Callable[[], None]] | None = None,
         reasoning: str | None = "medium",
         max_tool_rounds: int = 10,
-        client: ChatClient | None = None,
+        client: ChatBackend | None = None,
         skills_dir: str | Path | None = None,
         max_cost: float | None = None,
         budget: Budget | None = None,
@@ -110,7 +109,7 @@ class Agent:
         self.system_prompt = system_prompt
         self.reasoning = reasoning
         self.max_tool_rounds = max_tool_rounds
-        self.client = client or openrouter()
+        self.client: ChatBackend = client or openrouter()
         self.tool_map: dict[str, Callable] = dict(tools or {})
         self.needs_approval: set[str] = set(needs_approval or ())
         if self.needs_approval and approve is None:
@@ -216,7 +215,7 @@ class Agent:
         content = self._run_command(user_input)
         claimed = self.subagents.claim() if self.subagents else []  # each result is taken, so delivered, once
         if claimed:
-            blocks = "\n\n".join(result_block(id, profile, run.outcome(0)) for id, profile, run in claimed)
+            blocks = "\n\n".join(result_block(id, profile, run.outcome()) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
         if self.head_end is None and len(self._turn_starts()) == self.keep_first:
@@ -225,7 +224,7 @@ class Agent:
         self.messages.append({"role": "user", "content": content})
         try:
             self._loop()
-        except TurnStopped as stop: 
+        except TurnStopped as stop:
             return stop.reason
         return "answered"
 
@@ -271,7 +270,7 @@ class Agent:
         schemas = estimate_tokens(self._tool_schemas())
         kept_estimate = schemas + sum(estimate_tokens(m) for m in head + tail)
         kept = round(tokens_before * kept_estimate / (kept_estimate + sum(estimate_tokens(m) for m in middle)))
-        if not force and kept >= self.compact_at:
+        if not force and self.compact_at is not None and kept >= self.compact_at:
             record["status"] = f"skipped: the kept turns alone take ~{kept} tokens, over compact_at"
             return record["status"]
 
@@ -292,7 +291,7 @@ class Agent:
             self._record_usage(response, kind="compaction")
             choice = response["choices"][0]
             summary = (choice["message"].get("content") or "").strip()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
             record["status"] = f"failed: {type(e).__name__}: {e}"
             return record["status"]
         if choice["message"].get("tool_calls"):
@@ -308,7 +307,7 @@ class Agent:
 
         record["summary"] = {"role": "user", "content": SUMMARY_MESSAGE.format(summary=summary)}
         record["before"] = messages  # the old list itself: it's replaced, never modified
-        self.messages = head + [record["summary"]] + tail
+        self.messages = [*head, record["summary"], *tail]
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
         new_estimate = kept_estimate + estimate_tokens(record["summary"])
@@ -446,9 +445,12 @@ class Agent:
             arguments = parse_arguments(call["function"]["arguments"])
         except ValueError as e:
             return f"Error: {type(e).__name__}: {e}"
-        if name in self.needs_approval and (refusal := self.approve(name, arguments)) is not None:
-            return refusal
+        if name in self.needs_approval:
+            if self.approve is None:  # needs_approval was changed after the agent was built
+                raise RuntimeError(f"tool '{name}' needs approval, but the agent has no `approve` function")
+            if (refusal := self.approve(name, arguments)) is not None:
+                return refusal
         try:
             return str(fn(**arguments))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - any tool failure goes back to the model as its result
             return f"Error: {type(e).__name__}: {e}"

@@ -13,9 +13,10 @@ from __future__ import annotations
 import itertools
 import threading
 import time
+from collections.abc import Callable
 from concurrent import futures
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 from llm import tool
 from usage import Budget
@@ -93,9 +94,11 @@ class Run:
         real output is somewhere else, such as a notebook the agent wrote to.
         """
         if agent.needs_approval:  # nobody can approve a subagent's calls: refuse rather than wait at the first one
-            raise ValueError(f"a subagent can't have tools that need approval: {', '.join(sorted(agent.needs_approval))}")
+            names = ", ".join(sorted(agent.needs_approval))
+            raise ValueError(f"a subagent can't have tools that need approval: {names}")
         run = cls(agent, task)
-        # A daemon thread, like the REPL's worker: close() is the orderly stop, and a crashed process doesn't hang on it.
+        # A daemon thread, like the REPL's worker: close() is the orderly stop, and a crashed process doesn't hang
+        # on it.
         threading.Thread(target=run._work, args=(report,), name=f"subagent {agent.budget.path}", daemon=True).start()
         return run
 
@@ -107,11 +110,11 @@ class Run:
         """
         try:
             outcome = self._finish(report)
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
             outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         try:
             self.agent.close()  # before publishing: a finished run leaves nothing running below it
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
             if outcome.status != "failed":  # keep the first error if there are two
                 outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         self._future.set_result(outcome)
@@ -127,7 +130,7 @@ class Run:
             error = f"{type(e).__name__}: {e}"
             try:
                 return Outcome("failed", f"{error}\n\n{report()}")
-            except BaseException as r:
+            except BaseException as r:  # noqa: BLE001 - the outcome reports both errors
                 return Outcome("failed", f"{error}\n\nThe report failed too: {type(r).__name__}: {r}")
         text = report() if report else last_reply(self.agent)
         if end == "answered":
@@ -147,6 +150,10 @@ class Run:
         futures.wait([self._future], timeout=timeout)
         return self.done()
 
+    @overload
+    def outcome(self, timeout: None = None) -> Outcome: ...
+    @overload
+    def outcome(self, timeout: float) -> Outcome | None: ...
     def outcome(self, timeout: float | None = None) -> Outcome | None:
         """How the run ended, waiting up to `timeout` seconds (None: until it ends); None while it's still running."""
         return self._future.result() if self.wait(timeout) else None

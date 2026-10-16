@@ -13,7 +13,7 @@ import pytest
 
 import agent as agent_module
 from agent import Agent, estimate_tokens, is_synthetic
-from conftest import FakeClient, call, response, usage
+from conftest import FakeClient, call, response, scripted, usage
 from llm import tool
 from prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
 
@@ -58,7 +58,7 @@ def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
 def run_small_turns(agent: Agent, n: int, start: int = 1, bulky: int = 3) -> None:
     """Turns measured small; turn number `bulky` gets a long reply."""
     for i in range(start, start + n):
-        agent.client.responses.append(response(f"reply {i}" + (BULK if i == bulky else ""), usage=SMALL))
+        scripted(agent).responses.append(response(f"reply {i}" + (BULK if i == bulky else ""), usage=SMALL))
         agent.run_turn(f"turn {i}")
 
 
@@ -98,7 +98,7 @@ def compacted_session(**kwargs) -> tuple[Agent, FakeClient]:
 def test_summary_request_extends_the_cached_prefix():
     # Catches a changed prefix (rebuilt tools, a trimmed transcript): a full-price 256k-token read on every
     # compaction, and without `tools` DeepSeek silently drops the reasoning the summary needs.
-    agent, client = compacted_session(reasoning="low")
+    _, client = compacted_session(reasoning="low")
     last_step, request = client.requests[-2], client.requests[-1]
     assert is_summary_request(request)
     assert request["messages"][: len(last_step["messages"])] == last_step["messages"]
@@ -113,7 +113,7 @@ def test_summary_request_extends_the_cached_prefix():
 
 def test_instruction_names_the_region():
     # Catches a prompt that points the model at the wrong turns.
-    agent, client = compacted_session()
+    _, client = compacted_session()
     instruction = client.requests[-1]["messages"][-1]["content"]
     assert HEAD_MARKER_TAG in instruction
     assert "2nd-to-last user message before this one" in instruction
@@ -140,8 +140,8 @@ def test_kept_messages_are_the_same_objects():
     # Catches copies: app.py matches messages by id(), so it would show everything as compacted and duplicated.
     agent, _ = compacted_session()
     before = agent.compactions[0]["before"]
-    assert all(a is b for a, b in zip(agent.messages[:6], before[:6]))
-    assert all(a is b for a, b in zip(agent.messages[-4:], before[-4:]))
+    assert all(a is b for a, b in zip(agent.messages[:6], before[:6], strict=True))
+    assert all(a is b for a, b in zip(agent.messages[-4:], before[-4:], strict=True))
 
 
 def test_tool_calls_stay_with_their_results():
@@ -192,7 +192,7 @@ def test_not_inside_a_tool_loop():
 
 def test_not_after_an_interrupt():
     # Catches a paid summary call right after the user said stop.
-    agent, client = make_agent([])
+    agent, _ = make_agent([])
     run_small_turns(agent, 4)
 
     class Interrupting(FakeClient):
@@ -200,14 +200,15 @@ def test_not_after_an_interrupt():
             agent.interrupt()
             return super().complete(request)
 
-    agent.client = Interrupting([response("reply 5", usage=BIG), summary()])
+    client = Interrupting([response("reply 5", usage=BIG), summary()])
+    agent.client = client
     agent.run_turn("turn 5")
-    assert len(agent.client.requests) == 1 and agent.compactions == []
+    assert len(client.requests) == 1 and agent.compactions == []
 
 
 def test_interrupt_during_the_summary_call_cancels_it():
     # Catches a summary applied after the user interrupted it.
-    agent, client = make_agent([])
+    agent, _ = make_agent([])
     run_small_turns(agent, 4)
 
     class InterruptingSummary(FakeClient):
@@ -278,7 +279,7 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
     new = tools + sum(estimate_tokens(m) for m in agent.messages)
     old = tools + sum(estimate_tokens(m) for m in record["before"])
     assert agent.context_tokens == record["tokens_after"] == round(record["tokens_before"] * new / old)
-    assert agent.context_tokens < agent.compact_at
+    assert agent.compact_at is not None and agent.context_tokens < agent.compact_at
 
 
 # ---------------------------------------------------------------- failures leave the transcript alone
@@ -311,7 +312,7 @@ def test_second_compaction_folds_the_first_summary_in():
     client.responses += [response("reply 8", usage=BIG), summary("SECOND")]
     agent.run_turn("turn 8")
     assert EARLIER_SUMMARY_NOTE in client.requests[-1]["messages"][-1]["content"]
-    assert all(a is b for a, b in zip(agent.messages[:6], head))
+    assert all(a is b for a, b in zip(agent.messages[:6], head, strict=True))
     synthetic = [m["content"] for m in agent.messages if is_synthetic(m)]
     assert len(synthetic) == 2 and "SECOND" in synthetic[1] and "SUMMARY TEXT" not in synthetic[1]
     assert [m["content"] for m in agent.messages[7:]] == ["turn 7", "reply 7", "turn 8", "reply 8"]

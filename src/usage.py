@@ -81,7 +81,7 @@ def usage_line(raws: list[dict]) -> str:
     """
     records = [record(raw) for raw in raws]
     known = [r["cost"] for r in records if r["cost"] is not None]
-    if records and not known:
+    if records and not known:  # noqa: SIM108 - a ternary of these two would be harder to read
         cost = "$?"
     else:
         cost = f"${sum(known):.4f}" + ("+?" if len(known) < len(records) else "")
@@ -211,7 +211,7 @@ class Budget:
 
     def _subtree(self) -> list["Budget"]:
         """This node and its descendants, depth first. The caller holds the lock."""
-        nodes = [self]
+        nodes: list[Budget] = [self]
         for child in self.children:
             nodes += child._subtree()
         return nodes

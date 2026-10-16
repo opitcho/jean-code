@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pages
 import tools
-from agent import Agent, DEFAULT_MODEL
+from agent import DEFAULT_MODEL, Agent
 from config import RESEARCH_DIR
-from llm import ChatClient, tool
+from llm import ChatBackend, tool
 from prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
 from subagents import Profile, Run, agent_tree, last_reply
 from usage import Budget
@@ -430,7 +430,7 @@ def write_text(path: Path, text: str) -> None:
 
 
 def researcher(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
-               client: ChatClient | None = None) -> Agent:
+               client: ChatBackend | None = None) -> Agent:
     """A researcher: web search, plus the notebook's `fetch_page` and `record_fact`."""
     return Agent(model, system_prompt=RESEARCHER_PROMPT,
                  tools={"web_search": tools.web_search, **notebook.tools_for(budget.path)},
@@ -438,7 +438,7 @@ def researcher(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
 
 
 def research_lead(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL,
-                  client: ChatClient | None = None) -> Agent:
+                  client: ChatBackend | None = None) -> Agent:
     """The lead: it reads the facts, writes the draft and starts researchers. It has no web tools."""
     # max_tool_rounds=40: the default 10 runs out on 3 spawns + 3 collects + 4 sections.
     return Agent(model, system_prompt=RESEARCH_LEAD_PROMPT,
@@ -448,7 +448,8 @@ def research_lead(notebook: Notebook, budget: Budget, model: str = DEFAULT_MODEL
                  budget=budget, max_tool_rounds=40, compact_at=None, client=client)
 
 
-def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: ChatClient | None = None) -> Profile:
+def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL,
+                       client: ChatBackend | None = None) -> Profile:
     """The lead's profile: researchers that all write into this lead's notebook."""
     def start(task: str, budget: Budget) -> Run:
         agent = researcher(notebook, budget, model, client)
@@ -456,7 +457,7 @@ def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: C
     return Profile(RESEARCHER_DESCRIPTION, start, max_cost=0.10, max_cost_cap=0.25)
 
 
-def research_profile(model: str = DEFAULT_MODEL, client: ChatClient | None = None,
+def research_profile(model: str = DEFAULT_MODEL, client: ChatBackend | None = None,
                      runs_dir: str | Path = RESEARCH_DIR) -> Profile:
     """The caller's profile: each run gets a fresh folder under `runs_dir` and a lead bound to it. Outside an agent,
     e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, Budget(…))`."""
@@ -476,8 +477,10 @@ def researcher_result(agent: Agent, notebook: Notebook) -> str:
 def research_result(lead: Agent, notebook: Notebook) -> str:
     """What the caller gets back: the report's path, its Summary and the counts. The only code that finishes a run
     folder, so every run, stopped or not, leaves report.md, agents/ and budget.json."""
-    lead.subagents.close()  # cancel and wait: a cancelled researcher still runs its last reply's tool calls,
-                            # so its last record_facts land before the report counts them
+    # Cancel and wait: a cancelled researcher still runs its last reply's tool calls, so its last record_facts
+    # land before the report counts them.
+    if lead.subagents:
+        lead.subagents.close()
     report = render_report(notebook.dir)
     write_text(notebook.dir / "report.md", report)
     (notebook.dir / "agents").mkdir(exist_ok=True)

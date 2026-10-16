@@ -21,10 +21,53 @@ dependencies = [
 dev = [
     "ipykernel>=7.3.0",
     "jupyter>=1.1.1",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
+    "ruff>=0.17.1",
     "tornado<6.5",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "RUF",     # ruff-specific
+    "BLE",     # blind except: catch-alls only at deliberate boundaries, each with a noqa saying why
+    "S",       # bandit
+    "T20",     # print outside the front-ends
+    "PLE", "PLW",  # pylint errors and warnings
+]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # ambiguous unicode: curly quotes, dashes and ✓/⚠ are deliberate (research.py)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest checks
+"src/repl.py" = ["T20"]  # the terminal front-end prints
+"src/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+executionEnvironments = [
+    # A test reading a field of an Optional (an outcome, a subagent) fails on None anyway.
+    { root = "tests", extraPaths = ["src", "tests"], reportOptionalMemberAccess = false },
+    { root = "src", extraPaths = ["src"] },
+]

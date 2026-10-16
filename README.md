@@ -143,4 +143,5 @@ workspace/      the sandbox's /workspace; research runs in workspace/research/
 logs/           usage.jsonl, one line per model call
 ```
 
-Run the tests with `uv run pytest`.
+Run the tests with `uv run pytest`, the linter with `uv run ruff check` and the type checker with
+`uv run pyright`. All three should pass.

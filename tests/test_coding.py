@@ -3,6 +3,8 @@
 Nothing here starts a container or calls a model. Each test names the bug it would catch.
 """
 
+from types import MethodType
+
 import pytest
 
 from coding import coding_agent, general_agent, searcher_agent, subagent_profiles
@@ -47,7 +49,8 @@ def test_the_general_subagent_runs_bash_in_docker_without_approval():
     agent = general_agent("m", budget, skills_dir=None)
     try:
         assert agent.needs_approval == set() and "bash" in agent.tool_map
-        assert isinstance(agent.tool_map["bash"].__self__, DockerShell)
+        bash = agent.tool_map["bash"]
+        assert isinstance(bash, MethodType) and isinstance(bash.__self__, DockerShell)
         assert agent.budget is budget  # spawn's check that the profile used its node
         assert "## You are a subagent" in agent.messages[0]["content"]
     finally:

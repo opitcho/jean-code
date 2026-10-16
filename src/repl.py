@@ -8,10 +8,11 @@ import signal
 import threading
 from pathlib import Path
 
-from agent import Agent, DEFAULT_MODEL, NOT_RUN, TurnEnd
+from agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
 from approval import Approvals, denied
 from coding import coding_agent
 from config import USAGE_LOG
+from llm import HasCredits
 from usage import breakdown_lines, human, usage_line
 
 
@@ -129,7 +130,7 @@ def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = N
     def target():
         try:
             ends.append(agent.run_turn(user_input))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - printed after the turn; the REPL carries on
             errors.append(e)
 
     def on_sigint(signum, frame):
@@ -144,7 +145,7 @@ def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = N
         while worker.is_alive():
             waiting = approvals.waiting if approvals else None  # read before printing, so its call is printed first
             printer.poll()
-            if waiting:
+            if waiting and approvals:
                 signal.signal(signal.SIGINT, previous)  # at the prompt, Ctrl+C is a KeyboardInterrupt again
                 try:
                     approvals.answer(ask_approval(agent, *waiting))
@@ -167,15 +168,18 @@ def run_and_print(agent: Agent, user_input: str, approvals: Approvals | None = N
 
 
 def print_cost(agent: Agent) -> None:
-    """The session's spend (the agent and any subagents), where it went once there are several agents, and the key's credits."""
+    """The session's spend (the agent and any subagents), where it went once there are several agents, and the
+    key's credits."""
     budget = agent.budget
     print(f"session: ${budget.spent:.4f} over {len(budget.journal)} model calls")
     if len(budget.nodes()) > 1:
         for line in breakdown_lines(budget.breakdown()):
             print(dim(line))
+    if not isinstance(agent.client, HasCredits):  # only OpenRouter reports credits
+        return
     try:
         key = agent.client.credits()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - the credits line is optional
         print(f"credits unavailable: {type(e).__name__}: {e}")
         return
     line = f"API key: ${key.get('usage') or 0:.2f} used"
@@ -191,7 +195,8 @@ if __name__ == "__main__":
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenRouter model id")
     parser.add_argument("--reasoning", default="medium", help="reasoning effort: low, medium or high")
     parser.add_argument("--max-cost", type=float, default=None, help="stop once the session has spent this many USD")
-    parser.add_argument("--compact-at", type=int, default=256_000, help="compact the context after a turn that ends over this many tokens")
+    parser.add_argument("--compact-at", type=int, default=256_000,
+                        help="compact the context after a turn that ends over this many tokens")
     cli = parser.parse_args()
 
     approvals = Approvals()

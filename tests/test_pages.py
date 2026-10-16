@@ -9,7 +9,8 @@ from pages import html_text, read_page
 
 def test_html_gives_the_title_and_visible_text(serve):
     # Catches the split into read_page losing the HTML cleanup.
-    html = b"<html><head><title>T</title><script>var x;</script></head><body><nav>menu</nav><p>Body text</p></body></html>"
+    html = (b"<html><head><title>T</title><script>var x;</script></head>"
+            b"<body><nav>menu</nav><p>Body text</p></body></html>")
     serve["https://x.test/h"] = (html, "text/html; charset=utf-8")
     text = read_page("https://x.test/h")
     assert text.startswith("T\n\n") and "Body text" in text

@@ -7,14 +7,24 @@ Each test names the bug it would catch.
 import copy
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from conftest import call, response, usage
 from pages import html_text
-from research import (Notebook, check_quote, read_facts, render_report, research_lead, research_profile,
-                      research_result, researcher_profile, summary_of)
+from research import (
+    Notebook,
+    check_quote,
+    read_facts,
+    render_report,
+    research_lead,
+    research_profile,
+    research_result,
+    researcher_profile,
+    summary_of,
+)
 from subagents import Run
 from usage import Budget
 
@@ -30,7 +40,7 @@ QUOTE_B = "Beta stores its lockfile as TOML in the project root."
 @pytest.fixture
 def pages(monkeypatch):
     """Serve `pages[url] = text` (or a callable returning it) in place of the web."""
-    served: dict = {}
+    served: dict[str, str | Callable[[], str]] = {}
 
     def read_page(url: str) -> str:
         page = served[url]
@@ -48,7 +58,8 @@ class TaskClient:
     """
 
     def __init__(self, scripts: dict[str, list]):
-        self.scripts = {task: list(items) for task, items in scripts.items()}
+        self.scripts: dict[str, list[dict | Exception | Callable[[], dict]]] = {
+            task: list(items) for task, items in scripts.items()}
         self._lock = threading.Lock()
 
     def complete(self, request: dict) -> dict:
@@ -181,8 +192,10 @@ def test_quotes_verify_against_real_pages_despite_their_typography(fixture, quot
 
 def test_a_quote_verifies_across_the_spaces_html_extraction_adds():
     # Catches correct quotes failing where HTML extraction split a word or code tokens apart, as on a live run.
-    page = 'print(\n page. extract_text (extraction_mode = "layout"))\nPyMuPD F and pypdfium generally outperformed others'
-    assert check_quote('print(page.extract_text(extraction_mode="layout")) PyMuPDF and pypdfium generally', page) is None
+    page = ('print(\n page. extract_text (extraction_mode = "layout"))\n'
+            'PyMuPD F and pypdfium generally outperformed others')
+    quote = 'print(page.extract_text(extraction_mode="layout")) PyMuPDF and pypdfium generally'
+    assert check_quote(quote, page) is None
 
 
 # Quotes that failed on a live run (facts F75, F14, F15, F16, F85, F106, F101, F32, F86, F77, F141) though the

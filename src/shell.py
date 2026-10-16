@@ -227,7 +227,7 @@ class LocalShell(Shell):
 
 def _remove_container(name: str, process: subprocess.Popen) -> None:
     """Remove a sandbox container and reap the `docker run` that started it."""
-    subprocess.run(["docker", "rm", "--force", name], capture_output=True)
+    subprocess.run(["docker", "rm", "--force", name], capture_output=True, check=False)
     process.communicate()
 
 
@@ -265,12 +265,13 @@ class DockerShell(Shell):
             f"a folder shared with the user's machine. Network access is {'on' if self.network else 'off'}."
         )
 
-    def start(self) -> None:
-        """Start the container, if it isn't running yet."""
+    def start(self) -> str:
+        """Start the container, if it isn't running yet, and return its name."""
         if self.container:
-            return
+            return self.container
         info = subprocess.run(
-            ["docker", "info", "--format", "{{.HTTPProxy}}\n{{.HTTPSProxy}}\n{{.NoProxy}}"], capture_output=True, text=True
+            ["docker", "info", "--format", "{{.HTTPProxy}}\n{{.HTTPSProxy}}\n{{.NoProxy}}"],
+            capture_output=True, text=True, check=False,
         )
         if info.returncode != 0:
             raise RuntimeError(
@@ -293,7 +294,8 @@ class DockerShell(Shell):
         process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
-        if process.stdout.readline().strip() != "ready":
+        first_line = process.stdout.readline() if process.stdout else ""
+        if first_line.strip() != "ready":
             error = process.communicate()[1].strip()
             if "Unable to find image" in error or "pull access denied" in error:
                 error += f"\n(build the image with `docker build -t {self.image} sandbox/`)"
@@ -301,6 +303,7 @@ class DockerShell(Shell):
         self.container = name
         # also on garbage collection (a dropped Streamlit session) and at interpreter exit
         self._remove = weakref.finalize(self, _remove_container, name, process)
+        return name
 
     @staticmethod
     def _proxy_env(info: str) -> list[str]:
@@ -309,13 +312,13 @@ class DockerShell(Shell):
         Docker Desktop sends container traffic through its own proxy: plain HTTP works without
         it, but HTTPS (pip, uv, curl) only works when the container is told to use it.
         """
-        http, https, no_proxy = (info.splitlines() + ["", "", ""])[:3]
+        http, https, no_proxy = [*info.splitlines(), "", "", ""][:3]
         flags = []
-        for key, value in {"HTTP_PROXY": http, "HTTPS_PROXY": https, "NO_PROXY": no_proxy}.items():
-            value = value.strip()
+        for key, raw in {"HTTP_PROXY": http, "HTTPS_PROXY": https, "NO_PROXY": no_proxy}.items():
+            value = raw.strip()
             if value:
-                value = value if "://" in value or key == "NO_PROXY" else f"http://{value}"
-                flags += ["--env", f"{key}={value}", "--env", f"{key.lower()}={value}"]
+                url = value if "://" in value or key == "NO_PROXY" else f"http://{value}"
+                flags += ["--env", f"{key}={url}", "--env", f"{key.lower()}={url}"]
         return flags
 
     def _jobs_path(self) -> str:
@@ -336,9 +339,9 @@ class DockerShell(Shell):
         self.close()
 
     def _exec(self, command: str, timeout: int) -> tuple[int, str, bool]:
-        self.start()
+        container = self.start()
         # `timeout` inside the container: killing the `docker exec` client wouldn't stop the command
-        argv = ["docker", "exec", self.container, "timeout", "-k", "5", str(timeout), "bash", "-c", command]
+        argv = ["docker", "exec", container, "timeout", "-k", "5", str(timeout), "bash", "-c", command]
         try:
             done = subprocess.run(
                 argv,
@@ -348,6 +351,7 @@ class DockerShell(Shell):
                 text=True,
                 errors="replace",
                 timeout=timeout + 10,
+                check=False,
             )
         except subprocess.TimeoutExpired as e:
             output = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout or ""
@@ -355,5 +359,5 @@ class DockerShell(Shell):
         return done.returncode, done.stdout, done.returncode == 124
 
     def _spawn(self, command: str) -> None:
-        self.start()
-        subprocess.run(["docker", "exec", "--detach", self.container, "bash", "-c", command], check=True)
+        container = self.start()
+        subprocess.run(["docker", "exec", "--detach", container, "bash", "-c", command], check=True)

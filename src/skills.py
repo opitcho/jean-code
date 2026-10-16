@@ -7,9 +7,9 @@ A skill loads in three levels, so the model only pays for what it uses:
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
@@ -106,7 +106,8 @@ class Skills:
     def commands(self) -> dict[str, Callable[[str], str | None]]:
         """`/name` for each skill, as a function of the rest of the line: loads the skill."""
         return {
-            name: lambda rest, name=name: self.load_skill(name) for name in self.catalog  # Default arg to avoid late closure
+            # name=name binds each name now: a closure would see only the loop's last one
+            name: lambda rest, name=name: self.load_skill(name) for name in self.catalog
         }
 
     @tool

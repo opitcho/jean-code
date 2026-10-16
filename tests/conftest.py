@@ -58,10 +58,18 @@ class FakeClient:
     def credits(self) -> dict:
         if isinstance(self.credit_data, Exception):
             raise self.credit_data
+        if self.credit_data is None:
+            raise AssertionError("no credit data scripted")
         return self.credit_data
 
 
-def usage(prompt=100, completion=10, cached=0, reasoning=0, cost=0.001) -> dict:
+def scripted(agent) -> FakeClient:
+    """The agent's client, for tests that script responses or read requests through the agent."""
+    assert isinstance(agent.client, FakeClient)
+    return agent.client
+
+
+def usage(prompt=100, completion=10, cached=0, reasoning=0, cost: float | None = 0.001) -> dict:
     """A usage payload in the real OpenRouter shape, with the given counts."""
     u = copy.deepcopy(REAL_USAGE)
     u.update(prompt_tokens=prompt, completion_tokens=completion, total_tokens=prompt + completion, cost=cost)

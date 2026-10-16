@@ -13,10 +13,14 @@ from llm import tool
 from usage import Budget
 
 
-def make_agent(responses, client_class=FakeClient, **kwargs) -> Agent:
+class AskingAgent(Agent):
+    asked: list[tuple[str, dict]]  # the calls `approve` got
+
+
+def make_agent(responses, client_class=FakeClient, **kwargs) -> AskingAgent:
     """An agent with `add`, `rm` (list it in `needs_approval` to have `approve` asked: by default it says yes)
     and `stop`, which interrupts the turn from inside a tool call. `agent.asked` lists the calls `approve` got."""
-    agent: Agent
+    agent: AskingAgent
     asked: list[tuple[str, dict]] = []
     answers = iter(kwargs.pop("answers", ()))  # what `approve` returns, call by call; None once they run out
 
@@ -52,8 +56,8 @@ def make_agent(responses, client_class=FakeClient, **kwargs) -> Agent:
         agent.interrupt()
         return "stopped"
 
-    agent = Agent(client=client_class(responses), tools={"add": add, "rm": rm, "stop": stop}, approve=approve,
-                  **kwargs)
+    agent = AskingAgent(client=client_class(responses), tools={"add": add, "rm": rm, "stop": stop},
+                        approve=approve, **kwargs)
     agent.asked = asked
     return agent
 
@@ -204,5 +208,5 @@ def test_a_call_with_invalid_arguments_is_not_asked_about():
 
 def test_tools_that_need_approval_need_an_approve_function():
     # Catches an agent whose gated calls would crash mid-turn, when nobody is there to ask.
-    with pytest.raises(ValueError, match="no `approve` function.*rm"):
+    with pytest.raises(ValueError, match=r"no `approve` function.*rm"):
         Agent(client=FakeClient([]), needs_approval={"rm"})

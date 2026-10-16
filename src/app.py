@@ -18,6 +18,7 @@ import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -126,7 +127,7 @@ def to_jsonable(value):
     return str(value)
 
 
-def mget(msg, key, default=None):
+def mget(msg, key, default=None) -> Any:
     """Read `key` from a message whether it's a plain dict or an attribute-style object."""
     if isinstance(msg, dict):
         return msg.get(key, default)
@@ -316,7 +317,7 @@ def start_run(fn, *args) -> None:
     def target():
         try:
             run["end"] = fn(*args)  # a TurnEnd; None from compact_now, which must stay that way
-        except Exception as e:  # surfaced in the header; never call st.* from here
+        except Exception as e:  # noqa: BLE001 - surfaced in the header; never call st.* from here
             run["error"] = f"{type(e).__name__}: {e}"
 
     run["error"] = run["notice"] = run["end"] = None
@@ -572,7 +573,8 @@ def render_timeline(entries: list[Entry], selected: Entry | None, running: bool,
 
                 kind = turn_kind(e.msg)
                 err = kind == "tool_result" and is_error(e.msg)
-                classes = " ".join(c for c, on in (("sel", selected is e), ("out", not e.in_context), ("err", err)) if on)
+                flags = (("sel", selected is e), ("out", not e.in_context), ("err", err))
+                classes = " ".join(c for c, on in flags if on)
                 with st.container(key=f"blk-{kind}-{'err-' if err else ''}{e.uid}"):
                     st.html(card(kind, preview(e.msg, kind, names), num=e.uid, classes=classes,
                                  mono=kind in MONO_KINDS))
@@ -694,7 +696,8 @@ def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, 
         meta = '<span class="insp-meta out">⟲ compacted — no longer in context</span>'
 
     with st.container(horizontal=True, vertical_alignment="center"):
-        st.html(f'<div class="insp-head k-{kind}{err}"><span class="badge">{icon} {label} #{selected.uid}</span>{meta}</div>')
+        badge = f'<span class="badge">{icon} {label} #{selected.uid}</span>'
+        st.html(f'<div class="insp-head k-{kind}{err}">{badge}{meta}</div>')
         if st.session_state.selected.get(st.session_state.view) is None:
             st.html(pill("⤓ following latest"), width="content")
         else:
@@ -842,7 +845,8 @@ def live_view() -> None:
         st.session_state.was_running = False
         st.rerun()  # full rerun: stop polling, re-enable the input and refresh the sidebar
     if tree_state(agent) != st.session_state.tree_seen:
-        st.rerun()  # a run started or ended, or a result was delivered: refresh the sidebar; stop polling once none runs
+        # A run started or ended, or a result was delivered: refresh the sidebar; stop polling once none runs.
+        st.rerun()
 
     views = agent_views(agent)
     contexts = {path: list(v.agent.messages) for path, v in views.items()}  # snapshots: runs append concurrently

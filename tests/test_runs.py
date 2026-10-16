@@ -10,7 +10,7 @@ import time
 import pytest
 
 from agent import Agent
-from conftest import FakeClient, call, response, usage
+from conftest import FakeClient, call, response, scripted, usage
 from llm import tool
 from subagents import Outcome, Profile, Run, agent_profile
 from usage import Budget
@@ -47,7 +47,10 @@ def make_agent(responses, budget=None, **kwargs) -> Agent:
 def gated(agent: Agent) -> threading.Event:
     """Hold a run whose task starts with `/gate` just before `run_turn` clears the interrupt flag, until set."""
     gate = threading.Event()
-    agent.commands["gate"] = lambda rest: gate.wait(TIMEOUT) and None  # None: the task goes on as typed
+    def hold(rest: str) -> None:  # None: the task goes on as typed
+        gate.wait(TIMEOUT)
+
+    agent.commands["gate"] = hold
     return gate
 
 
@@ -94,7 +97,9 @@ def test_no_outcome_while_running():
 
 def test_profile_limits_are_checked():
     # Catches an unlimited profile (no default) or a cap that lowers the default.
-    start = lambda task, budget: None  # noqa: E731
+    def start(task: str, budget: Budget) -> Run:
+        raise AssertionError("no run starts in this test")
+
     with pytest.raises(ValueError, match="positive"):
         Profile("p", start, max_cost=0)
     with pytest.raises(ValueError, match="at least"):
@@ -114,7 +119,8 @@ def test_a_subagent_that_would_need_approval_is_refused():
 
 def test_budget_spent_is_stopped_with_the_last_remark():
     # Catches a mid-task remark handed back as the answer after the budget ran out.
-    run = Run.start(make_agent([tool_reply(cost=0.004, content="let me check"), response("never")], Budget(0.004)), "go")
+    agent = make_agent([tool_reply(cost=0.004, content="let me check"), response("never")], Budget(0.004))
+    run = Run.start(agent, "go")
     assert run.outcome(TIMEOUT) == Outcome("stopped", "let me check", "budget spent")
 
 
@@ -152,7 +158,7 @@ def test_a_crash_fails_the_run():
 
 
 def test_a_failing_report_fails_the_run():
-    run = Run.start(make_agent([response("hi")]), "go", report=lambda: 1 / 0)
+    run = Run.start(make_agent([response("hi")]), "go", report=lambda: str(1 / 0))
     assert run.outcome(TIMEOUT) == Outcome("failed", "ZeroDivisionError: division by zero")
 
 
@@ -160,7 +166,7 @@ def test_the_report_still_runs_when_the_agent_raises():
     # Catches a research run that hits a 5xx losing its report, though its notebook holds everything found so far.
     run = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: "the notebook")
     assert run.outcome(TIMEOUT) == Outcome("failed", "RuntimeError: HTTP 500\n\nthe notebook")
-    both = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: 1 / 0)
+    both = Run.start(make_agent([RuntimeError("HTTP 500")]), "go", report=lambda: str(1 / 0))
     assert both.outcome(TIMEOUT) == Outcome(
         "failed", "RuntimeError: HTTP 500\n\nThe report failed too: ZeroDivisionError: division by zero")
 
@@ -185,7 +191,7 @@ def test_a_cancel_before_the_turn_starts_is_not_lost():
     run.cancel()
     gate.set()
     assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "cancelled")
-    assert agent.client.requests == []
+    assert scripted(agent).requests == []
 
 
 def test_the_gate_reaches_the_window_an_interrupt_would_lose():
@@ -210,7 +216,8 @@ def test_a_finished_run_stops_the_runs_it_started():
     # Catches a run that finishes while its own background subagents keep spending.
     grandchild_client = FakeClient([response(tool_calls=[call("slow")])] * 20 + [response("dug")])
     grandchild = agent_profile(
-        "digger", lambda task, budget: Agent(client=grandchild_client, tools={"slow": slow}, budget=budget), max_cost=1.0)
+        "digger", lambda task, budget: Agent(client=grandchild_client, tools={"slow": slow}, budget=budget),
+        max_cost=1.0)
     child = Agent(
         client=FakeClient([response(tool_calls=[call("spawn", profile="digger", task="dig", background=True)]),
                            response("handed off")]),

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from agent import Agent, DEFAULT_MODEL
+from agent import DEFAULT_MODEL, Agent
 from config import SKILLS_DIR
 from prompts import SEARCHER_PROMPT, SUBAGENT_NOTE, SYSTEM_PROMPT
 from research import research_profile

@@ -7,7 +7,7 @@ an OpenAI-compatible endpoint needs to call the tool correctly.
 import copy
 import functools
 from enum import Enum
-from typing import Annotated, Any, Literal, Optional, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 import pytest
 from pydantic import BaseModel, Field
@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from agent import Agent
 from conftest import FakeClient
 from llm import drop_titles, is_tool, parse_docstring, tool, tool_schema
-
 
 # ---------------------------------------------------------------- parse_docstring
 
@@ -265,6 +264,7 @@ def test_basic_function():
         Returns:
             The contents.
         """
+        return path
 
     assert tool_schema("read", read) == {
         "type": "function",
@@ -315,7 +315,7 @@ def test_bound_method_drops_self_and_star_params():
 
 
 def test_optional_and_union_types():
-    def f(a: Optional[int] = None, b: int | str = 1, c: list[str] | None = None): ...
+    def f(a: int | None = None, b: int | str = 1, c: list[str] | None = None): ...
 
     p = params(f)
     assert "required" not in p
@@ -336,7 +336,8 @@ def test_nested_generics():
     # How a tuple is encoded (prefixItems or not) is left open: endpoint support varies.
     assert p["b"]["type"] == "array"
     assert p["b"]["items"]["type"] == "array"
-    assert p["c"] == {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}}
+    inner = {"type": "object", "additionalProperties": {"type": "number"}}
+    assert p["c"] == {"type": "object", "additionalProperties": inner}
 
 
 def test_literal_and_enum():
@@ -440,7 +441,7 @@ def test_annotated_description_kept_when_docstring_is_silent():
 
 def test_string_annotations_resolve():
     ns: dict[str, Any] = {}
-    exec(
+    exec(  # noqa: S102 - a module with `from __future__ import annotations`, built in the test
         "from __future__ import annotations\n"
         "def f(a: list[int], b: str | None = None):\n"
         "    '''Do.\n\n    Args:\n        a: Numbers.\n    '''\n",

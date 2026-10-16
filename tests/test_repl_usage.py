@@ -6,7 +6,7 @@ Each test names the bug it would catch.
 
 from agent import NOT_RUN, Agent
 from approval import Approvals
-from conftest import FakeClient, call, response, usage
+from conftest import FakeClient, call, response, scripted, usage
 from llm import tool
 from repl import print_cost, repl, run_and_print
 
@@ -98,7 +98,7 @@ def test_repl_asks_for_approval_and_runs_the_call(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", scripted_input(["delete x", "y"]))
     repl(agent, approvals, usage_log=None)
     out = capsys.readouterr().out
-    assert ran == ["x"] and len(agent.client.requests) == 2
+    assert ran == ["x"] and len(scripted(agent).requests) == 2
     assert out.index("tool> rm(") < out.index("result> removed x") < out.index("agent> done")
 
 

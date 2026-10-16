@@ -23,7 +23,11 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
-def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
+class RecordingAgent(Agent):
+    ran: list[dict]  # calls of `rm` that actually ran
+
+
+def make_agent(responses, **kwargs) -> tuple[RecordingAgent, FakeClient]:
     client = FakeClient(responses)
     ran: list[dict] = []
 
@@ -39,8 +43,8 @@ def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
 
     kwargs.setdefault("tools", {"add": add, "rm": rm})
     kwargs.setdefault("approve", lambda name, arguments: None)  # yes to every call that needs approval
-    agent = Agent(client=client, **kwargs)
-    agent.ran = ran  # calls of `rm` that actually ran
+    agent = RecordingAgent(client=client, **kwargs)
+    agent.ran = ran
     return agent, client
 
 

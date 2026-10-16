@@ -16,7 +16,7 @@ from test_compaction import compacted_session
 from usage import Budget, breakdown_lines, record
 
 
-def entry(cost=0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:
+def entry(cost: float | None = 0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:
     """A usage entry as `Agent._record_usage` stores it."""
     return {**usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost),
             "id": "gen-1", "provider": "DeepSeek", "model": "m", "created": 1789748403}
