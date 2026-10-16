@@ -33,6 +33,32 @@ REAL_META = {
     "model": "deepseek/deepseek-v4.1-flash",
     "created": 1789748403,
 }
+# A stored reply, verbatim: message 5 of workspace/research/20261014-222721-296382/agents/main-1-1.json.
+REAL_ASSISTANT = {
+    "role": "assistant",
+    "reasoning": "Let me retry searches.",
+    "tool_calls": [
+        {
+            "type": "function",
+            "index": 0,
+            "id": "call_00_XMBH0AegL7s97Nk8xwG64130",
+            "function": {"name": "web_search", "arguments": '{"query": "Mexico AI startup raises funding 2024"}'},
+        },
+        {
+            "type": "function",
+            "index": 1,
+            "id": "call_01_I3EIFIvZFsoyw5SH903Z7840",
+            "function": {
+                "name": "web_search",
+                "arguments": '{"query": "startup mexicano inteligencia artificial levanta ronda inversión"}',
+            },
+        },
+    ],
+    "reasoning_details": [
+        {"type": "reasoning.text", "text": "Let me retry searches.", "format": "unknown", "index": 0}
+    ],
+    "content": "",
+}
 
 
 class FakeClient:
