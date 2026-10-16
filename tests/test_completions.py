@@ -169,3 +169,11 @@ def test_render_request_matches_todays_body():
         "tools": [{"type": "function"}],
     }
     assert render_request(ChatRequest("m", (), (), None)) == {"model": "m", "messages": []}
+
+
+def test_null_tool_calls_read_as_none():
+    # Catches `"tool_calls": null` from an OpenAI-compatible fallback failing a reply the agent always accepted.
+    r = response("hi")
+    r["choices"][0]["message"]["tool_calls"] = None
+    message = parse_completion(r).message
+    assert message.tool_calls == () and render_message(message) == {"role": "assistant", "content": "hi"}

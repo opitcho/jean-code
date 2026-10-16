@@ -239,3 +239,12 @@ def test_transcript_holds_typed_messages():
     ]
     with pytest.raises(ValidationError):
         agent.messages[-1].content = "changed"  # type: ignore[misc]
+
+
+def test_null_tool_calls_end_the_turn_as_an_answer():
+    # Catches a paid reply with `"tool_calls": null` ending the turn with an error instead of an answer.
+    reply = response("done")
+    reply["choices"][0]["message"]["tool_calls"] = None
+    agent = make_agent([reply])
+    assert agent.run_turn("go") == "answered"
+    assert agent.messages[-1].content == "done"

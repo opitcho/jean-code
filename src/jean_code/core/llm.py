@@ -29,6 +29,11 @@ def _empty_if_null(value: object) -> object:
     return "" if value is None else value
 
 
+def _none_if_null(value: object) -> object:
+    """Null `tool_calls` reads as none, as the agent has always treated it; the field stays a tuple."""
+    return () if value is None else value
+
+
 def _arguments_text(value: object) -> object:
     """Arguments as the JSON text the tool boundary parses: null reads as empty, and an object from a provider that
     didn't encode it is encoded here."""
@@ -68,7 +73,9 @@ class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: Annotated[str, BeforeValidator(_empty_if_null)] = ""
     reasoning: str | None = None
-    tool_calls: tuple[ToolCall, ...] = Field(default=(), exclude_if=lambda calls: not calls)  # a plain reply has none
+    tool_calls: Annotated[tuple[ToolCall, ...], BeforeValidator(_none_if_null)] = Field(
+        default=(), exclude_if=lambda calls: not calls
+    )  # a plain reply has none
 
 
 class UserMessage(BaseModel):
