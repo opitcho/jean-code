@@ -102,35 +102,14 @@ def test_response_without_usage_is_recorded_with_unknown_cost():
     assert agent.usage[0].cost is None
 
 
-def test_usage_is_recorded_before_a_malformed_reply_raises():
-    # Catches a paid call being lost when its reply can't be read.
-    bad = response("x", usage=usage(cost=0.005))
-    bad["choices"] = []
-    agent, _ = make_agent([bad])
-    with pytest.raises(MalformedResponse, match="choices"):
-        agent.run_turn("hello")
-    assert len(agent.usage) == 1 and agent.usage[0].cost == 0.005
-    assert agent.total_cost == pytest.approx(0.005)
-
-
-def test_malformed_usage_is_booked_and_named():
-    # Catches booking that raises "reported no cost" inside the handler and buries the real error.
-    bad = response("x", id="gen-u")
-    bad["usage"] = {"cost": 0.004, "prompt_tokens_details": []}
-    agent, _ = make_agent([bad])
-    with pytest.raises(MalformedResponse, match="malformed usage in gen-u"):
-        agent.run_turn("hello")
-    assert len(agent.usage) == 1 and agent.usage[0].cost is None
-
-
-def test_content_as_parts_is_booked():
-    # Catches a fallback provider's content parts crashing the turn without booking the paid call.
+def test_malformed_response_raises_and_books_nothing():
+    # Catches a response that couldn't be read being booked from fields nobody checked.
     bad = response("x", usage=usage(cost=0.002))
     bad["choices"][0]["message"]["content"] = [{"type": "text", "text": "hi"}]
     agent, _ = make_agent([bad])
     with pytest.raises(MalformedResponse, match=r"choices\.0\.message\.content"):
         agent.run_turn("hello")
-    assert agent.usage[0].cost == 0.002
+    assert agent.usage == []
 
 
 @pytest.mark.parametrize("refusal", [None, "Denied by user."], ids=["approve", "deny"])
@@ -249,7 +228,7 @@ def test_retry_returns_the_successful_body(monkeypatch):
         httpx.Response(429, json={"id": "gen-rate-limited", "usage": usage()}),
         httpx.Response(200, json=ok),
     )
-    assert client.complete(ChatRequest("m", (), (), None)).receipt.generation_id == "gen-ok"
+    assert client.complete(ChatRequest("m", (), (), None)).generation_id == "gen-ok"
 
 
 def test_error_body_with_status_200_raises_and_records_nothing(monkeypatch):

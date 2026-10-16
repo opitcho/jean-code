@@ -363,16 +363,3 @@ def test_compact_at_must_leave_room():
     # Catches a threshold so close to the window that the summary call itself can't fit.
     with pytest.raises(ValueError):
         Agent(client=FakeClient([]), compact_at=600_000)
-
-
-def test_malformed_summary_is_booked():
-    # Catches compaction swallowing a paid call.
-    agent, client = make_agent([])
-    run_small_turns(agent, 4)
-    bad = summary()
-    bad["choices"] = []
-    client.responses += [response("reply 5", usage=BIG), bad]
-    booked = len(agent.usage)
-    agent.run_turn("turn 5")
-    assert agent.compactions[-1]["status"].startswith("failed: MalformedResponse")
-    assert len(agent.usage) == booked + 2 and agent.usage[-1].kind == "compaction"

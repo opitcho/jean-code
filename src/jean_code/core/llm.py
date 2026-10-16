@@ -32,11 +32,6 @@ def _json_text(value: object) -> object:
     return json.dumps(value) if isinstance(value, dict | list) else value
 
 
-def _lenient(kind: type) -> BeforeValidator:
-    """Metadata of the wrong type reads as None instead of failing, so a receipt can always be read."""
-    return BeforeValidator(lambda value: value if isinstance(value, kind) and not isinstance(value, bool) else None)
-
-
 class FunctionCall(BaseModel):
     """The function a tool call names, with its arguments as the model wrote them: JSON text, parsed by the tool."""
 
@@ -104,25 +99,18 @@ class Usage(BaseModel):
     completion_tokens_details: TokenDetails | None = None
 
 
-class Receipt(BaseModel):
-    """What the provider says it served and charged: everything needed to book the call. Read from the response's
-    `id`, `provider`, `model`, `created` and `usage`; the rest of the response is ignored here."""
-
-    model_config = ConfigDict(frozen=True)
-    generation_id: Annotated[str | None, _lenient(str)] = Field(default=None, alias="id")
-    provider: Annotated[str | None, _lenient(str)] = None
-    model: Annotated[str | None, _lenient(str)] = None
-    created: Annotated[int | None, _lenient(int)] = None
-    usage: Usage | None = None
-
-
 @dataclass(frozen=True)
 class Completion:
-    """A parsed response: the reply, why the model stopped (as sent), and the receipt."""
+    """A parsed response: the reply, why the model stopped (as sent), and what the provider says it served and
+    charged, which is everything needed to book the call."""
 
     message: AssistantMessage
     finish_reason: str | None
-    receipt: Receipt
+    generation_id: str
+    provider: str | None  # OpenRouter's field; other endpoints leave it out
+    model: str
+    created: int  # Unix seconds
+    usage: Usage | None
 
 
 @dataclass(frozen=True)
@@ -136,20 +124,22 @@ class ChatRequest:
 
 
 class MalformedResponse(RuntimeError):
-    """The response isn't a chat completion we can use. `receipt` is what could be read before the problem, so the
-    call can still be booked; None when the body wasn't a JSON object at all."""
-
-    def __init__(self, detail: str, receipt: Receipt | None):
-        super().__init__(detail)
-        self.receipt = receipt
+    """The response isn't a chat completion we can use. The call isn't booked: nothing in it is trusted."""
 
 
 class _Choice(BaseModel):
     message: AssistantMessage
-    finish_reason: Annotated[str | None, _lenient(str)] = None
+    finish_reason: str | None = None
 
 
-class _Choices(BaseModel):
+class _Response(BaseModel):
+    """The parts of a response we read; the rest is ignored."""
+
+    id: str
+    provider: str | None = None
+    model: str
+    created: int
+    usage: Usage | None = None
     choices: Annotated[list[_Choice], Field(min_length=1)]
 
 
@@ -158,29 +148,16 @@ def describe(e: ValidationError) -> str:
     return "; ".join(f"{'.'.join(map(str, err['loc'])) or '(root)'}: {err['msg']}" for err in e.errors())
 
 
-def parse_receipt(data: dict) -> tuple[Receipt, str | None]:
-    """The response's receipt, and why its usage object couldn't be read (that receipt then has `usage=None`).
-    Never raises: the metadata fields are lenient, so only `usage` can fail."""
-    try:
-        return Receipt.model_validate(data), None
-    except ValidationError as e:
-        return Receipt.model_validate({**data, "usage": None}), describe(e)
-
-
 def parse_completion(data: object) -> Completion:
-    """The response as a `Completion`. The receipt is read first, so a `MalformedResponse` raised for anything after
-    it still carries what's needed to book the call."""
+    """The response as a `Completion`. Raises `MalformedResponse` naming every field that doesn't fit."""
     if not isinstance(data, dict):
-        raise MalformedResponse(f"response is not a JSON object: {type(data).__name__}", receipt=None)
-    receipt, usage_error = parse_receipt(data)
-    if usage_error:
-        raise MalformedResponse(f"malformed usage in {receipt.generation_id}: {usage_error}", receipt)
+        raise MalformedResponse(f"response is not a JSON object: {type(data).__name__}")
     try:
-        choice = _Choices.model_validate(data).choices[0]
+        r = _Response.model_validate(data)
     except ValidationError as e:
-        detail = f"malformed response {receipt.generation_id} from {receipt.provider}: {describe(e)}"
-        raise MalformedResponse(detail, receipt) from e
-    return Completion(choice.message, choice.finish_reason, receipt)
+        raise MalformedResponse(f"malformed response {data.get('id')!r}: {describe(e)}") from e
+    choice = r.choices[0]
+    return Completion(choice.message, choice.finish_reason, r.id, r.provider, r.model, r.created, r.usage)
 
 
 def render_message(message: Message) -> dict:
@@ -234,7 +211,7 @@ class ChatClient:
         try:
             data = response.json()
         except ValueError as e:
-            raise MalformedResponse(f"response body is not JSON: {e}", receipt=None) from e
+            raise MalformedResponse(f"response body is not JSON: {e}") from e
         if isinstance(data, dict) and "error" in data:  # OpenRouter can report a provider error with status 200
             raise RuntimeError(f"model error: {data['error']}")
         return parse_completion(data)

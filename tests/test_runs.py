@@ -240,12 +240,11 @@ def test_a_finished_run_stops_the_runs_it_started():
     assert len(grandchild_client.requests) < 21
 
 
-def test_a_malformed_response_fails_the_run_and_still_counts():
-    # Catches a subagent's broken response escaping the run, or its cost missing from the parent's budget.
+def test_a_malformed_response_fails_the_run():
+    # Catches a subagent's broken response escaping the run.
     bad = response("x", usage=usage(cost=0.005))
     bad["choices"] = []
     root = Budget(1.0)
     run = Run.start(make_agent([bad], root.child(0.5, "1")), "go")
     outcome = run.outcome(TIMEOUT)
     assert outcome is not None and outcome.status == "failed" and outcome.text.startswith("MalformedResponse:")
-    assert root.spent == 0.005

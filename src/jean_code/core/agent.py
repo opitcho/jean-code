@@ -20,9 +20,7 @@ from jean_code.core.llm import (
     ChatBackend,
     ChatRequest,
     Completion,
-    MalformedResponse,
     Message,
-    Receipt,
     SystemMessage,
     ToolCall,
     ToolMessage,
@@ -258,7 +256,7 @@ class Agent:
         """One model call on the current context: append its reply, then run its tool calls."""
         completion = self._call(self._build_request())
         self.messages.append(completion.message)
-        usage = completion.receipt.usage
+        usage = completion.usage
         if usage is not None and usage.prompt_tokens is not None:  # the prompt plus the reply just appended
             self._measured = (len(self.messages), usage.prompt_tokens + (usage.completion_tokens or 0))
         self._run_tool_calls(completion.message.tool_calls)
@@ -354,28 +352,22 @@ class Agent:
         return self.head_end, end
 
     def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
-        """The one place the agent calls the model. Books the call even when the response is malformed, then refuses
-        a well-formed response that reported no cost.
+        """The one place the agent calls the model. Books the call, then refuses a response that reported no cost.
 
         Raises:
-            MalformedResponse: The response couldn't be used. The call is booked first when it could be read.
+            MalformedResponse: The response couldn't be used. The call isn't booked.
             RuntimeError: The response reported no cost, so spend can't be tracked. The call is booked first.
         """
         self.last_request = request
-        try:
-            completion = self.client.complete(request)
-        except MalformedResponse as e:
-            if e.receipt is not None:
-                self._book(e.receipt, kind)
-            raise
-        call = self._book(completion.receipt, kind)
+        completion = self.client.complete(request)
+        call = self._book(completion, kind)
         if call.cost is None:
             raise RuntimeError(f"model call {call.generation_id} reported no cost, so spend can't be tracked")
         return completion
 
-    def _book(self, receipt: Receipt, kind: str | None) -> ModelCall:
-        """Record a paid call in `usage` and charge it to the budget. Never raises for anything the provider sent."""
-        call = ModelCall.from_receipt(receipt, budget=self.budget.path, kind=kind)
+    def _book(self, completion: Completion, kind: str | None) -> ModelCall:
+        """Record a paid call in `usage` and charge it to the budget."""
+        call = ModelCall.from_completion(completion, budget=self.budget.path, kind=kind)
         self.usage.append(call)
         self.budget.charge(call)
         return call

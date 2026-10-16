@@ -829,7 +829,7 @@ def render_request(agent) -> None:
             )
         )
         st.html(eyebrow(f"USAGE · {len(agent.usage)} CALLS · {usage_line(agent.usage)}"))
-        rows = [{**asdict(c), "time": (c.time or "")[11:19]} for c in reversed(agent.usage)]  # ISO time -> HH:MM:SS
+        rows = [{**asdict(c), "time": c.time[11:19]} for c in reversed(agent.usage)]  # ISO time -> HH:MM:SS
         st.dataframe(
             rows,
             hide_index=True,

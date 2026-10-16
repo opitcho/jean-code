@@ -9,7 +9,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from conftest import REAL_ASSISTANT, response, usage
+from conftest import REAL_ASSISTANT, response
 from jean_code.core.llm import (
     AssistantMessage,
     ChatRequest,
@@ -17,7 +17,6 @@ from jean_code.core.llm import (
     SystemMessage,
     UserMessage,
     parse_completion,
-    parse_receipt,
     render_message,
     render_request,
 )
@@ -75,7 +74,7 @@ def test_messages_are_frozen():
 
 def test_completion_from_a_response():
     c = parse_completion(response("hi", id="gen-1"))
-    assert (c.message.content, c.finish_reason, c.receipt.generation_id, c.receipt.usage.cost) == (
+    assert (c.message.content, c.finish_reason, c.generation_id, c.usage.cost) == (
         "hi",
         "stop",
         "gen-1",
@@ -83,8 +82,8 @@ def test_completion_from_a_response():
     )
 
 
-def test_missing_usage_gives_a_receipt_without_usage():
-    assert parse_completion(response("hi", no_usage=True)).receipt.usage is None
+def test_missing_usage_gives_a_completion_without_usage():
+    assert parse_completion(response("hi", no_usage=True)).usage is None
 
 
 def test_unknown_finish_reason_passes_through():
@@ -93,13 +92,11 @@ def test_unknown_finish_reason_passes_through():
     assert parse_completion(r).finish_reason == "vendor_stop"
 
 
-def test_empty_choices_raises_with_the_receipt():
-    # Catches a paid call whose reply can't be read losing what's needed to book it.
-    r = response("x", usage=usage(cost=0.005))
+def test_empty_choices_raises():
+    r = response("x")
     r["choices"] = []
-    with pytest.raises(MalformedResponse, match="choices") as e:
+    with pytest.raises(MalformedResponse, match="choices"):
         parse_completion(r)
-    assert e.value.receipt is not None and e.value.receipt.usage.cost == 0.005
 
 
 @pytest.mark.parametrize(
@@ -121,33 +118,22 @@ def test_unusable_message_names_the_path(message, path):
         parse_completion(r)
 
 
-def test_malformed_usage_is_reported_and_dropped():
-    # Catches a malformed usage object either crashing or being reported as "no cost".
-    receipt, error = parse_receipt({"id": "gen-u", "usage": {"cost": 0.004, "prompt_tokens_details": []}})
-    assert receipt.generation_id == "gen-u" and receipt.usage is None
-    assert error is not None and "prompt_tokens_details" in error
+@pytest.mark.parametrize(
+    "key, value",
+    [("usage", {"cost": 0.004, "prompt_tokens_details": []}), ("id", 7), ("created", "yesterday"), ("model", None)],
+    ids=["malformed usage", "id not a string", "created not a number", "no model"],
+)
+def test_malformed_metadata_raises(key, value):
+    # Catches a wrong-typed id, timestamp or usage being read as "not reported" and booked as if it were.
     r = response("x", id="gen-u")
-    r["usage"] = {"cost": 0.004, "prompt_tokens_details": []}
-    with pytest.raises(MalformedResponse, match="malformed usage in gen-u"):
+    r[key] = value
+    with pytest.raises(MalformedResponse, match=rf"malformed response .*{key}"):
         parse_completion(r)
 
 
-def test_odd_metadata_reads_as_none():
-    # Catches an odd id or timestamp from a fallback provider costing us the record of a paid call.
-    receipt, error = parse_receipt({"id": 7, "created": "1789748403", "provider": None, "usage": {"cost": 0.001}})
-    assert (receipt.generation_id, receipt.created, receipt.provider, receipt.usage.cost, error) == (
-        None,
-        None,
-        None,
-        0.001,
-        None,
-    )
-
-
-def test_not_an_object_has_no_receipt():
-    with pytest.raises(MalformedResponse) as e:
+def test_not_an_object_raises():
+    with pytest.raises(MalformedResponse, match="not a JSON object"):
         parse_completion([])
-    assert e.value.receipt is None
 
 
 def test_error_text_leaves_out_the_input():

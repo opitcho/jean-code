@@ -10,7 +10,7 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
-from jean_code.core.llm import parse_receipt
+from jean_code.core.llm import parse_completion
 from jean_code.core.tool_schema import tool
 from jean_code.core.usage import Budget, ModelCall, breakdown_lines
 from jean_code.ui.repl import print_cost
@@ -22,10 +22,7 @@ def model_call(
 ) -> ModelCall:
     """A booked call for the node at `path`, as `Agent._book` builds it."""
     raw = usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost)
-    receipt, _ = parse_receipt(
-        {"id": "gen-1", "provider": "DeepSeek", "model": "m", "created": 1789748403, "usage": raw}
-    )
-    return ModelCall.from_receipt(receipt, budget=path)
+    return ModelCall.from_completion(parse_completion(response(usage=raw, id="gen-1")), budget=path)
 
 
 @tool

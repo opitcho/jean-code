@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from jean_code.core.llm import Receipt, TokenDetails, Usage
+from jean_code.core.llm import Completion, TokenDetails, Usage
 
 
 @dataclass(frozen=True)
@@ -19,10 +19,10 @@ class ModelCall:
     """One paid model call, as `agent.usage`, the budget and the usage log hold it. Unknown token counts read as 0;
     an unknown cost stays None, so it's never mistaken for a free call."""
 
-    generation_id: str | None
+    generation_id: str
     provider: str | None
-    model: str | None
-    created: int | None  # Unix seconds
+    model: str
+    created: int  # Unix seconds
     cost: float | None
     budget: str  # path of the Budget node charged, e.g. "main/1"
     prompt_tokens: int = 0
@@ -32,14 +32,14 @@ class ModelCall:
     kind: str | None = None  # "compaction" for summary calls
 
     @classmethod
-    def from_receipt(cls, receipt: Receipt, budget: str, kind: str | None = None) -> "ModelCall":
-        """The call the receipt describes, charged to the node at `budget`."""
-        usage = receipt.usage or Usage()
+    def from_completion(cls, completion: Completion, budget: str, kind: str | None = None) -> "ModelCall":
+        """The call `completion` answered, charged to the node at `budget`."""
+        usage = completion.usage or Usage()
         return cls(
-            receipt.generation_id,
-            receipt.provider,
-            receipt.model,
-            receipt.created,
+            completion.generation_id,
+            completion.provider,
+            completion.model,
+            completion.created,
             usage.cost,
             budget,
             prompt_tokens=usage.prompt_tokens or 0,
@@ -50,9 +50,9 @@ class ModelCall:
         )
 
     @property
-    def time(self) -> str | None:
+    def time(self) -> str:
         """Local ISO 8601 time of the call, from `created`."""
-        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(self.created)) if self.created else None
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(self.created))
 
     def log_line(self) -> str:
         """The usage log's JSON line: the keys, order and values the log has always had, so old and new lines sum

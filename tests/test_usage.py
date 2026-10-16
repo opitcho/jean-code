@@ -3,26 +3,21 @@
 Each test names the bug it would catch.
 """
 
-import json
-
 import pytest
 
-from conftest import REAL_META, REAL_USAGE, usage
-from jean_code.core.llm import parse_receipt
+from conftest import REAL_META, REAL_USAGE, response, usage
+from jean_code.core.llm import parse_completion
 from jean_code.core.usage import ModelCall, append_log, human, usage_line
 
 
 def model_call(**kwargs) -> ModelCall:
     """A booked call with the given usage, as `Agent._book` builds it."""
-    receipt, _ = parse_receipt(
-        {"id": "gen-x", "provider": "DeepSeek", "model": "m", "created": 1789748403, "usage": usage(**kwargs)}
-    )
-    return ModelCall.from_receipt(receipt, budget="main")
+    return ModelCall.from_completion(parse_completion(response(usage=usage(**kwargs))), budget="main")
 
 
 def real_call(**kwargs) -> ModelCall:
-    receipt, _ = parse_receipt({**REAL_META, "usage": REAL_USAGE})
-    return ModelCall.from_receipt(receipt, budget="main", **kwargs)
+    completion = parse_completion({**response(), **REAL_META, "usage": REAL_USAGE})
+    return ModelCall.from_completion(completion, budget="main", **kwargs)
 
 
 # ---------------------------------------------------------------- ModelCall
@@ -47,13 +42,6 @@ def test_kind_is_logged_only_when_set(utc):
     assert '"kind"' not in real_call().log_line()
 
 
-def test_odd_metadata_still_logs(utc):
-    # Catches an odd id or timestamp from a fallback provider crashing the log write after a paid call.
-    receipt, _ = parse_receipt({"id": 7, "created": "x", "usage": {"cost": 0.001}})
-    line = json.loads(ModelCall.from_receipt(receipt, budget="main").log_line())
-    assert line["time"] is None and line["generation_id"] is None and line["cost"] == 0.001
-
-
 @pytest.mark.parametrize(
     "raw",
     [
@@ -69,15 +57,10 @@ def test_odd_metadata_still_logs(utc):
 )
 def test_null_or_missing_counts_read_as_zero(raw):
     # Catches a crash after a paid call when a provider sends nulls or leaves the details out.
-    c = ModelCall.from_receipt(parse_receipt({"usage": raw})[0], budget="main")
+    c = ModelCall.from_completion(parse_completion(response(usage=raw)), budget="main")
     assert (c.prompt_tokens, c.cached_tokens, c.completion_tokens, c.reasoning_tokens) == (0, 0, 0, 0)
     assert c.cost is None
     usage_line([c])  # sums without a TypeError
-
-
-def test_without_created_there_is_no_time():
-    # Catches time.localtime(None), which silently writes the current time.
-    assert ModelCall.from_receipt(parse_receipt({"usage": {"prompt_tokens": 1}})[0], budget="main").time is None
 
 
 # ---------------------------------------------------------------- append_log
