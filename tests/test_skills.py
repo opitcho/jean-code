@@ -7,10 +7,10 @@ import json
 
 import pytest
 
-from agent import Agent
 from conftest import FakeClient, response
-from llm import is_tool
-from skills import Skills
+from jean_code.core.agent import Agent
+from jean_code.core.llm import is_tool
+from jean_code.core.skills import Skills
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-# Sandbox for jean-code's `bash` tool (src/shell.py: DockerShell).
+# Sandbox for jean-code's `bash` tool (src/jean_code/tools/shell.py: DockerShell).
 # Build: docker build -t jean-code-sandbox sandbox/
 # If your user id isn't 1000: docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t jean-code-sandbox sandbox/
 FROM python:3.12-slim

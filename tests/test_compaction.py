@@ -11,11 +11,11 @@ middle is most of the context and compacting it helps.
 
 import pytest
 
-import agent as agent_module
-from agent import Agent, estimate_tokens, is_synthetic
 from conftest import FakeClient, call, response, scripted, usage
-from llm import tool
-from prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core import agent as agent_module
+from jean_code.core.agent import Agent, estimate_tokens, is_synthetic
+from jean_code.core.compaction_prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.llm import tool
 
 
 @tool

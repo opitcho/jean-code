@@ -4,7 +4,7 @@ Each test names the bug it would catch.
 """
 
 from conftest import make_pdf
-from pages import html_text, read_page
+from jean_code.tools.pages import html_text, read_page
 
 
 def test_html_gives_the_title_and_visible_text(serve):

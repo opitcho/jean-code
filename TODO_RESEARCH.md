@@ -1,6 +1,6 @@
 # Research evals: TODO
 
-Use cases to build evals for the `research` subagent (`src/research.py`). Each run leaves a folder (`brief.md`,
+Use cases to build evals for the `research` subagent (`src/jean_code/agents/research.py`). Each run leaves a folder (`brief.md`,
 `facts.jsonl`, `pages/`, `draft.md`, `agents/`), so a grader can score any run after the fact. Where a case needs
 control over what the web says, serve fixed pages in place of `pages.read_page` and `tools.web_search`, as the tests
 do.

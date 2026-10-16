@@ -4,8 +4,8 @@ is replaced.
 Each test names the bug it would catch.
 """
 
-import pages
-from tools import fetch_page
+from jean_code.tools import pages
+from jean_code.tools.web import fetch_page
 
 
 def test_fetch_page_returns_the_window_from_start_and_says_where_it_is(serve):

@@ -8,12 +8,12 @@ import threading
 
 import pytest
 
-from agent import Agent
 from conftest import FakeClient, call, response, usage
-from llm import tool
-from repl import print_cost
+from jean_code.core.agent import Agent
+from jean_code.core.llm import tool
+from jean_code.core.usage import Budget, breakdown_lines, record
+from jean_code.ui.repl import print_cost
 from test_compaction import compacted_session
-from usage import Budget, breakdown_lines, record
 
 
 def entry(cost: float | None = 0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:

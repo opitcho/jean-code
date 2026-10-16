@@ -1,6 +1,6 @@
 """Streamlit UI for the agent: a live, clickable timeline of turns plus an inspector.
 
-Run with: uv run --env-file .env streamlit run src/app.py
+Run with: uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
 The agent stays UI-agnostic: `run_turn` runs in a background thread and this UI polls
 `agent.messages`. The timeline is the UI's own history of every message it has seen,
@@ -22,14 +22,14 @@ from typing import Any
 
 import streamlit as st
 
-from agent import DEFAULT_MODEL, NOT_RUN, Agent
-from approval import Approvals, denied
-from coding import coding_agent
-from config import USAGE_LOG
-from prompts import HEAD_MARKER_TAG, SUMMARY_TAG
-from repl import compaction_line
-from subagents import Run
-from usage import human, record, usage_line
+from jean_code.agents.coding import coding_agent
+from jean_code.config import USAGE_LOG
+from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent
+from jean_code.core.compaction_prompts import HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.subagents import Run
+from jean_code.core.usage import human, record, usage_line
+from jean_code.ui.approval import Approvals, denied
+from jean_code.ui.repl import compaction_line
 
 MODEL = DEFAULT_MODEL
 REASONING_LEVELS = ("off", "low", "medium", "high")  # "off" sends no reasoning setting (agent.reasoning = None)

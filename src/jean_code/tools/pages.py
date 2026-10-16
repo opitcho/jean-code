@@ -18,7 +18,7 @@ def read_page(url: str) -> str:
     """Download a page and return its whole readable text: an HTML page's title and visible text, a PDF's text
     (by content type, or a body starting with `%PDF`), or any other body as it is. Raises on HTTP errors.
 
-    Agents never get this whole text: they read it through `tools.fetch_page`, a window at a time."""
+    Agents never get this whole text: they read it through `web.fetch_page`, a window at a time."""
     response = httpx.get(
         url,
         follow_redirects=True,

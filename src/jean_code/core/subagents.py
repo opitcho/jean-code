@@ -18,11 +18,11 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
-from llm import tool
-from usage import Budget
+from jean_code.core.llm import tool
+from jean_code.core.usage import Budget
 
 if TYPE_CHECKING:
-    from agent import Agent, TurnEnd
+    from jean_code.core.agent import Agent, TurnEnd
 
 MAX_RUNNING = 8  # runs per parent at once: bounds the overshoot past a limit, and parallel requests to the provider
 MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`

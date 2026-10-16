@@ -6,10 +6,10 @@ estimated value, so the expected numbers are exact and don't depend on the estim
 
 import pytest
 
-import agent as agent_module
-from agent import Agent, estimate_tokens
 from conftest import FakeClient, call, response, usage
-from llm import tool
+from jean_code.core import agent as agent_module
+from jean_code.core.agent import Agent, estimate_tokens
+from jean_code.core.llm import tool
 
 
 @tool

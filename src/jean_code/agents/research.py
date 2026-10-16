@@ -25,14 +25,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-import pages
-import tools
-from agent import DEFAULT_MODEL, Agent
-from config import RESEARCH_DIR
-from llm import ChatBackend, tool
-from prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
-from subagents import Profile, Run, agent_tree, last_reply
-from usage import Budget
+from jean_code.agents.prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
+from jean_code.config import RESEARCH_DIR
+from jean_code.core.agent import DEFAULT_MODEL, Agent
+from jean_code.core.llm import ChatBackend, tool
+from jean_code.core.subagents import Profile, Run, agent_tree, last_reply
+from jean_code.core.usage import Budget
+from jean_code.tools import pages, web
 
 MIN_QUOTE_WORDS = 6  # shorter quotes ("MIT", "10x faster") match too many pages to check anything…
 MIN_QUOTE_CHARS = 40  # …unless they're long without spaces, like a JSON field or a requirements line
@@ -443,7 +442,7 @@ def researcher(
     return Agent(
         model,
         system_prompt=RESEARCHER_PROMPT,
-        tools={"web_search": tools.web_search, **notebook.tools_for(budget.path)},
+        tools={"web_search": web.web_search, **notebook.tools_for(budget.path)},
         budget=budget,
         max_tool_rounds=15,
         compact_at=None,

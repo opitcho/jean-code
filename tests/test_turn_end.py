@@ -7,10 +7,10 @@ from typing import get_args
 
 import pytest
 
-from agent import NOT_RUN, Agent, TurnEnd, TurnStopped
 from conftest import FakeClient, call, response, usage
-from llm import tool
-from usage import Budget
+from jean_code.core.agent import NOT_RUN, Agent, TurnEnd, TurnStopped
+from jean_code.core.llm import tool
+from jean_code.core.usage import Budget
 
 
 class AskingAgent(Agent):

@@ -1,6 +1,6 @@
 """Terminal chat with the coding agent.
 
-Run with: uv run --env-file .env python src/repl.py [--sandbox]
+Run with: uv run --env-file .env jean-code [--sandbox]
 """
 
 import argparse
@@ -8,12 +8,12 @@ import signal
 import threading
 from pathlib import Path
 
-from agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
-from approval import Approvals, denied
-from coding import coding_agent
-from config import USAGE_LOG
-from llm import HasCredits
-from usage import breakdown_lines, human, usage_line
+from jean_code.agents.coding import coding_agent
+from jean_code.config import USAGE_LOG
+from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
+from jean_code.core.llm import HasCredits
+from jean_code.core.usage import breakdown_lines, human, usage_line
+from jean_code.ui.approval import Approvals, denied
 
 
 def dim(text: str) -> str:
@@ -194,7 +194,8 @@ def print_cost(agent: Agent) -> None:
     print(line)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Parse the command line, build the coding agent and chat with it until the user exits."""
     parser = argparse.ArgumentParser(description="Chat with a coding agent that has a shell.")
     parser.add_argument("--sandbox", action="store_true", help="run commands in a Docker container")
     parser.add_argument("--no-network", action="store_true", help="with --sandbox: no network in the container")
@@ -225,3 +226,7 @@ if __name__ == "__main__":
         if agent.subagents and (running := agent.subagents.running()):
             print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))
         agent.close()
+
+
+if __name__ == "__main__":
+    main()

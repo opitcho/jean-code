@@ -2,14 +2,14 @@
 
 from pathlib import Path
 
-from agent import DEFAULT_MODEL, Agent
-from config import SKILLS_DIR
-from prompts import SEARCHER_PROMPT, SUBAGENT_NOTE, SYSTEM_PROMPT
-from research import research_profile
-from shell import DockerShell, LocalShell
-from subagents import Profile, agent_profile
-from tools import fetch_page, web_search
-from usage import Budget
+from jean_code.agents.prompts import SEARCHER_PROMPT, SUBAGENT_NOTE, SYSTEM_PROMPT
+from jean_code.agents.research import research_profile
+from jean_code.config import SKILLS_DIR
+from jean_code.core.agent import DEFAULT_MODEL, Agent
+from jean_code.core.subagents import Profile, agent_profile
+from jean_code.core.usage import Budget
+from jean_code.tools.shell import DockerShell, LocalShell
+from jean_code.tools.web import fetch_page, web_search
 
 
 def coding_agent(

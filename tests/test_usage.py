@@ -8,7 +8,7 @@ import json
 import pytest
 
 from conftest import REAL_META, REAL_USAGE, usage
-from usage import append_log, human, record, usage_line
+from jean_code.core.usage import append_log, human, record, usage_line
 
 REAL_ENTRY = {**REAL_USAGE, **REAL_META}  # an entry of `agent.usage`, as `Agent.step()` builds it
 

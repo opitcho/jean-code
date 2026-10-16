@@ -7,10 +7,10 @@ from types import MethodType
 
 import pytest
 
-from coding import coding_agent, general_agent, searcher_agent, subagent_profiles
-from shell import DockerShell
-from subagents import Run
-from usage import Budget
+from jean_code.agents.coding import coding_agent, general_agent, searcher_agent, subagent_profiles
+from jean_code.core.subagents import Run
+from jean_code.core.usage import Budget
+from jean_code.tools.shell import DockerShell
 
 
 @pytest.fixture(autouse=True)

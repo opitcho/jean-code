@@ -4,11 +4,11 @@ Logging itself is tested through `Budget` in `test_budget.py`.
 Each test names the bug it would catch.
 """
 
-from agent import NOT_RUN, Agent
-from approval import Approvals
 from conftest import FakeClient, call, response, scripted, usage
-from llm import tool
-from repl import print_cost, repl, run_and_print
+from jean_code.core.agent import NOT_RUN, Agent
+from jean_code.core.llm import tool
+from jean_code.ui.approval import Approvals
+from jean_code.ui.repl import print_cost, repl, run_and_print
 
 
 @tool

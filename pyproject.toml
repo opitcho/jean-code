@@ -17,6 +17,13 @@ dependencies = [
     "streamlit>=1.63.0",
 ]
 
+[project.scripts]
+jean-code = "jean_code.ui.repl:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10"]
+build-backend = "uv_build"
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
@@ -28,7 +35,6 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -51,23 +57,24 @@ select = [
     "PLE", "PLW",  # pylint errors and warnings
 ]
 ignore = [
-    "RUF001", "RUF002", "RUF003",  # ambiguous unicode: curly quotes, dashes and ✓/⚠ are deliberate (research.py)
+    "RUF001", "RUF002", "RUF003",  # ambiguous unicode: curly quotes, dashes and ✓/⚠ are deliberate (agents/research.py)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # assert is how pytest checks
-"src/repl.py" = ["T20"]  # the terminal front-end prints
-"src/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH
+"tests/test_research.py" = ["E501"]  # verbatim quotes from real pages, split across literals
+"src/jean_code/ui/repl.py" = ["T20"]  # the terminal front-end prints
+"src/jean_code/tools/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH
 
 [tool.pyright]
 include = ["src", "tests"]
-extraPaths = ["src", "tests"]
+extraPaths = ["tests"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
 executionEnvironments = [
     # A test reading a field of an Optional (an outcome, a subagent) fails on None anyway.
-    { root = "tests", extraPaths = ["src", "tests"], reportOptionalMemberAccess = false },
-    { root = "src", extraPaths = ["src"] },
+    { root = "tests", extraPaths = ["tests"], reportOptionalMemberAccess = false },
+    { root = "src" },
 ]

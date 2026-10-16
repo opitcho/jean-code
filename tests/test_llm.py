@@ -12,9 +12,9 @@ from typing import Annotated, Any, Literal, TypedDict
 import pytest
 from pydantic import BaseModel, Field
 
-from agent import Agent
 from conftest import FakeClient
-from llm import drop_titles, is_tool, parse_docstring, tool, tool_schema
+from jean_code.core.agent import Agent
+from jean_code.core.llm import drop_titles, is_tool, parse_docstring, tool, tool_schema
 
 # ---------------------------------------------------------------- parse_docstring
 

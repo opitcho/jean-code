@@ -7,11 +7,18 @@ from typing import Literal
 
 from pydantic import validate_call
 
-from llm import ChatBackend, is_tool, openrouter, tool_schema
-from prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE, SUMMARY_TAG
-from skills import Skills
-from subagents import Profile, Subagents, result_block, subagents_prompt
-from usage import Budget
+from jean_code.core.compaction_prompts import (
+    COMPACTION_PROMPT,
+    EARLIER_SUMMARY_NOTE,
+    HEAD_MARKER,
+    HEAD_MARKER_TAG,
+    SUMMARY_MESSAGE,
+    SUMMARY_TAG,
+)
+from jean_code.core.llm import ChatBackend, is_tool, openrouter, tool_schema
+from jean_code.core.skills import Skills
+from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
+from jean_code.core.usage import Budget
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)

@@ -20,9 +20,9 @@ import uuid
 import weakref
 from pathlib import Path
 
-from llm import tool
+from jean_code.config import WORKSPACE_DIR
+from jean_code.core.llm import tool
 
-WORKSPACE_DIR = Path(__file__).resolve().parent.parent / "workspace"
 JOBS_DIR = ".jobs"
 MAX_OUTPUT_CHARS = 10000
 ENV = {"PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb", "DEBIAN_FRONTEND": "noninteractive"}

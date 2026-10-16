@@ -13,8 +13,7 @@ from pathlib import Path
 import pytest
 
 from conftest import call, response, usage
-from pages import html_text
-from research import (
+from jean_code.agents.research import (
     Notebook,
     check_quote,
     read_facts,
@@ -25,8 +24,9 @@ from research import (
     researcher_profile,
     summary_of,
 )
-from subagents import Run
-from usage import Budget
+from jean_code.core.subagents import Run
+from jean_code.core.usage import Budget
+from jean_code.tools.pages import html_text
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -46,7 +46,7 @@ def pages(monkeypatch):
         page = served[url]
         return page() if callable(page) else page
 
-    monkeypatch.setattr("pages.read_page", read_page)
+    monkeypatch.setattr("jean_code.tools.pages.read_page", read_page)
     return served
 
 

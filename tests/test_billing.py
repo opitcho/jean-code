@@ -6,10 +6,10 @@ Each test names the bug it would catch.
 import httpx
 import pytest
 
-import llm
-from agent import Agent
 from conftest import FakeClient, call, response, usage
-from llm import ChatClient, tool
+from jean_code.core import llm
+from jean_code.core.agent import Agent
+from jean_code.core.llm import ChatClient, tool
 
 
 @tool

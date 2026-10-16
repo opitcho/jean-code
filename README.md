@@ -35,11 +35,15 @@ fails with "Mounts denied": clone it under your home, or add its location under 
 
 ```sh
 # Streamlit UI, at http://localhost:8501
-uv run --env-file .env streamlit run src/app.py
+uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
 # Terminal REPL
-uv run --env-file .env python src/repl.py
+uv run --env-file .env jean-code
 ```
+
+jean-code runs from its repo checkout: it reads `skills/` and writes `workspace/` and `logs/` next to its code. To
+put `jean-code` on your PATH, install it editable with `uv tool install -e ~/jean-code`; a copying install refuses to
+start.
 
 In the UI, the sidebar has the sandbox switch ("Run bash in Docker sandbox", which starts a new chat) and the
 reasoning effort. Type `/compact` in the chat to summarize older turns now.
@@ -57,7 +61,7 @@ spent, and `exit` to quit.
 
   ```sh
   cd ~/my-project
-  uv run --project ~/jean-code --env-file ~/jean-code/.env python ~/jean-code/src/repl.py
+  uv run --project ~/jean-code --env-file ~/jean-code/.env jean-code
   ```
 
 - **In the sandbox (`--sandbox`, or the UI switch):** commands run in a container, in `/workspace`, which is the
@@ -84,7 +88,7 @@ without Docker and the image it fails, and only the `searcher` subagent works.
 
 ## How a turn works
 
-The whole agent is the `Agent` class in `src/agent.py`. A turn is one call to `agent.run_turn(text)`:
+The whole agent is the `Agent` class in `src/jean_code/core/agent.py`. A turn is one call to `agent.run_turn(text)`:
 
 1. The user's message is appended to `agent.messages`, the transcript in the OpenAI chat format.
 2. The transcript and the tool schemas are sent to the model. Its reply is appended as the API returned it.
@@ -93,7 +97,7 @@ The whole agent is the `Agent` class in `src/agent.py`. A turn is one call to `a
 
 A tool call that needs the user's approval doesn't end the turn. The agent is built with an `approve` function,
 which it calls with the tool's name and arguments and waits for: it returns None to run the call, or the text the
-model gets as the result instead. The front-ends pass `Approvals.ask` (`src/approval.py`), which hands the question
+model gets as the result instead. The front-ends pass `Approvals.ask` (`ui/approval.py`), which hands the question
 to their own thread.
 
 A turn ends early when it's interrupted, when the budget is spent or cancelled, when the context is nearly full, or
@@ -107,40 +111,45 @@ Everything else is built on that loop:
 
 | Feature | How | Read |
 |---|---|---|
-| Tools | Typed, documented functions marked `@tool`; the schema comes from the signature and docstring | `llm.py`, `tools.py` |
-| Shell | The `bash` and `job` tools, on the host or in a container | `shell.py` |
-| Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `skills.py` |
-| Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `subagents.py` |
+| Tools | Typed, documented functions marked `@tool`; the schema comes from the signature and docstring | `core/llm.py`, `tools/web.py` |
+| Shell | The `bash` and `job` tools, on the host or in a container | `tools/shell.py` |
+| Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `core/skills.py` |
+| Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `core/subagents.py` |
 | Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact` |
-| Budget | A tree of spending limits that mirrors the agents | `usage.py` |
+| Budget | A tree of spending limits that mirrors the agents | `core/usage.py` |
 
 ## Layout
 
 ```
-src/
-  agent.py      the agent loop: tool calls, compaction
-  approval.py   asking the user before a tool call runs
-  coding.py     the coding agent and its subagent profiles
-  prompts.py    system prompts and the compaction prompt
-  shell.py      host and Docker shell backends
-  subagents.py  starting, waiting for and managing subagent runs
-  research.py   research runs: a lead, researchers and the notebook of checked facts they share
-  skills.py     skills: discovery, the load tools and /name commands
-  tools.py      the web tools agents call: search, and fetching a page a window at a time
-  pages.py      page text from HTML and PDFs, cached per URL, and the windows cut from it
-  llm.py        OpenRouter client, and tool schemas built from functions
-  usage.py      cost records, logging and budgets
-  config.py     paths in the repo
-  repl.py       terminal front-end
-  app.py        Streamlit front-end (app.css holds its styles)
-skills/         skill folders
-sandbox/        Dockerfile for the sandbox
-tests/          unit tests, with a scripted fake model: no API key needed
-docs/           the README's screenshot
+src/jean_code/
+  config.py                paths in the repo
+  core/                    the agent machinery; imports nothing from the packages below
+    agent.py               the agent loop: tool calls, compaction
+    llm.py                 OpenRouter client, and tool schemas built from functions
+    usage.py               cost records, logging and budgets
+    subagents.py           starting, waiting for and managing subagent runs
+    skills.py              skills: discovery, the load tools and /name commands
+    compaction_prompts.py  the compaction prompt and the messages it writes
+  tools/                   what a model calls; imports only core
+    shell.py               host and Docker shell backends
+    web.py                 the web tools agents call: search, and fetching a page a window at a time
+    pages.py               page text from HTML and PDFs, cached per URL, and the windows cut from it
+  agents/                  agents assembled from core and tools
+    coding.py              the coding agent and its subagent profiles
+    research.py            research runs: a lead, researchers and the notebook of checked facts they share
+    prompts.py             the agents' system prompts
+  ui/                      the front-ends
+    repl.py                terminal front-end
+    app.py                 Streamlit front-end (app.css holds its styles)
+    approval.py            asking the user before a tool call runs
+skills/                    skill folders
+sandbox/                   Dockerfile for the sandbox
+tests/                     unit tests (test_layout.py checks the layers), with a scripted fake model: no API key needed
+docs/                      the README's screenshot
 
 Created at runtime (gitignored):
-workspace/      the sandbox's /workspace; research runs in workspace/research/
-logs/           usage.jsonl, one line per model call
+workspace/                 the sandbox's /workspace; research runs in workspace/research/
+logs/                      usage.jsonl, one line per model call
 ```
 
 Run the tests with `uv run pytest`, the linter with `uv run ruff check` and the type checker with

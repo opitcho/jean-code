@@ -7,8 +7,8 @@ Tools bound to state live with it, marked `@tool` too: `Shell.bash`, the researc
 
 from ddgs import DDGS
 
-import pages
-from llm import tool
+from jean_code.core.llm import tool
+from jean_code.tools import pages
 
 
 @tool

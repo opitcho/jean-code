@@ -10,7 +10,7 @@ import time
 import httpx
 import pytest
 
-import pages
+from jean_code.tools import pages
 
 # A real usage payload and its response metadata, from `.experiments/output/usage_check.txt` (turn 2).
 REAL_USAGE = {
