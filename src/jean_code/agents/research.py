@@ -510,7 +510,12 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
     for path, agent in agent_tree(lead).items():
         write_json(
             notebook.dir / "agents" / f"{path.replace('/', '-')}.json",
-            {"path": path, "task": agent.budget.task, "messages": agent.messages, "usage": agent.usage},
+            {
+                "path": path,
+                "task": agent.budget.task,
+                "messages": agent.messages,
+                "usage": [asdict(c) for c in agent.usage],
+            },
         )
     write_json(
         notebook.dir / "budget.json",

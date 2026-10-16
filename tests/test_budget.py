@@ -10,21 +10,21 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
-from jean_code.core.llm import tool
-from jean_code.core.usage import Budget, breakdown_lines, record
+from jean_code.core.llm import parse_receipt, tool
+from jean_code.core.usage import Budget, ModelCall, breakdown_lines
 from jean_code.ui.repl import print_cost
 from test_compaction import compacted_session
 
 
-def entry(cost: float | None = 0.001, prompt=100, completion=10, cached=0, reasoning=0) -> dict:
-    """A usage entry as `Agent._record_usage` stores it."""
-    return {
-        **usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost),
-        "id": "gen-1",
-        "provider": "DeepSeek",
-        "model": "m",
-        "created": 1789748403,
-    }
+def model_call(
+    path: str = "main", cost: float | None = 0.001, prompt=100, completion=10, cached=0, reasoning=0
+) -> ModelCall:
+    """A booked call for the node at `path`, as `Agent._book` builds it."""
+    raw = usage(prompt=prompt, completion=completion, cached=cached, reasoning=reasoning, cost=cost)
+    receipt, _ = parse_receipt(
+        {"id": "gen-1", "provider": "DeepSeek", "model": "m", "created": 1789748403, "usage": raw}
+    )
+    return ModelCall.from_receipt(receipt, budget=path)
 
 
 @tool
@@ -50,9 +50,9 @@ def test_a_childs_spend_counts_against_its_ancestors_and_stays_at_its_node():
     root = Budget()
     lead = root.child(0.5, "1")
     researcher = lead.child(0.1, "1")
-    root.charge(entry(0.001))
-    lead.charge(entry(0.002))
-    researcher.charge(entry(0.004))
+    root.charge(model_call(root.path, 0.001))
+    lead.charge(model_call(lead.path, 0.002))
+    researcher.charge(model_call(researcher.path, 0.004))
     assert researcher.spent == pytest.approx(0.004)
     assert lead.spent == pytest.approx(0.006)
     assert root.spent == pytest.approx(0.007)
@@ -64,25 +64,25 @@ def test_exhausted_follows_the_chain():
     root = Budget(1.0)  # amounts exact in binary floating point, so the sum reaches the limit exactly
     lead = root.child(None, "1")
     researcher = lead.child(5.0, "1")
-    researcher.charge(entry(0.75))
+    researcher.charge(model_call(researcher.path, 0.75))
     assert not researcher.exhausted
-    lead.charge(entry(0.25))  # the root's limit is now spent, by its descendants
+    lead.charge(model_call(lead.path, 0.25))  # the root's limit is now spent, by its descendants
     assert researcher.exhausted and lead.exhausted and root.exhausted
 
 
 def test_exhausted_at_exactly_the_limit_and_not_before():
     # Catches an off-by-one in the limit check, which `max_cost` has always treated as `>=`.
     budget = Budget(0.002)
-    budget.charge(entry(0.001))
+    budget.charge(model_call(budget.path, 0.001))
     assert not budget.exhausted
-    budget.charge(entry(0.001))
+    budget.charge(model_call(budget.path, 0.001))
     assert budget.exhausted
 
 
 def test_unknown_costs_count_as_zero():
     # Catches a TypeError when a response had no usage.
     budget = Budget(1.0)
-    budget.charge(entry(cost=None))
+    budget.charge(model_call(budget.path, cost=None))
     assert budget.spent == 0
 
 
@@ -92,11 +92,24 @@ def test_paths_and_the_journal():
     lead = root.child(None, "1")
     researcher = lead.child(None, "2")
     assert researcher.path == "main/1/2"
-    researcher.charge(entry(0.004))
-    root.charge(entry(0.001))
+    researcher.charge(model_call(researcher.path, 0.004))
+    root.charge(model_call(root.path, 0.001))
     assert researcher.journal is root.journal
-    assert [e["budget"] for e in root.journal] == ["main/1/2", "main"]
-    assert "budget" not in researcher.entries[0]  # the node's own entries are the agent's, untouched
+    assert [c.budget for c in root.journal] == ["main/1/2", "main"]
+
+
+def test_charge_refuses_a_call_for_another_node():
+    # Catches spend booked to the wrong subtree.
+    with pytest.raises(ValueError):
+        Budget().child(1.0, "1").charge(model_call(path="main"))
+
+
+def test_entries_and_journal_share_the_call():
+    # Catches the journal holding a tagged copy that drifts from the node's own record.
+    root = Budget()
+    call = model_call(path="main")
+    root.charge(call)
+    assert root.entries[-1] is call and root.journal[-1] is call
 
 
 def test_nodes_are_depth_first():
@@ -116,7 +129,7 @@ def test_concurrent_charges_are_all_counted():
     def charge_many(node: Budget) -> None:
         start.wait()
         for _ in range(1000):
-            node.charge(entry(0.001))
+            node.charge(model_call(node.path, 0.001))
 
     threads = [threading.Thread(target=charge_many, args=(node,)) for node in nodes]
     for t in threads:
@@ -135,8 +148,8 @@ def test_breakdown_has_one_row_per_node_with_its_own_numbers():
     # Catches rows that mix a node's calls with its children's, or a wrong peak context.
     root = Budget(task="")
     lead = root.child(None, "1", task="Compare uv, Poetry and PDM")
-    lead.charge(entry(0.002, prompt=1000, cached=800, completion=50, reasoning=20))
-    lead.charge(entry(None, prompt=3000, cached=600, completion=70, reasoning=30))
+    lead.charge(model_call(lead.path, 0.002, prompt=1000, cached=800, completion=50, reasoning=20))
+    lead.charge(model_call(lead.path, None, prompt=3000, cached=600, completion=70, reasoning=30))
     rows = {row["path"]: row for row in root.breakdown()}
     assert rows["main"]["calls"] == 0 and rows["main"]["cost"] == 0
     assert rows["main/1"] == {
@@ -156,8 +169,8 @@ def test_breakdown_has_one_row_per_node_with_its_own_numbers():
 def test_breakdown_lines_put_the_most_expensive_first():
     # Catches a table that hides the subagent that took the money.
     root = Budget()
-    root.child(None, "1", task="cheap").charge(entry(0.001))
-    root.child(None, "2", task="expensive").charge(entry(0.009))
+    root.child(None, "1", task="cheap").charge(model_call("main/1", 0.001))
+    root.child(None, "2", task="expensive").charge(model_call("main/2", 0.009))
     header, *lines = breakdown_lines(root.breakdown())
     assert header.split()[:2] == ["path", "task"]
     assert [line.split()[0] for line in lines] == ["main/2", "main/1", "main"]
@@ -166,16 +179,15 @@ def test_breakdown_lines_put_the_most_expensive_first():
 
 def test_breakdown_lines_mark_unknown_costs():
     root = Budget()
-    root.charge(entry(None))
+    root.charge(model_call(root.path, None))
     assert breakdown_lines(root.breakdown())[1].split()[-1] == "$0.0000+?"
 
 
-def test_record_keeps_the_budget_path():
+def test_journal_keeps_the_budget_path():
     # Catches the log losing which agent made a call.
     root = Budget()
-    root.child(None, "1").charge(entry(0.001))
-    assert record(root.journal[0])["budget"] == "main/1"
-    assert "budget" not in record(entry())  # entries without a path are recorded as before
+    root.child(None, "1").charge(model_call("main/1", 0.001))
+    assert root.journal[0].budget == "main/1"
 
 
 # ---------------------------------------------------------------- Agent
@@ -211,7 +223,7 @@ def test_every_call_is_charged_and_usage_stays_the_agents_own():
     assert child.budget.entries == child.usage and len(child.usage) == 2
     assert root.spent == pytest.approx(0.007)
     assert parent.total_cost == pytest.approx(0.001)  # its own calls only, as before
-    assert [e["budget"] for e in root.journal] == ["main", "main/1", "main/1"]
+    assert [c.budget for c in root.journal] == ["main", "main/1", "main/1"]
 
 
 def test_a_subagent_makes_no_call_once_its_parent_budget_is_spent():
@@ -229,7 +241,7 @@ def test_a_subagent_makes_no_call_once_its_parent_budget_is_spent():
 def test_compaction_calls_are_charged():
     # Catches the summary call, often a session's most expensive, missing from the budget.
     agent, _ = compacted_session()
-    assert agent.budget.entries[-1]["kind"] == "compaction"
+    assert agent.budget.entries[-1].kind == "compaction"
     assert agent.budget.spent == pytest.approx(agent.total_cost)
 
 
@@ -239,8 +251,8 @@ def test_compaction_calls_are_charged():
 def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
     # Catches /cost hiding where the money went once subagents exist.
     agent = Agent(client=FakeClient([], credit_data={"usage": 0, "limit": None, "limit_remaining": None}))
-    agent.budget.charge(entry(0.001))
-    agent.budget.child(None, "1", task="look something up").charge(entry(0.004))
+    agent.budget.charge(model_call(agent.budget.path, 0.001))
+    agent.budget.child(None, "1", task="look something up").charge(model_call("main/1", 0.004))
     print_cost(agent)
     out = capsys.readouterr().out
     assert "session: $0.0050 over 2 model calls" in out
@@ -278,9 +290,9 @@ def test_remaining_is_the_tightest_limit_on_the_chain():
     root = Budget(1.0)
     run = root.child(0.5, "1")
     assert run.remaining == pytest.approx(0.5)
-    root.charge(entry(0.75))  # the root has 0.25 left, less than the run's own 0.5
+    root.charge(model_call(root.path, 0.75))  # the root has 0.25 left, less than the run's own 0.5
     assert run.remaining == pytest.approx(0.25)
-    root.charge(entry(0.5))  # overspent: never negative
+    root.charge(model_call(root.path, 0.5))  # overspent: never negative
     assert run.remaining == 0.0
     assert Budget().child(None, "1").remaining is None
 
@@ -289,8 +301,10 @@ def test_every_charge_is_logged_at_the_roots_path(tmp_path):
     # Catches calls missing from the usage log: a subagent's, or one made between two turns.
     path = tmp_path / "usage.jsonl"
     root = Budget(log_path=path)
-    root.charge(entry(0.001))
-    root.child(None, "1").child(None, "1").charge(entry(0.002))  # e.g. a background run, while the REPL is idle
+    root.charge(model_call(root.path, 0.001))
+    root.child(None, "1").child(None, "1").charge(
+        model_call("main/1/1", 0.002)
+    )  # e.g. a background run, while the REPL is idle
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert [line["budget"] for line in lines] == ["main", "main/1/1"]
     assert lines[1]["cost"] == 0.002
@@ -298,5 +312,5 @@ def test_every_charge_is_logged_at_the_roots_path(tmp_path):
 
 def test_no_log_without_a_path(tmp_path):
     root = Budget()
-    root.child(None, "1").charge(entry())
+    root.child(None, "1").charge(model_call("main/1"))
     assert list(tmp_path.iterdir()) == []

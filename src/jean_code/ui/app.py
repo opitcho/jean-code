@@ -16,7 +16,7 @@ import json
 import re
 import threading
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ from jean_code.config import USAGE_LOG
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent
 from jean_code.core.compaction_prompts import HEAD_MARKER_TAG, SUMMARY_TAG
 from jean_code.core.subagents import Run
-from jean_code.core.usage import human, record, usage_line
+from jean_code.core.usage import human, usage_line
 from jean_code.ui.approval import Approvals, denied
 from jean_code.ui.repl import compaction_line
 
@@ -813,23 +813,22 @@ def render_request(agent) -> None:
     st.html(eyebrow(f"TOOLS · {len(tools)}") + chips(tools))
 
     if agent.usage:
-        records = [record(raw) for raw in agent.usage]
-        last = records[-1]
-        cost = "—" if last["cost"] is None else f"${last['cost']:.5f}"
+        last = agent.usage[-1]
+        cost = "—" if last.cost is None else f"${last.cost:.5f}"
         st.html(
             eyebrow("LAST CALL")
             + kv_grid(
                 {
-                    "provider": last["provider"] or "—",
-                    "tokens in": f"{human(last['prompt_tokens'])} ({human(last['cached_tokens'])} cached)",
-                    "tokens out": f"{human(last['completion_tokens'])} ({human(last['reasoning_tokens'])} reasoning)",
+                    "provider": last.provider or "—",
+                    "tokens in": f"{human(last.prompt_tokens)} ({human(last.cached_tokens)} cached)",
+                    "tokens out": f"{human(last.completion_tokens)} ({human(last.reasoning_tokens)} reasoning)",
                     "cost": cost,
                 },
                 fmt=str,
             )
         )
         st.html(eyebrow(f"USAGE · {len(agent.usage)} CALLS · {usage_line(agent.usage)}"))
-        rows = [{**r, "time": (r["time"] or "")[11:19]} for r in reversed(records)]  # ISO time -> HH:MM:SS
+        rows = [{**asdict(c), "time": (c.time or "")[11:19]} for c in reversed(agent.usage)]  # ISO time -> HH:MM:SS
         st.dataframe(
             rows,
             hide_index=True,

@@ -15,10 +15,10 @@ from jean_code.core.compaction_prompts import (
     SUMMARY_MESSAGE,
     SUMMARY_TAG,
 )
-from jean_code.core.llm import ChatBackend, is_tool, openrouter, tool_schema
+from jean_code.core.llm import ChatBackend, Receipt, is_tool, openrouter, parse_receipt, tool_schema
 from jean_code.core.skills import Skills
 from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
-from jean_code.core.usage import Budget
+from jean_code.core.usage import Budget, ModelCall
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
@@ -142,7 +142,7 @@ class Agent:
         if max_cost is not None and budget is not None:
             raise ValueError("pass max_cost or budget, not both: a given budget carries its own limit")
         self.budget = budget or Budget(max_cost)  # this agent's node; a new root unless a parent's tree is given
-        self.usage: list[dict] = []  # per model call: the API's usage, plus the response's id, provider, model, created
+        self.usage: list[ModelCall] = []  # one per paid model call, in call order
 
         if compact_at is not None and compact_at > context_window // 2:
             raise ValueError(f"compact_at must leave room for the summary call: at most {context_window // 2}")
@@ -170,7 +170,7 @@ class Agent:
     @property
     def total_cost(self) -> float:
         """USD spent on model calls this session."""
-        return sum(entry.get("cost") or 0 for entry in self.usage)
+        return sum(call.cost or 0 for call in self.usage)
 
     @property
     def max_cost(self) -> float | None:
@@ -243,13 +243,13 @@ class Agent:
         self.last_response = None
         response = self.client.complete(request)
         self.last_response = response
-        usage = self._record_usage(response)
+        usage = self._record_usage(response).usage
         message = response["choices"][0]["message"]
         reply = {k: v for k, v in message.items() if v is not None}  # drop unset fields like `refusal: null`
         reply.setdefault("content", "")
         self.messages.append(reply)
-        if usage.get("prompt_tokens") is not None:  # the prompt plus the reply just appended
-            self._measured = (len(self.messages), usage["prompt_tokens"] + (usage.get("completion_tokens") or 0))
+        if usage is not None and usage.prompt_tokens is not None:  # the prompt plus the reply just appended
+            self._measured = (len(self.messages), usage.prompt_tokens + (usage.completion_tokens or 0))
         self._run_tool_calls(reply.get("tool_calls", []))
 
     def compact(self, force: bool = False) -> str:
@@ -344,25 +344,27 @@ class Agent:
             return None  # nothing new: at most an earlier summary
         return self.head_end, end
 
-    def _record_usage(self, response: dict, kind: str | None = None) -> dict:
-        """Append the response's usage to `self.usage`, charge it to `self.budget`, and return it (empty if the
-        response had none).
+    def _record_usage(self, response: dict, kind: str | None = None) -> Receipt:
+        """Book the response's call and return its receipt.
 
         Called before the reply is read, so a paid call counts even if its reply is malformed.
-        Without usage the entry still marks the call, with `cost: None`.
+        Without usage the call is still booked, with `cost: None`.
 
         Raises:
-            RuntimeError: The response reported no cost, so spend can't be tracked. The entry is recorded first.
+            RuntimeError: The response reported no cost, so spend can't be tracked. The call is booked first.
         """
-        usage = response.get("usage") or {}
-        entry = {"cost": None, **usage, **{k: response.get(k) for k in ("id", "provider", "model", "created")}}
-        if kind:
-            entry["kind"] = kind
-        self.usage.append(entry)
-        self.budget.charge(entry)
-        if entry["cost"] is None:
-            raise RuntimeError(f"model call {entry['id']} reported no cost, so spend can't be tracked")
-        return usage
+        receipt, _ = parse_receipt(response)
+        call = self._book(receipt, kind)
+        if call.cost is None:
+            raise RuntimeError(f"model call {call.generation_id} reported no cost, so spend can't be tracked")
+        return receipt
+
+    def _book(self, receipt: Receipt, kind: str | None) -> ModelCall:
+        """Record a paid call in `usage` and charge it to the budget. Never raises for anything the provider sent."""
+        call = ModelCall.from_receipt(receipt, budget=self.budget.path, kind=kind)
+        self.usage.append(call)
+        self.budget.charge(call)
+        return call
 
     def _all_tools(self) -> dict[str, Callable]:
         """`tool_map` plus the agent's own tools. Raises on a tool not marked `@tool`, and on one named like one of

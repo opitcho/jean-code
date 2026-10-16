@@ -10,6 +10,7 @@ from conftest import FakeClient, call, response, usage
 from jean_code.core import llm
 from jean_code.core.agent import Agent
 from jean_code.core.llm import ChatClient, tool
+from jean_code.core.usage import ModelCall
 
 
 @tool
@@ -62,7 +63,16 @@ def test_usage_entry_has_the_response_metadata():
     agent, _ = make_agent([response("hi", usage=u, id="gen-abc", created=1789748403)])
     agent.run_turn("hello")
     assert agent.usage == [
-        {**u, "id": "gen-abc", "provider": "DeepSeek", "model": "deepseek/deepseek-v4.1-flash", "created": 1789748403}
+        ModelCall(
+            "gen-abc",
+            "DeepSeek",
+            "deepseek/deepseek-v4.1-flash",
+            1789748403,
+            0.002,
+            "main",
+            prompt_tokens=500,
+            completion_tokens=10,
+        )
     ]
 
 
@@ -77,7 +87,7 @@ def test_every_call_of_a_turn_is_recorded_in_order():
     )
     agent.run_turn("go")
     assert len(client.requests) == 3
-    assert [e["id"] for e in agent.usage] == ["gen-1", "gen-2", "gen-3"]
+    assert [c.generation_id for c in agent.usage] == ["gen-1", "gen-2", "gen-3"]
     assert agent.total_cost == pytest.approx(0.006)
 
 
@@ -87,8 +97,8 @@ def test_response_without_usage_is_recorded_with_unknown_cost():
     with pytest.raises(RuntimeError, match="gen-x reported no cost"):
         agent.run_turn("hello")
     assert len(agent.usage) == 1
-    assert agent.usage[0]["id"] == "gen-x"
-    assert agent.usage[0]["cost"] is None
+    assert agent.usage[0].generation_id == "gen-x"
+    assert agent.usage[0].cost is None
 
 
 def test_usage_is_recorded_before_a_malformed_reply_raises():
@@ -110,7 +120,7 @@ def test_calls_after_an_approval_decision_are_recorded(refusal):
         approve=lambda name, arguments: refusal,
     )
     agent.run_turn("delete x")
-    assert [e["id"] for e in agent.usage] == ["gen-1", "gen-2"]
+    assert [c.generation_id for c in agent.usage] == ["gen-1", "gen-2"]
 
 
 # ---------------------------------------------------------------- budget
@@ -178,7 +188,7 @@ def test_unknown_cost_ends_the_turn_with_an_error(unknown, max_cost):
     with pytest.raises(RuntimeError, match="reported no cost"):
         agent.run_turn("go")
     assert len(client.requests) == 2
-    assert len(agent.usage) == 2 and agent.usage[-1]["cost"] is None
+    assert len(agent.usage) == 2 and agent.usage[-1].cost is None
 
 
 @pytest.mark.parametrize("max_cost", [0, -1])

@@ -1,6 +1,6 @@
 """Accounting for model calls: what each call used and cost.
 
-`record` flattens one raw entry of `agent.usage`, `append_log` writes records to a JSON Lines log
+`ModelCall` is one paid model call as the agent books it, `append_log` writes calls to a JSON Lines log
 (`config.USAGE_LOG`), and `usage_line` sums them into the line the REPL prints after each turn. `Budget` limits
 spend across an agent and its subagents.
 """
@@ -8,58 +8,83 @@ spend across an agent and its subagents.
 import json
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-
-def record(raw: dict) -> dict:
-    """Flatten one raw entry of `agent.usage` into the record written to the log.
-
-    Token counts that are missing or null read as 0. A missing cost stays None, meaning unknown,
-    so it is never mistaken for a free call.
-
-    Args:
-        raw: One entry of `agent.usage`: the API's usage object plus the response's `id`, `provider`,
-            `model` and `created` (Unix seconds), and `kind` if the call wasn't a normal step.
-
-    Returns:
-        A flat dict with `time` (local ISO 8601, or None), `generation_id`, `provider`, `model`,
-        `prompt_tokens`, `cached_tokens`, `completion_tokens`, `reasoning_tokens` and `cost`
-        (dollars, or None if unknown), plus `kind` and `budget` (the path of the `Budget` node it was
-        charged to, e.g. "main/1") when the entry has them.
-    """
-    created = raw.get("created")
-    tags = {key: raw[key] for key in ("kind", "budget") if raw.get(key)}
-    return {
-        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(created)) if created else None,
-        "generation_id": raw.get("id"),
-        "provider": raw.get("provider"),
-        "model": raw.get("model"),
-        "prompt_tokens": raw.get("prompt_tokens") or 0,
-        "cached_tokens": (raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0,
-        "completion_tokens": raw.get("completion_tokens") or 0,
-        "reasoning_tokens": (raw.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
-        "cost": raw.get("cost"),
-        **tags,
-    }
+from jean_code.core.llm import Receipt, TokenDetails, Usage
 
 
-def append_log(path: str | Path, raws: list[dict]) -> None:
-    """Append model calls to a JSON Lines log, one `record` per line.
+@dataclass(frozen=True)
+class ModelCall:
+    """One paid model call, as `agent.usage`, the budget and the usage log hold it. Unknown token counts read as 0;
+    an unknown cost stays None, so it's never mistaken for a free call."""
+
+    generation_id: str | None
+    provider: str | None
+    model: str | None
+    created: int | None  # Unix seconds
+    cost: float | None
+    budget: str  # path of the Budget node charged, e.g. "main/1"
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    kind: str | None = None  # "compaction" for summary calls
+
+    @classmethod
+    def from_receipt(cls, receipt: Receipt, budget: str, kind: str | None = None) -> "ModelCall":
+        """The call the receipt describes, charged to the node at `budget`."""
+        usage = receipt.usage or Usage()
+        return cls(
+            receipt.generation_id,
+            receipt.provider,
+            receipt.model,
+            receipt.created,
+            usage.cost,
+            budget,
+            prompt_tokens=usage.prompt_tokens or 0,
+            cached_tokens=(usage.prompt_tokens_details or TokenDetails()).cached_tokens or 0,
+            completion_tokens=usage.completion_tokens or 0,
+            reasoning_tokens=(usage.completion_tokens_details or TokenDetails()).reasoning_tokens or 0,
+            kind=kind,
+        )
+
+    @property
+    def time(self) -> str | None:
+        """Local ISO 8601 time of the call, from `created`."""
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(self.created)) if self.created else None
+
+    def log_line(self) -> str:
+        """The usage log's JSON line: the keys, order and values the log has always had, so old and new lines sum
+        together. `kind` and `budget` are left out when empty."""
+        line = {
+            "time": self.time,
+            "generation_id": self.generation_id,
+            "provider": self.provider,
+            "model": self.model,
+            "prompt_tokens": self.prompt_tokens,
+            "cached_tokens": self.cached_tokens,
+            "completion_tokens": self.completion_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "cost": self.cost,
+        }
+        line |= {key: value for key, value in (("kind", self.kind), ("budget", self.budget)) if value}
+        return json.dumps(line)
+
+
+def append_log(path: str | Path, calls: list[ModelCall]) -> None:
+    """Append model calls to a JSON Lines log, one `ModelCall.log_line` per line.
 
     The log only grows, so summing its `cost` fields gives the spend across all sessions.
-    The file and its parent folders are created if missing. Nothing is written if `raws` is empty.
-
-    Args:
-        path: The log file, usually `config.USAGE_LOG`.
-        raws: Entries of `agent.usage` to log, in order.
+    The file and its parent folders are created if missing. Nothing is written if `calls` is empty.
     """
-    if not raws:
+    if not calls:
         return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
-        for raw in raws:
-            f.write(json.dumps(record(raw)) + "\n")
+        for call in calls:
+            f.write(call.log_line() + "\n")
 
 
 def human(n: int) -> str:
@@ -67,27 +92,26 @@ def human(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-def usage_line(raws: list[dict]) -> str:
+def usage_line(calls: list[ModelCall]) -> str:
     """Sum some model calls into one line for the user, e.g. `$0.0012 · 3.4k in (82% cached) · 210 out`.
 
     Calls with an unknown cost are left out of the dollar amount and flagged: `+?` after the known
     amount, or `$?` if no call's cost is known.
 
     Args:
-        raws: Entries of `agent.usage` to sum, usually the calls of one turn: a slice of `Budget.journal`.
+        calls: Model calls to sum, usually the calls of one turn: a slice of `Budget.journal`.
 
     Returns:
         The total cost, the prompt tokens with the share read from cache, and the completion tokens.
     """
-    records = [record(raw) for raw in raws]
-    known = [r["cost"] for r in records if r["cost"] is not None]
-    if records and not known:  # noqa: SIM108 - a ternary of these two would be harder to read
+    known = [c.cost for c in calls if c.cost is not None]
+    if calls and not known:  # noqa: SIM108 - a ternary of these two would be harder to read
         cost = "$?"
     else:
-        cost = f"${sum(known):.4f}" + ("+?" if len(known) < len(records) else "")
-    prompt = sum(r["prompt_tokens"] for r in records)
-    cached = sum(r["cached_tokens"] for r in records)
-    out = sum(r["completion_tokens"] for r in records)
+        cost = f"${sum(known):.4f}" + ("+?" if len(known) < len(calls) else "")
+    prompt = sum(c.prompt_tokens for c in calls)
+    cached = sum(c.cached_tokens for c in calls)
+    out = sum(c.completion_tokens for c in calls)
     share = f" ({cached / prompt:.0%} cached)" if prompt else ""
     return f"{cost} · {human(prompt)} in{share} · {human(out)} out"
 
@@ -121,10 +145,10 @@ class Budget:
         self.task = task  # what this node's agent was asked to do, for breakdowns
         self.log_path = log_path  # read at the root only; settable, e.g. by a UI once it has built the agent
         self.children: list[Budget] = []
-        self.entries: list[dict] = []  # this node's own calls: its agent's usage entries
+        self.entries: list[ModelCall] = []  # this node's own calls: its agent's usage
         self._cancelled = False  # set once by cancel(), never cleared
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
-        self._journal: list[dict] = parent._journal if parent else []
+        self._journal: list[ModelCall] = parent._journal if parent else []
 
     @property
     def path(self) -> str:
@@ -132,8 +156,8 @@ class Budget:
         return f"{self.parent.path}/{self.name}" if self.parent else self.name
 
     @property
-    def journal(self) -> list[dict]:
-        """The whole tree's calls in charge order, each tagged `{"budget": path}`. Append-only, so
+    def journal(self) -> list[ModelCall]:
+        """The whole tree's calls in charge order, each carrying its node's path. Append-only, so
         `journal[start:]` is every call made in the tree since `len(journal)` was `start`."""
         return self._journal
 
@@ -144,15 +168,20 @@ class Budget:
             self.children.append(node)
         return node
 
-    def charge(self, entry: dict) -> None:
-        """Record one model call's usage entry at this node and in the tree's journal, and append it to the root's
-        `log_path`, if set. The file is written outside the lock."""
-        tagged = {**entry, "budget": self.path}
+    def charge(self, call: ModelCall) -> None:
+        """Record one model call at this node and in the tree's journal, and append it to the root's `log_path`, if
+        set. The file is written outside the lock.
+
+        Raises:
+            ValueError: The call is tagged with another node's path, so its spend would land in the wrong subtree.
+        """
+        if call.budget != self.path:
+            raise ValueError(f"call for {call.budget!r} charged to {self.path!r}")
         with self._lock:
-            self.entries.append(entry)
-            self._journal.append(tagged)
+            self.entries.append(call)
+            self._journal.append(call)
         if path := self._chain()[-1].log_path:
-            append_log(path, [tagged])
+            append_log(path, [call])
 
     def cancel(self) -> None:
         """No more model calls in this subtree. Never cleared: a cancelled node stays cancelled."""
@@ -162,7 +191,7 @@ class Budget:
     def spent(self) -> float:
         """USD spent by this node's subtree; unknown costs count as 0."""
         with self._lock:
-            return sum(entry.get("cost") or 0 for node in self._subtree() for entry in node.entries)
+            return sum(call.cost or 0 for node in self._subtree() for call in node.entries)
 
     @property
     def cancelled(self) -> bool:
@@ -191,21 +220,20 @@ class Budget:
         with self._lock:
             snapshot = [(node.path, node.task, list(node.entries)) for node in self._subtree()]
         rows = []
-        for path, task, entries in snapshot:
-            records = [record(entry) for entry in entries]
-            known = [r["cost"] for r in records if r["cost"] is not None]
+        for path, task, calls in snapshot:
+            known = [c.cost for c in calls if c.cost is not None]
             rows.append(
                 {
                     "path": path,
                     "task": task,
-                    "calls": len(records),
-                    "prompt_tokens": sum(r["prompt_tokens"] for r in records),
-                    "cached_tokens": sum(r["cached_tokens"] for r in records),
-                    "peak_prompt_tokens": max((r["prompt_tokens"] for r in records), default=0),
-                    "completion_tokens": sum(r["completion_tokens"] for r in records),
-                    "reasoning_tokens": sum(r["reasoning_tokens"] for r in records),
+                    "calls": len(calls),
+                    "prompt_tokens": sum(c.prompt_tokens for c in calls),
+                    "cached_tokens": sum(c.cached_tokens for c in calls),
+                    "peak_prompt_tokens": max((c.prompt_tokens for c in calls), default=0),
+                    "completion_tokens": sum(c.completion_tokens for c in calls),
+                    "reasoning_tokens": sum(c.reasoning_tokens for c in calls),
                     "cost": sum(known),
-                    "unknown_costs": len(records) - len(known),
+                    "unknown_costs": len(calls) - len(known),
                 }
             )
         return rows

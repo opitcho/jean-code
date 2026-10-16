@@ -337,7 +337,7 @@ def test_second_compaction_folds_the_first_summary_in():
 def test_summary_call_is_billed_and_respects_the_budget():
     # Catches the most expensive call of a session left out of the budget, or made after it's spent.
     agent, _ = compacted_session()
-    assert agent.usage[-1]["kind"] == "compaction"
+    assert agent.usage[-1].kind == "compaction"
     assert agent.total_cost == pytest.approx(5 * 0.001 + 0.002)
 
     agent, client = make_agent([], max_cost=0.005)
