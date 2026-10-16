@@ -211,3 +211,16 @@ def test_tools_that_need_approval_need_an_approve_function():
     # Catches an agent whose gated calls would crash mid-turn, when nobody is there to ask.
     with pytest.raises(ValueError, match=r"no `approve` function.*rm"):
         Agent(client=FakeClient([]), needs_approval={"rm"})
+
+
+def test_null_arguments_run_the_tool():
+    # Catches a codec stricter than parse_arguments, which reads null arguments as no arguments.
+    @tool
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    tool_call = {"id": "c1", "type": "function", "function": {"name": "ping", "arguments": None}}
+    client = FakeClient([response(tool_calls=[tool_call]), response("done")])
+    Agent(client=client, tools={"ping": ping}).run_turn("go")
+    assert client.requests[1]["messages"][-1] == {"role": "tool", "tool_call_id": "c1", "content": "pong"}

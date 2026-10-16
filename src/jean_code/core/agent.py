@@ -15,7 +15,17 @@ from jean_code.core.compaction_prompts import (
     SUMMARY_MESSAGE,
     SUMMARY_TAG,
 )
-from jean_code.core.llm import ChatBackend, Receipt, is_tool, openrouter, parse_receipt, tool_schema
+from jean_code.core.llm import (
+    ChatBackend,
+    Completion,
+    MalformedResponse,
+    Receipt,
+    ToolCall,
+    is_tool,
+    openrouter,
+    render_message,
+    tool_schema,
+)
 from jean_code.core.skills import Skills
 from jean_code.core.subagents import Profile, Subagents, result_block, subagents_prompt
 from jean_code.core.usage import Budget, ModelCall
@@ -157,7 +167,6 @@ class Agent:
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
         self.last_request: dict | None = None
-        self.last_response: dict | None = None  # the last response: id, provider, choices, usage
         self._interrupt = threading.Event()
         # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
         self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
@@ -238,19 +247,12 @@ class Agent:
 
     def step(self) -> None:
         """One model call on the current context: append its reply, then run its tool calls."""
-        request = self._build_request()
-        self.last_request = request
-        self.last_response = None
-        response = self.client.complete(request)
-        self.last_response = response
-        usage = self._record_usage(response).usage
-        message = response["choices"][0]["message"]
-        reply = {k: v for k, v in message.items() if v is not None}  # drop unset fields like `refusal: null`
-        reply.setdefault("content", "")
-        self.messages.append(reply)
+        completion = self._call(self._build_request())
+        self.messages.append(render_message(completion.message))  # the transcript holds wire dicts until it's typed
+        usage = completion.receipt.usage
         if usage is not None and usage.prompt_tokens is not None:  # the prompt plus the reply just appended
             self._measured = (len(self.messages), usage.prompt_tokens + (usage.completion_tokens or 0))
-        self._run_tool_calls(reply.get("tool_calls", []))
+        self._run_tool_calls(completion.message.tool_calls)
 
     def compact(self, force: bool = False) -> str:
         """Replace the middle of the conversation with a summary written by the model. The first `keep_first` and
@@ -298,18 +300,18 @@ class Agent:
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
         record["request"] = request
+        booked = len(self.usage)
         try:
-            response = self.client.complete(request)
-            record["response"] = response
-            self._record_usage(response, kind="compaction")
-            choice = response["choices"][0]
-            summary = (choice["message"].get("content") or "").strip()
+            completion = self._call(request, kind="compaction")
+            summary = completion.message.content.strip()
         except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
             record["status"] = f"failed: {type(e).__name__}: {e}"
             return record["status"]
-        if choice["message"].get("tool_calls"):
+        finally:
+            record["call"] = self.usage[-1] if len(self.usage) > booked else None  # booked even when it failed
+        if completion.message.tool_calls:
             record["status"] = "failed: the model called a tool instead of summarizing"
-        elif choice.get("finish_reason") == "length":
+        elif completion.finish_reason == "length":
             record["status"] = "failed: the summary was cut off at the length limit"
         elif not summary:
             record["status"] = "failed: the summary was empty"
@@ -344,20 +346,25 @@ class Agent:
             return None  # nothing new: at most an earlier summary
         return self.head_end, end
 
-    def _record_usage(self, response: dict, kind: str | None = None) -> Receipt:
-        """Book the response's call and return its receipt.
-
-        Called before the reply is read, so a paid call counts even if its reply is malformed.
-        Without usage the call is still booked, with `cost: None`.
+    def _call(self, request: dict, kind: str | None = None) -> Completion:
+        """The one place the agent calls the model. Books the call even when the response is malformed, then refuses
+        a well-formed response that reported no cost.
 
         Raises:
+            MalformedResponse: The response couldn't be used. The call is booked first when it could be read.
             RuntimeError: The response reported no cost, so spend can't be tracked. The call is booked first.
         """
-        receipt, _ = parse_receipt(response)
-        call = self._book(receipt, kind)
+        self.last_request = request
+        try:
+            completion = self.client.complete(request)
+        except MalformedResponse as e:
+            if e.receipt is not None:
+                self._book(e.receipt, kind)
+            raise
+        call = self._book(completion.receipt, kind)
         if call.cost is None:
             raise RuntimeError(f"model call {call.generation_id} reported no cost, so spend can't be tracked")
-        return receipt
+        return completion
 
     def _book(self, receipt: Receipt, kind: str | None) -> ModelCall:
         """Record a paid call in `usage` and charge it to the budget. Never raises for anything the provider sent."""
@@ -433,7 +440,7 @@ class Agent:
             if self._interrupt.is_set():
                 raise TurnStopped("interrupted")
 
-    def _run_tool_calls(self, calls: list[dict]) -> None:
+    def _run_tool_calls(self, calls: tuple[ToolCall, ...]) -> None:
         """Append one result per call, in call order. If the turn is stopped part-way, the calls left get `NOT_RUN`:
         a request can't hold a call without a result."""
         done = 0
@@ -447,19 +454,19 @@ class Agent:
             for call in calls[done:]:
                 self._add_result(call, NOT_RUN)
 
-    def _add_result(self, call: dict, content: str) -> None:
-        self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+    def _add_result(self, call: ToolCall, content: str) -> None:
+        self.messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
-    def _run_tool(self, call: dict) -> str:
+    def _run_tool(self, call: ToolCall) -> str:
         """A call's result: the tool's output, or what `approve` gave instead if the tool needs approval. Errors
         (bad JSON, invalid arguments, failures) are returned too, so the model can retry."""
-        name = call["function"]["name"]
+        name = call.function.name
         tool = self._tools.get(name)
         if tool is None:
             return f"Error: unknown tool '{name}'"
         fn, _ = tool
         try:
-            arguments = parse_arguments(call["function"]["arguments"])
+            arguments = parse_arguments(call.function.arguments)
         except ValueError as e:
             return f"Error: {type(e).__name__}: {e}"
         if name in self.needs_approval:

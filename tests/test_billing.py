@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core import llm
 from jean_code.core.agent import Agent
-from jean_code.core.llm import ChatClient, tool
+from jean_code.core.llm import ChatClient, MalformedResponse, tool
 from jean_code.core.usage import ModelCall
 
 
@@ -106,9 +106,30 @@ def test_usage_is_recorded_before_a_malformed_reply_raises():
     bad = response("x", usage=usage(cost=0.005))
     bad["choices"] = []
     agent, _ = make_agent([bad])
-    with pytest.raises(IndexError):
+    with pytest.raises(MalformedResponse, match="choices"):
         agent.run_turn("hello")
+    assert len(agent.usage) == 1 and agent.usage[0].cost == 0.005
     assert agent.total_cost == pytest.approx(0.005)
+
+
+def test_malformed_usage_is_booked_and_named():
+    # Catches booking that raises "reported no cost" inside the handler and buries the real error.
+    bad = response("x", id="gen-u")
+    bad["usage"] = {"cost": 0.004, "prompt_tokens_details": []}
+    agent, _ = make_agent([bad])
+    with pytest.raises(MalformedResponse, match="malformed usage in gen-u"):
+        agent.run_turn("hello")
+    assert len(agent.usage) == 1 and agent.usage[0].cost is None
+
+
+def test_content_as_parts_is_booked():
+    # Catches a fallback provider's content parts crashing the turn without booking the paid call.
+    bad = response("x", usage=usage(cost=0.002))
+    bad["choices"][0]["message"]["content"] = [{"type": "text", "text": "hi"}]
+    agent, _ = make_agent([bad])
+    with pytest.raises(MalformedResponse, match=r"choices\.0\.message\.content"):
+        agent.run_turn("hello")
+    assert agent.usage[0].cost == 0.002
 
 
 @pytest.mark.parametrize("refusal", [None, "Denied by user."], ids=["approve", "deny"])
@@ -227,7 +248,7 @@ def test_retry_returns_the_successful_body(monkeypatch):
         httpx.Response(429, json={"id": "gen-rate-limited", "usage": usage()}),
         httpx.Response(200, json=ok),
     )
-    assert client.complete({"messages": []}) == ok
+    assert client.complete({"messages": []}).receipt.generation_id == "gen-ok"
 
 
 def test_error_body_with_status_200_raises_and_records_nothing(monkeypatch):
@@ -235,5 +256,14 @@ def test_error_body_with_status_200_raises_and_records_nothing(monkeypatch):
     client = mock_client(monkeypatch, httpx.Response(200, json={"error": {"message": "provider down"}}))
     agent = Agent(client=client)
     with pytest.raises(RuntimeError, match="provider down"):
+        agent.run_turn("hello")
+    assert agent.usage == []
+
+
+def test_not_json_books_nothing(monkeypatch):
+    # Catches a non-JSON body (a proxy's error page) crashing with a JSONDecodeError, or booking a call never made.
+    client = mock_client(monkeypatch, httpx.Response(200, text="<html>bad gateway</html>"))
+    agent = Agent(client=client)
+    with pytest.raises(MalformedResponse, match="not JSON"):
         agent.run_turn("hello")
     assert agent.usage == []

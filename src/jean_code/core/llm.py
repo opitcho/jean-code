@@ -208,7 +208,7 @@ class ChatBackend(Protocol):
     """What an agent needs from a model endpoint: one chat completion per call. `ChatClient` is the real one;
     tests pass scripted ones."""
 
-    def complete(self, request: dict) -> dict: ...
+    def complete(self, request: dict) -> Completion: ...
 
 
 @runtime_checkable
@@ -234,9 +234,19 @@ class ChatClient:
             timeout=httpx.Timeout(600, connect=10),
         )
 
-    def complete(self, request: dict) -> dict:
-        """Send `request` and return the whole response: id, provider, choices and usage."""
-        body = {**self.extra, **request}
+    def complete(self, request: dict) -> Completion:
+        """Send `request` and return the parsed completion. Raises `MalformedResponse` for a response it can't use."""
+        response = self._post({**self.extra, **request})
+        try:
+            data = response.json()
+        except ValueError as e:
+            raise MalformedResponse(f"response body is not JSON: {e}", receipt=None) from e
+        if isinstance(data, dict) and "error" in data:  # OpenRouter can report a provider error with status 200
+            raise RuntimeError(f"model error: {data['error']}")
+        return parse_completion(data)
+
+    def _post(self, body: dict) -> httpx.Response:
+        """POST a chat completion, retrying the statuses in RETRY_STATUSES with backoff. Raises on any other error."""
         attempt = 0
         while True:
             response = self.http.post(f"{self.base_url}/chat/completions", json=body)
@@ -246,10 +256,7 @@ class ChatClient:
                 continue
             if response.is_error:
                 raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
-            data = response.json()
-            if "error" in data:  # OpenRouter can report a provider error with status 200
-                raise RuntimeError(f"model error: {data['error']}")
-            return data
+            return response
 
     def credits(self) -> dict:
         """The API key's spend and limit, from OpenRouter's /key endpoint."""

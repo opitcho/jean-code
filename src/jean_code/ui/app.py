@@ -67,7 +67,6 @@ STATE_HIDDEN = {
     "client",
     "messages",
     "last_request",
-    "last_response",
     "usage",
     "compactions",  # shown elsewhere
     "needs_approval",
@@ -280,7 +279,7 @@ def compaction_of(agent, msg) -> dict | None:
 
 
 def compaction_cost(rec: dict) -> str:
-    cost = ((rec.get("response") or {}).get("usage") or {}).get("cost")
+    cost = rec["call"].cost if rec.get("call") else None
     return "—" if cost is None else f"${cost:.5f}"
 
 

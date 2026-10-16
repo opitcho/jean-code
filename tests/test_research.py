@@ -24,6 +24,7 @@ from jean_code.agents.research import (
     researcher_profile,
     summary_of,
 )
+from jean_code.core.llm import Completion, parse_completion
 from jean_code.core.subagents import Run
 from jean_code.core.usage import Budget
 from jean_code.tools.pages import html_text
@@ -63,7 +64,7 @@ class TaskClient:
         }
         self._lock = threading.Lock()
 
-    def complete(self, request: dict) -> dict:
+    def complete(self, request: dict) -> Completion:
         task = next(m["content"] for m in request["messages"] if m["role"] == "user")
         with self._lock:
             script = self.scripts.get(task)
@@ -72,7 +73,7 @@ class TaskClient:
             item = script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return copy.deepcopy(item() if callable(item) else item)
+        return parse_completion(copy.deepcopy(item() if callable(item) else item))
 
 
 def new_notebook(tmp_path) -> Notebook:
