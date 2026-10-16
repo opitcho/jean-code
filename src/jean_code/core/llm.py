@@ -208,7 +208,7 @@ class ChatBackend(Protocol):
     """What an agent needs from a model endpoint: one chat completion per call. `ChatClient` is the real one;
     tests pass scripted ones."""
 
-    def complete(self, request: dict) -> Completion: ...
+    def complete(self, request: ChatRequest) -> Completion: ...
 
 
 @runtime_checkable
@@ -234,9 +234,9 @@ class ChatClient:
             timeout=httpx.Timeout(600, connect=10),
         )
 
-    def complete(self, request: dict) -> Completion:
+    def complete(self, request: ChatRequest) -> Completion:
         """Send `request` and return the parsed completion. Raises `MalformedResponse` for a response it can't use."""
-        response = self._post({**self.extra, **request})
+        response = self._post({**self.extra, **render_request(request)})
         try:
             data = response.json()
         except ValueError as e:

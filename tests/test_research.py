@@ -24,7 +24,7 @@ from jean_code.agents.research import (
     researcher_profile,
     summary_of,
 )
-from jean_code.core.llm import Completion, parse_completion
+from jean_code.core.llm import ChatRequest, Completion, UserMessage, parse_completion
 from jean_code.core.subagents import Run
 from jean_code.core.usage import Budget
 from jean_code.tools.pages import html_text
@@ -64,8 +64,8 @@ class TaskClient:
         }
         self._lock = threading.Lock()
 
-    def complete(self, request: dict) -> Completion:
-        task = next(m["content"] for m in request["messages"] if m["role"] == "user")
+    def complete(self, request: ChatRequest) -> Completion:
+        task = next(m.content for m in request.messages if isinstance(m, UserMessage))
         with self._lock:
             script = self.scripts.get(task)
             if not script:
@@ -533,7 +533,7 @@ def test_end_to_end_a_lead_and_two_researchers_leave_a_complete_run_folder(tmp_p
     assert outcome.status == "done", outcome.text
     dir = outcome_dir(outcome.text)
 
-    results = [m["content"] for m in run.agent.messages if m["role"] == "tool" and "<subagent-result" in m["content"]]
+    results = [m.content for m in run.agent.messages if m.role == "tool" and "<subagent-result" in m.content]
     assert "Alpha is Rust" in results[0] and QUOTE_A in results[0] and "https://a.test" in results[0]
     assert "Beta" not in results[0] and "covered Alpha is Rust" in results[0]
     assert "Beta uses TOML" in results[1] and "Alpha" not in results[1]

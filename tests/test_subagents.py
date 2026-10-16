@@ -77,7 +77,7 @@ def eventually(predicate) -> None:
 
 
 def tool_results(agent: Agent) -> list[str]:
-    return [m["content"] for m in agent.messages if m["role"] == "tool"]
+    return [m.content for m in agent.messages if m.role == "tool"]
 
 
 # ---------------------------------------------------------------- spawn and subagent
@@ -203,12 +203,12 @@ def test_a_background_result_is_delivered_once_with_the_next_message():
     parent.run_turn("start something")
     eventually(lambda: parent.subagents.pending == 1)
     parent.run_turn("any news?")
-    assert parent.messages[-2]["content"] == (
+    assert parent.messages[-2].content == (
         'any news?\n\n<subagent-result run="1" profile="echo" status="done">\nanswer to x\n</subagent-result>'
     )
     assert parent.subagents.pending == 0
     parent.run_turn("and now?")
-    assert parent.messages[-2]["content"] == "and now?"
+    assert parent.messages[-2].content == "and now?"
 
 
 def test_a_result_read_with_subagent_is_not_injected_again():
@@ -296,8 +296,8 @@ def test_the_tools_take_loose_json_and_answer_errors_as_text():
 def test_the_listing_and_tools_come_only_with_profiles():
     # Catches management methods exposed as tools, or tools and a listing for an agent without profiles.
     agent = Agent(client=FakeClient([]), system_prompt="Be brief.", subagent_profiles={"echo": echo_profile()})
-    assert agent.messages[0]["content"].startswith("Be brief.\n\n## Subagents\n")
-    assert "- echo: answers at once" in agent.messages[0]["content"]
+    assert agent.messages[0].content.startswith("Be brief.\n\n## Subagents\n")
+    assert "- echo: answers at once" in agent.messages[0].content
     assert set(agent._tools) == {"spawn", "subagent"}
     plain = Agent(client=FakeClient([]))
     assert plain.subagents is None and plain._tools == {} and plain.messages == []

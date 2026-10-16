@@ -11,7 +11,7 @@ from pathlib import Path
 from jean_code.agents.coding import coding_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
-from jean_code.core.llm import HasCredits
+from jean_code.core.llm import AssistantMessage, HasCredits, Message, ToolMessage
 from jean_code.core.usage import breakdown_lines, human, usage_line
 from jean_code.ui.approval import Approvals, denied
 
@@ -43,16 +43,17 @@ class TurnPrinter:
             print(dim(compaction_line(compactions[self.compactions])))
             self.compactions += 1
 
-    def _print_message(self, msg: dict) -> None:
-        if msg["role"] == "tool":
-            print(f"result> {msg['content']}")
-        elif msg["role"] == "assistant":
-            if msg.get("reasoning"):
-                print(dim(f"thinking> {msg['reasoning']}"))
-            if msg.get("content"):
-                print(f"agent> {msg['content']}")
-            for call in msg.get("tool_calls", []):
-                print(f"tool> {call['function']['name']}({call['function']['arguments']})")
+    def _print_message(self, msg: Message) -> None:
+        match msg:
+            case ToolMessage():
+                print(f"result> {msg.content}")
+            case AssistantMessage():
+                if msg.reasoning:
+                    print(dim(f"thinking> {msg.reasoning}"))
+                if msg.content:
+                    print(f"agent> {msg.content}")
+                for call in msg.tool_calls:
+                    print(f"tool> {call.function.name}({call.function.arguments})")
         # user messages: the user just typed them; the marker and summaries show as compaction lines
 
 

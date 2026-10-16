@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core import llm
 from jean_code.core.agent import Agent
-from jean_code.core.llm import ChatClient, MalformedResponse, tool
+from jean_code.core.llm import ChatClient, ChatRequest, MalformedResponse, UserMessage, tool
 from jean_code.core.usage import ModelCall
 
 
@@ -169,7 +169,7 @@ def test_no_call_once_over_budget():
     agent.run_turn("first")
     end = agent.run_turn("second")
     assert len(client.requests) == 1
-    assert agent.messages[-1] == {"role": "user", "content": "second"}
+    assert agent.messages[-1] == UserMessage(content="second")
     assert end == "budget spent"
 
 
@@ -248,7 +248,7 @@ def test_retry_returns_the_successful_body(monkeypatch):
         httpx.Response(429, json={"id": "gen-rate-limited", "usage": usage()}),
         httpx.Response(200, json=ok),
     )
-    assert client.complete({"messages": []}).receipt.generation_id == "gen-ok"
+    assert client.complete(ChatRequest("m", (), (), None)).receipt.generation_id == "gen-ok"
 
 
 def test_error_body_with_status_200_raises_and_records_nothing(monkeypatch):

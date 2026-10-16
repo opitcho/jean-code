@@ -26,7 +26,7 @@ def test_the_coding_agent_offers_its_subagents():
     # Catches profiles that exist but never reach the model: no listing, or no tools.
     agent = coding_agent(skills_dir=None, approve=yes)
     try:
-        prompt = agent.messages[0]["content"]
+        prompt = agent.messages[0].content
         assert "## Subagents" in prompt and "- searcher: " in prompt and "- general: " in prompt
         assert "- research: " in prompt
         assert {"spawn", "subagent"} <= set(agent._tools)
@@ -52,7 +52,7 @@ def test_the_general_subagent_runs_bash_in_docker_without_approval():
         bash = agent.tool_map["bash"]
         assert isinstance(bash, MethodType) and isinstance(bash.__self__, DockerShell)
         assert agent.budget is budget  # spawn's check that the profile used its node
-        assert "## You are a subagent" in agent.messages[0]["content"]
+        assert "## You are a subagent" in agent.messages[0].content
     finally:
         agent.close()
 

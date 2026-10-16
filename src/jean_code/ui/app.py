@@ -24,8 +24,10 @@ import streamlit as st
 
 from jean_code.agents.coding import coding_agent
 from jean_code.config import USAGE_LOG
+from jean_code.core import llm
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent
 from jean_code.core.compaction_prompts import HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.llm import Message, render_message
 from jean_code.core.subagents import Run
 from jean_code.core.usage import human, usage_line
 from jean_code.ui.approval import Approvals, denied
@@ -92,7 +94,7 @@ class Entry:
     """A message the UI has seen. `uid` is stable even if the message leaves the context."""
 
     uid: int
-    msg: dict
+    msg: Message
     in_context: bool = True
 
 
@@ -164,7 +166,7 @@ def turn_kind(msg) -> str:
 def parse_args(call) -> dict:
     """A tool call's arguments: the agent stores them as the model sent them, a JSON string."""
     try:
-        value = json.loads(call["function"].get("arguments") or "{}")
+        value = json.loads(call.function.arguments or "{}")
     except (ValueError, TypeError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -191,8 +193,8 @@ def call_summary(call) -> str:
     args = parse_args(call)
     first = next(iter(args.values()), None)
     if first is None:
-        return call["function"]["name"]
-    return f"{call['function']['name']} · {first if isinstance(first, str) else json.dumps(first)}"
+        return call.function.name
+    return f"{call.function.name} · {first if isinstance(first, str) else json.dumps(first)}"
 
 
 def result_summary(msg, name: str) -> str:
@@ -270,7 +272,7 @@ def call_of(entries: list[Entry], pos: int) -> Entry | None:
 
 def call_names(entries: list[Entry]) -> dict[str, str]:
     """Tool name of every call seen, by call id, so a result can be matched to its tool by `tool_call_id`."""
-    return {call.get("id"): call["function"]["name"] for e in entries for call in mget(e.msg, "tool_calls") or []}
+    return {call.id: call.function.name for e in entries for call in mget(e.msg, "tool_calls") or []}
 
 
 def compaction_of(agent, msg) -> dict | None:
@@ -698,9 +700,9 @@ def render_tool_call(entries: list[Entry], pos: int, running: bool, pending: boo
     results = {mget(e.msg, "tool_call_id"): e for e in results_of(entries, pos)}
     is_last = pos + len(results) == len(entries) - 1
     for call in mget(msg, "tool_calls"):
-        st.html(f'<div class="fn-name">{html.escape(call["function"]["name"])}()</div>')
+        st.html(f'<div class="fn-name">{html.escape(call.function.name)}()</div>')
         render_args(parse_args(call))
-        result = results.get(call.get("id"))
+        result = results.get(call.id)
         with st.container(horizontal=True, vertical_alignment="center"):
             st.html(eyebrow("↳ RESULT"))
             if result is not None:
@@ -788,11 +790,11 @@ def render_turn(agent, entries: list[Entry], selected: Entry | None, ctx: list, 
         render_text(msg, kind)
 
     with st.expander("Raw message", icon=":material/data_object:"):
-        st.json(to_jsonable(msg))
+        st.json(render_message(msg))
 
 
 def render_request(agent) -> None:
-    req = agent.last_request
+    req = llm.render_request(agent.last_request) if agent.last_request else None
     if not req:
         empty("⇅", "No request sent yet.")
         return
@@ -873,7 +875,7 @@ def render_context(agent) -> None:
     for i, rec in enumerate(agent.compactions):
         if rec.get("summary"):
             with st.expander(f"Summary #{i + 1}", icon=":material/summarize:"):
-                st.markdown(rec["summary"]["content"])
+                st.markdown(rec["summary"].content)
 
 
 def render_state(agent) -> None:

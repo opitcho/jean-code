@@ -6,6 +6,7 @@ Each test names the bug it would catch.
 from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent, TurnEnd, TurnStopped
@@ -64,7 +65,7 @@ def make_agent(responses, client_class=FakeClient, **kwargs) -> AskingAgent:
 
 
 def results(agent: Agent) -> list[str]:
-    return [m["content"] for m in agent.messages if m["role"] == "tool"]
+    return [m.content for m in agent.messages if m.role == "tool"]
 
 
 def tool_reply(name="add", cost=0.004, prompt=100, **args) -> dict:
@@ -224,3 +225,17 @@ def test_null_arguments_run_the_tool():
     client = FakeClient([response(tool_calls=[tool_call]), response("done")])
     Agent(client=client, tools={"ping": ping}).run_turn("go")
     assert client.requests[1]["messages"][-1] == {"role": "tool", "tool_call_id": "c1", "content": "pong"}
+
+
+def test_transcript_holds_typed_messages():
+    # Catches a transcript of wire dicts, which every reader has to index by string key.
+    agent = make_agent([response(tool_calls=[call("add", a=1, b=2)]), response("3")])
+    agent.run_turn("add")
+    assert [type(m).__name__ for m in agent.messages[-4:]] == [
+        "UserMessage",
+        "AssistantMessage",
+        "ToolMessage",
+        "AssistantMessage",
+    ]
+    with pytest.raises(ValidationError):
+        agent.messages[-1].content = "changed"  # type: ignore[misc]

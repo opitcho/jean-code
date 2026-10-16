@@ -10,7 +10,7 @@ import time
 import httpx
 import pytest
 
-from jean_code.core.llm import Completion, parse_completion
+from jean_code.core.llm import ChatRequest, Completion, parse_completion, render_request
 from jean_code.tools import pages
 
 # A real usage payload and its response metadata, from `.experiments/output/usage_check.txt` (turn 2).
@@ -65,7 +65,8 @@ REAL_ASSISTANT = {
 class FakeClient:
     """Parses scripted wire responses in order, like `ChatClient.complete`; a scripted exception is raised instead.
 
-    `requests` keeps a deep copy of every request. `credits()` returns `credit_data`, or raises it if it's an exception.
+    `requests` keeps every request as the wire dict it would be sent as. `credits()` returns `credit_data`, or
+    raises it if it's an exception.
     """
 
     def __init__(self, responses, credit_data=None):
@@ -73,8 +74,8 @@ class FakeClient:
         self.requests: list[dict] = []
         self.credit_data = credit_data
 
-    def complete(self, request: dict) -> Completion:
-        self.requests.append(copy.deepcopy(request))
+    def complete(self, request: ChatRequest) -> Completion:
+        self.requests.append(render_request(request))
         if not self.responses:
             raise AssertionError(f"no scripted response left for request {len(self.requests)}")
         item = self.responses.pop(0)

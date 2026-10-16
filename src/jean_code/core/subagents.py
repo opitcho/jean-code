@@ -18,7 +18,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
-from jean_code.core.llm import tool
+from jean_code.core.llm import AssistantMessage, tool
 from jean_code.core.usage import Budget
 
 if TYPE_CHECKING:
@@ -167,8 +167,8 @@ class Run:
 def last_reply(agent: Agent) -> str | None:
     """The text of the agent's last assistant message, or None if it has none."""
     for message in reversed(agent.messages):
-        if message["role"] == "assistant":
-            return (message.get("content") or "").strip() or None
+        if isinstance(message, AssistantMessage):
+            return message.content.strip() or None
     return None
 
 

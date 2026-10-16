@@ -13,9 +13,9 @@ import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core import agent as agent_module
-from jean_code.core.agent import Agent, estimate_tokens, is_synthetic
+from jean_code.core.agent import Agent, estimate_tokens, is_synthetic, message_tokens
 from jean_code.core.compaction_prompts import COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER_TAG, SUMMARY_TAG
-from jean_code.core.llm import tool
+from jean_code.core.llm import AssistantMessage, Message, ToolMessage, render_request, tool
 
 
 @tool
@@ -72,21 +72,22 @@ def is_summary_request(request: dict) -> bool:
     return request["messages"][-1]["content"].startswith(COMPACTION_PROMPT[:40])
 
 
-def assert_valid(messages: list[dict]) -> None:
+def assert_valid(messages: list[Message]) -> None:
     """Every tool result follows the assistant message holding its call, past only sibling results, and every
     call before the last assistant message has a result."""
     for i, m in enumerate(messages):
-        if m["role"] != "tool":
+        if not isinstance(m, ToolMessage):
             continue
         j = i - 1
-        while messages[j]["role"] == "tool":
+        while isinstance(messages[j], ToolMessage):
             j -= 1
-        assert messages[j]["role"] == "assistant", f"tool result at {i} doesn't follow a call"
-        assert m["tool_call_id"] in {c["id"] for c in messages[j].get("tool_calls", [])}
-    answered = {m["tool_call_id"] for m in messages if m["role"] == "tool"}
+        caller = messages[j]
+        assert isinstance(caller, AssistantMessage), f"tool result at {i} doesn't follow a call"
+        assert m.tool_call_id in {c.id for c in caller.tool_calls}
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
     for m in messages[:-1]:
-        for c in m.get("tool_calls", []):
-            assert c["id"] in answered, f"call {c['id']} has no result"
+        for c in m.tool_calls if isinstance(m, AssistantMessage) else ():
+            assert c.id in answered, f"call {c.id} has no result"
 
 
 def compacted_session(**kwargs) -> tuple[Agent, FakeClient]:
@@ -133,7 +134,7 @@ def test_instruction_names_the_region():
 def test_transcript_is_head_marker_summary_tail():
     # Catches the wrong turns removed, or the summary missing its wrapper.
     agent, _ = compacted_session()
-    contents = [m["content"] for m in agent.messages]
+    contents = [m.content for m in agent.messages]
     assert contents[:5] == ["sys", "turn 1", "reply 1", "turn 2", "reply 2"]
     assert contents[5].startswith(HEAD_MARKER_TAG)
     assert contents[6].startswith(SUMMARY_TAG) and "SUMMARY TEXT" in contents[6]
@@ -169,7 +170,7 @@ def test_tool_calls_stay_with_their_results():
     agent.run_turn("turn 5")
     assert agent.compactions[-1]["status"] == "compacted"
     assert_valid(agent.messages)
-    assert sum(m["role"] == "tool" for m in agent.messages) == 3 + 1  # turn 4's three results and turn 5's one
+    assert sum(m.role == "tool" for m in agent.messages) == 3 + 1  # turn 4's three results and turn 5's one
 
 
 def test_context_history_keeps_each_earlier_context():
@@ -177,7 +178,7 @@ def test_context_history_keeps_each_earlier_context():
     agent, _ = compacted_session()
     history = agent.context_history
     assert len(history) == 2
-    assert [m["content"][:7] for m in history[0]][6:8] == ["turn 3", "reply 3"]
+    assert [m.content[:7] for m in history[0]][6:8] == ["turn 3", "reply 3"]
     assert history[1] is agent.messages
 
 
@@ -222,7 +223,7 @@ def test_interrupt_during_the_summary_call_cancels_it():
 
     class InterruptingSummary(FakeClient):
         def complete(self, request):
-            if is_summary_request(request):
+            if is_summary_request(render_request(request)):
                 agent.interrupt()
             return super().complete(request)
 
@@ -285,8 +286,8 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
     agent, client = compacted_session()
     record = agent.compactions[-1]
     tools = estimate_tokens(client.requests[-1]["tools"])
-    new = tools + sum(estimate_tokens(m) for m in agent.messages)
-    old = tools + sum(estimate_tokens(m) for m in record["before"])
+    new = tools + sum(message_tokens(m) for m in agent.messages)
+    old = tools + sum(message_tokens(m) for m in record["before"])
     assert agent.context_tokens == record["tokens_after"] == round(record["tokens_before"] * new / old)
     assert agent.compact_at is not None and agent.context_tokens < agent.compact_at
 
@@ -312,7 +313,7 @@ def test_a_failed_summary_changes_nothing(reply, reason):
     agent.run_turn("turn 5")
     before = agent.messages
     assert agent.compactions[-1]["status"].startswith("failed") and reason in agent.compactions[-1]["status"]
-    assert agent.messages is before and [m["content"] for m in before][-2:] == ["turn 5", "reply 5"]
+    assert agent.messages is before and [m.content for m in before][-2:] == ["turn 5", "reply 5"]
     assert agent.context_history == [before]
 
 
@@ -325,9 +326,9 @@ def test_second_compaction_folds_the_first_summary_in():
     agent.run_turn("turn 8")
     assert EARLIER_SUMMARY_NOTE in client.requests[-1]["messages"][-1]["content"]
     assert all(a is b for a, b in zip(agent.messages[:6], head, strict=True))
-    synthetic = [m["content"] for m in agent.messages if is_synthetic(m)]
+    synthetic = [m.content for m in agent.messages if is_synthetic(m)]
     assert len(synthetic) == 2 and "SECOND" in synthetic[1] and "SUMMARY TEXT" not in synthetic[1]
-    assert [m["content"] for m in agent.messages[7:]] == ["turn 7", "reply 7", "turn 8", "reply 8"]
+    assert [m.content for m in agent.messages[7:]] == ["turn 7", "reply 7", "turn 8", "reply 8"]
     assert len(agent.context_history) == 3
 
 

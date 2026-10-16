@@ -103,7 +103,7 @@ def test_agent_runs_load_skill_calls_and_returns_errors_to_the_model(skills_dir)
     )
     agent = Agent(client=client, skills_dir=skills_dir)
     assert agent.run_turn("hi") == "answered"
-    results = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    results = [m.content for m in agent.messages if m.role == "tool"]
     assert results[0].startswith("DEMO BODY")
     assert results[1].startswith("Error: ValueError: unknown skill 'nope'")
     assert agent.skills.loaded == ["demo"]
@@ -113,7 +113,7 @@ def test_agent_runs_load_skill_calls_and_returns_errors_to_the_model(skills_dir)
 def test_a_slash_command_puts_the_body_in_the_user_message(skills_dir):
     agent = Agent(client=FakeClient([response("ok")]), skills_dir=skills_dir)
     agent.run_turn("/demo convert 5 miles")
-    user = [m for m in agent.messages if m["role"] == "user"][-1]["content"]
+    user = [m for m in agent.messages if m.role == "user"][-1].content
     assert user.startswith('/demo convert 5 miles\n\n<command name="demo">\nDEMO BODY')
     assert agent.skills.loaded == ["demo"]
 

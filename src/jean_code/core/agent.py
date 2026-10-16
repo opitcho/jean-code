@@ -16,11 +16,17 @@ from jean_code.core.compaction_prompts import (
     SUMMARY_TAG,
 )
 from jean_code.core.llm import (
+    AssistantMessage,
     ChatBackend,
+    ChatRequest,
     Completion,
     MalformedResponse,
+    Message,
     Receipt,
+    SystemMessage,
     ToolCall,
+    ToolMessage,
+    UserMessage,
     is_tool,
     openrouter,
     render_message,
@@ -62,10 +68,14 @@ def estimate_tokens(value) -> int:
     return -(-len(json.dumps(value, ensure_ascii=False).encode()) // 3)
 
 
-def is_synthetic(message: dict) -> bool:
+def message_tokens(message: Message) -> int:
+    """A high estimate of the tokens a message takes in a prompt: of the wire dict it's sent as."""
+    return estimate_tokens(render_message(message))
+
+
+def is_synthetic(message: Message) -> bool:
     """True for the user messages the agent writes itself: the head marker and summaries."""
-    content = message.get("content")
-    return message["role"] == "user" and isinstance(content, str) and content.startswith((HEAD_MARKER_TAG, SUMMARY_TAG))
+    return isinstance(message, UserMessage) and message.content.startswith((HEAD_MARKER_TAG, SUMMARY_TAG))
 
 
 def ordinal(n: int) -> str:
@@ -78,8 +88,8 @@ class Agent:
     Drive it with `run_turn(text)`. It returns how the turn ended (a `TurnEnd`): "answered", or why it stopped
     early. Call `close()` at the end.
 
-    Callers read its state directly. `messages` is the transcript in the OpenAI chat format, with each reply stored
-    as the API returned it. `usage` has one entry per model call, and `budget` holds the spend.
+    Callers read its state directly. `messages` is the transcript as typed `Message`s (llm.py), with each reply as
+    the provider sent it. `usage` has one `ModelCall` per paid model call, and `budget` holds the spend.
 
     Args:
         model: OpenRouter model id.
@@ -141,11 +151,11 @@ class Agent:
         # Currently only skills included, optional second argument is never used.
         self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
 
-        self.messages: list[dict] = []
+        self.messages: list[Message] = []
         listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
         system = "\n\n".join(part for part in listings if part).strip()
         if system:
-            self.messages.append({"role": "system", "content": system})
+            self.messages.append(SystemMessage(content=system))
 
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
@@ -166,7 +176,7 @@ class Agent:
         self.compactions: list[dict] = []  # one record per compaction attempt that got past the checks
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
-        self.last_request: dict | None = None
+        self.last_request: ChatRequest | None = None
         self._interrupt = threading.Event()
         # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
         self.subagents = Subagents(subagent_profiles, self.budget, self._interrupt) if subagent_profiles else None
@@ -201,12 +211,12 @@ class Agent:
         for the messages added since."""
         measured, messages = self._measured, self.messages  # read once: another thread may be running the turn
         if measured is None:  # no call yet: estimate the whole transcript and the tool schemas
-            return estimate_tokens(self._tool_schemas()) + sum(estimate_tokens(m) for m in messages)
+            return estimate_tokens(self._tool_schemas()) + sum(message_tokens(m) for m in messages)
         count, tokens = measured
-        return tokens + sum(estimate_tokens(m) for m in messages[count:])
+        return tokens + sum(message_tokens(m) for m in messages[count:])
 
     @property
-    def context_history(self) -> list[list[dict]]:
+    def context_history(self) -> list[list[Message]]:
         """Every context the session has had: the one before each compaction, then the current one."""
         return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
@@ -236,9 +246,9 @@ class Agent:
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
         if self.head_end is None and len(self._turn_starts()) == self.keep_first:
-            self.messages.append({"role": "user", "content": HEAD_MARKER})
+            self.messages.append(UserMessage(content=HEAD_MARKER))
             self.head_end = len(self.messages)
-        self.messages.append({"role": "user", "content": content})
+        self.messages.append(UserMessage(content=content))
         try:
             self._loop()
         except TurnStopped as stop:
@@ -248,7 +258,7 @@ class Agent:
     def step(self) -> None:
         """One model call on the current context: append its reply, then run its tool calls."""
         completion = self._call(self._build_request())
-        self.messages.append(render_message(completion.message))  # the transcript holds wire dicts until it's typed
+        self.messages.append(completion.message)
         usage = completion.receipt.usage
         if usage is not None and usage.prompt_tokens is not None:  # the prompt plus the reply just appended
             self._measured = (len(self.messages), usage.prompt_tokens + (usage.completion_tokens or 0))
@@ -278,24 +288,22 @@ class Agent:
 
         # Check that compacting can bring the context under compact_at.
         schemas = estimate_tokens(self._tool_schemas())
-        kept_estimate = schemas + sum(estimate_tokens(m) for m in head + tail)
-        kept = round(tokens_before * kept_estimate / (kept_estimate + sum(estimate_tokens(m) for m in middle)))
+        kept_estimate = schemas + sum(message_tokens(m) for m in head + tail)
+        kept = round(tokens_before * kept_estimate / (kept_estimate + sum(message_tokens(m) for m in middle)))
         if not force and self.compact_at is not None and kept >= self.compact_at:
             record["status"] = f"skipped: the kept turns alone take ~{kept} tokens, over compact_at"
             return record["status"]
 
-        request = self._build_request()
-        request["messages"].append(
-            {
-                "role": "user",
-                "content": COMPACTION_PROMPT.format(
-                    head_tag=HEAD_MARKER_TAG,
-                    ordinal=ordinal(self.keep_last),
-                    tail_quote=" ".join(tail[0]["content"].split())[:80],
-                    earlier_summary=EARLIER_SUMMARY_NOTE if is_synthetic(middle[0]) else "",
-                ),
-            }
+        first = tail[0]
+        if not isinstance(first, UserMessage):  # _middle cuts at a turn start, so this can't happen
+            raise RuntimeError("compaction's kept tail doesn't start with a user turn")
+        prompt = COMPACTION_PROMPT.format(
+            head_tag=HEAD_MARKER_TAG,
+            ordinal=ordinal(self.keep_last),
+            tail_quote=" ".join(first.content.split())[:80],
+            earlier_summary=EARLIER_SUMMARY_NOTE if is_synthetic(middle[0]) else "",
         )
+        request = self._build_request(UserMessage(content=prompt))
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
@@ -320,13 +328,13 @@ class Agent:
         if record["status"]:
             return record["status"]
 
-        record["summary"] = {"role": "user", "content": SUMMARY_MESSAGE.format(summary=summary)}
+        record["summary"] = UserMessage(content=SUMMARY_MESSAGE.format(summary=summary))
         record["before"] = messages  # the old list itself: it's replaced, never modified
         self.messages = [*head, record["summary"], *tail]
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
-        new_estimate = kept_estimate + estimate_tokens(record["summary"])
-        old_estimate = kept_estimate + sum(estimate_tokens(m) for m in middle)
+        new_estimate = kept_estimate + message_tokens(record["summary"])
+        old_estimate = kept_estimate + sum(message_tokens(m) for m in middle)
         self._measured = (len(self.messages), round(tokens_before * new_estimate / old_estimate))
         record["tokens_after"] = self.context_tokens
         record["status"] = "compacted"
@@ -334,7 +342,7 @@ class Agent:
 
     def _turn_starts(self) -> list[int]:
         """Indices of the user's own messages, each of which starts a turn."""
-        return [i for i, m in enumerate(self.messages) if m["role"] == "user" and not is_synthetic(m)]
+        return [i for i, m in enumerate(self.messages) if isinstance(m, UserMessage) and not is_synthetic(m)]
 
     def _middle(self) -> tuple[int, int] | None:
         """(start, end) of the messages a compaction would replace, or None if they hold no turn of the user's."""
@@ -346,7 +354,7 @@ class Agent:
             return None  # nothing new: at most an earlier summary
         return self.head_end, end
 
-    def _call(self, request: dict, kind: str | None = None) -> Completion:
+    def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
         """The one place the agent calls the model. Books the call even when the response is malformed, then refuses
         a well-formed response that reported no cost.
 
@@ -389,18 +397,9 @@ class Agent:
             )
         return self.tool_map | own
 
-    def _build_request(self) -> dict:
-        """The chat request for the current transcript."""
-        request: dict = {
-            "model": self.model,
-            "messages": list(self.messages),  # a copy, so last_request doesn't grow with the transcript
-        }
-        if self.reasoning:
-            request["reasoning"] = {"effort": self.reasoning}
-        tools = self._tool_schemas()
-        if tools:
-            request["tools"] = tools
-        return request
+    def _build_request(self, *extra: Message) -> ChatRequest:
+        """The request for the current transcript, plus any messages appended for this call only."""
+        return ChatRequest(self.model, (*self.messages, *extra), tuple(self._tool_schemas()), self.reasoning)
 
     def _tool_schemas(self) -> list[dict]:
         return [schema for _, schema in self._tools.values()]
@@ -433,7 +432,7 @@ class Agent:
                 raise TurnStopped("out of tool rounds")
             self.step()
             last = self.messages[-1]
-            if last["role"] == "assistant" and not last.get("tool_calls"):  # an answer, even if cut off or empty
+            if isinstance(last, AssistantMessage) and not last.tool_calls:  # an answer, even if cut off or empty
                 if not self._interrupt.is_set():  # compact() clears the flag, and the user said stop
                     self.compact()
                 return
@@ -455,7 +454,7 @@ class Agent:
                 self._add_result(call, NOT_RUN)
 
     def _add_result(self, call: ToolCall, content: str) -> None:
-        self.messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+        self.messages.append(ToolMessage(tool_call_id=call.id, content=content))
 
     def _run_tool(self, call: ToolCall) -> str:
         """A call's result: the tool's output, or what `approve` gave instead if the tool needs approval. Errors

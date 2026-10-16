@@ -28,7 +28,7 @@ from pathlib import Path
 from jean_code.agents.prompts import RESEARCH_LEAD_PROMPT, RESEARCHER_PROMPT
 from jean_code.config import RESEARCH_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
-from jean_code.core.llm import ChatBackend, tool
+from jean_code.core.llm import ChatBackend, render_message, tool
 from jean_code.core.subagents import Profile, Run, agent_tree, last_reply
 from jean_code.core.usage import Budget
 from jean_code.tools import pages, web
@@ -513,7 +513,7 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
             {
                 "path": path,
                 "task": agent.budget.task,
-                "messages": agent.messages,
+                "messages": [render_message(m) for m in agent.messages],
                 "usage": [asdict(c) for c in agent.usage],
             },
         )

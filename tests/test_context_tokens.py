@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core import agent as agent_module
 from jean_code.core.agent import Agent, estimate_tokens
-from jean_code.core.llm import tool
+from jean_code.core.llm import UserMessage, tool
 
 
 @tool
@@ -44,9 +44,9 @@ def test_tool_results_after_the_call_are_estimated(flat):
     agent = make_agent(
         [response(tool_calls=[call("add", a=1, b=2), call("add", a=3, b=4)], usage=usage(prompt=1000, completion=50))]
     )
-    agent.messages.append({"role": "user", "content": "add twice"})
+    agent.messages.append(UserMessage(content="add twice"))
     agent.step()
-    assert [m["role"] for m in agent.messages[-2:]] == ["tool", "tool"]
+    assert [m.role for m in agent.messages[-2:]] == ["tool", "tool"]
     assert agent.context_tokens == 1050 + 20
 
 
