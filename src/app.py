@@ -63,7 +63,7 @@ LONG_ARG = 80  # string arguments longer than this get their own code block in t
 STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
 CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window", "head_end")
 STATE_HIDDEN = {"client", "messages", "last_request", "last_response", "usage", "compactions",  # shown elsewhere
-                "needs_approval", "loaded_skills", *STATE_CONFIG, *CONTEXT_CONFIG,
+                "needs_approval", "skills", *STATE_CONFIG, *CONTEXT_CONFIG,
                 "budget", "subagents"}  # the sidebar; their trees link back up (child.parent), so vars() would recurse
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
@@ -465,8 +465,8 @@ def render_sidebar(agent) -> None:
         note = "<b>Local shell</b> — each command needs approval"
     with st.sidebar:
         st.html(f'<div class="shell-note">{note}</div>')
-        st.html(eyebrow(f"SKILLS · {len(agent.skills)}"))
-        st.html(chips(sorted(agent.skills), on=agent.loaded_skills, empty_text="no skills found"))
+        st.html(eyebrow(f"SKILLS · {len(agent.skills.catalog)}"))
+        st.html(chips(sorted(agent.skills.catalog), on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(agent.model, cls="model") + "</div>")
         st.segmented_control("Reasoning effort", REASONING_LEVELS, default="medium", required=True,
@@ -789,7 +789,7 @@ def render_state(agent) -> None:
     config = {k: to_jsonable(getattr(agent, k)) for k in STATE_CONFIG if hasattr(agent, k)}
     st.html(eyebrow("CONFIG") + kv_grid(config))
     st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(agent.needs_approval)))
-    st.html(eyebrow("LOADED SKILLS") + chips(agent.loaded_skills))
+    st.html(eyebrow("LOADED SKILLS") + chips(agent.skills.loaded))
 
     attrs = {k: to_jsonable(v) for k, v in vars(agent).items() if k not in STATE_HIDDEN}
     short = {k: v for k, v in attrs.items() if not isinstance(v, (dict, list)) and len(json.dumps(v)) <= LONG_ARG}

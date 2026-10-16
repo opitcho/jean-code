@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from pydantic import validate_call
+from functools import partial
 
-import skills
-from llm import ChatClient, is_tool, openrouter, tool, tool_schema
+from llm import ChatClient, is_tool, openrouter, tool_schema
 from prompts import (COMPACTION_PROMPT, EARLIER_SUMMARY_NOTE, HEAD_MARKER, HEAD_MARKER_TAG, SUMMARY_MESSAGE,
                      SUMMARY_TAG)
+from skills import Skills
 from subagents import Profile, Subagents, result_block, subagents_prompt
 from usage import Budget
 
@@ -75,7 +76,7 @@ class Agent:
         reasoning: Effort: "low", "medium" or "high". None sends no reasoning setting.
         max_tool_rounds: A turn makes at most 1 + this many model calls.
         client: Where requests are sent. OpenRouter by default.
-        skills_dir: Folder of skills the model can load (skills.py).
+        skills_dir: Folder of skills the model can load
         max_cost: Limit in USD for this agent and its subagents. Not together with `budget`.
         budget: This agent's node in an existing budget tree (usage.py). Subagents get one from their parent.
         subagent_profiles: The kinds of subagent the model may start, by name (subagents.py).
@@ -118,15 +119,13 @@ class Agent:
         self.approve = approve
         self.cleanup: list[Callable[[], None]] = list(cleanup or [])
 
-        self.skills = skills.discover_skills(skills_dir) if skills_dir else {}
-        self.loaded_skills: list[str] = []
+        self.skills = Skills(skills_dir)
         # What the user runs by starting a message with `/name`: name → a function of the rest of the line.
-        self.commands: dict[str, Callable[[str], str | None]] = {
-            name: lambda rest, name=name: self.load_skill(name) for name in self.skills
-        }
+        # Currently only skills included, optional second argument is never used.
+        self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
 
         self.messages: list[dict] = []
-        listings = (self.system_prompt, skills.skills_prompt(self.skills), subagents_prompt(subagent_profiles or {}))
+        listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
         system = "\n\n".join(part for part in listings if part).strip()
         if system:
             self.messages.append({"role": "system", "content": system})
@@ -315,44 +314,9 @@ class Agent:
         new_estimate = kept_estimate + estimate_tokens(record["summary"])
         old_estimate = kept_estimate + sum(estimate_tokens(m) for m in middle)
         self._measured = (len(self.messages), round(tokens_before * new_estimate / old_estimate))
-        self.loaded_skills = [name for name in self.loaded_skills if self._skill_in_context(name)]
         record["tokens_after"] = self.context_tokens
         record["status"] = "compacted"
         return record["status"]
-
-    @tool
-    def load_skill(self, name: str) -> str:
-        """Load a skill's instructions. Call this before starting a task that matches a skill.
-
-        Args:
-            name: Name of the skill, from the list of available skills.
-
-        Returns:
-            The skill's instructions, followed by the other files it provides.
-        """
-        skill = self._get_skill(name)
-        if name in self.loaded_skills:
-            return f"Skill '{name}' is already loaded; follow the instructions above."
-        body = skills.instructions(skill)
-        self.loaded_skills.append(name)
-        return body
-
-    @tool
-    def read_skill_file(self, name: str, path: str) -> str:
-        """Read a file bundled with a skill, such as a reference document or a script.
-
-        Args:
-            name: Name of the skill the file belongs to.
-            path: Path of the file relative to the skill's folder, as listed by load_skill.
-
-        Returns:
-            The file's text.
-        """
-        return skills.read_file(self._get_skill(name), path)
-
-    def _skill_in_context(self, name: str) -> bool:
-        body = skills.instructions(self._get_skill(name))
-        return any(isinstance(m.get("content"), str) and body in m["content"] for m in self.messages)
 
     def _turn_starts(self) -> list[int]:
         """Indices of the user's own messages, each of which starts a turn."""
@@ -388,17 +352,11 @@ class Agent:
             raise RuntimeError(f"model call {entry['id']} reported no cost, so spend can't be tracked")
         return usage
 
-    def _get_skill(self, name: str) -> skills.Skill:
-        if name not in self.skills:
-            raise ValueError(f"unknown skill '{name}'; available: {', '.join(self.skills)}")
-        return self.skills[name]
-
     def _all_tools(self) -> dict[str, Callable]:
         """`tool_map` plus the agent's own tools. Raises on a tool not marked `@tool`, and on one named like one of
         the agent's, which would otherwise silently replace it."""
         own: dict[str, Callable] = {}
-        if self.skills:
-            own |= {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
+        own |= self.skills.tools()
         if self.subagents:
             own |= {"spawn": self.subagents.spawn, "subagent": self.subagents.subagent}
         if clash := sorted(self.tool_map.keys() & own.keys()):

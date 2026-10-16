@@ -1,16 +1,19 @@
 """Skill folders: a SKILL.md (YAML frontmatter plus instructions) and the files bundled with it.
 
 A skill loads in three levels, so the model only pays for what it uses:
-    1. its name and description, listed in the system prompt (`skills_prompt`)
-    2. its SKILL.md body, when the model calls `load_skill` or the user types `/name` (`instructions`)
-    3. its bundled files, one at a time through `read_skill_file` (`read_file`)
+    1. its name and description, listed in the system prompt (`Skills.prompt`)
+    2. its SKILL.md body, when the model calls `load_skill` or the user types `/name` (`Skills.load_skill`)
+    3. its bundled files, one at a time through `read_skill_file` (`Skills.read_skill_file`)
 """
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import yaml
+
+from llm import tool
 
 
 @dataclass
@@ -51,20 +54,6 @@ def discover_skills(skills_dir: str | Path) -> dict[str, Skill]:
     return skills
 
 
-def skills_prompt(skills: dict[str, Skill]) -> str:
-    """The level-1 skills listing for the system prompt: names and descriptions only."""
-    if not skills:
-        return ""
-    lines = [
-        "## Skills",
-        "Skills hold instructions for specific tasks. When a task matches a skill, call "
-        "load_skill with its name once; its instructions then stay in the conversation.",
-        "",
-    ]
-    lines += [f"- {skill.name}: {skill.description}" for skill in skills.values()]
-    return "\n".join(lines)
-
-
 def instructions(skill: Skill) -> str:
     """A skill's SKILL.md body, followed by the list of its other files."""
     _, body = split_frontmatter((skill.path / "SKILL.md").read_text())
@@ -82,3 +71,73 @@ def read_file(skill: Skill, path: str) -> str:
     if not target.is_relative_to(root) or not target.is_file():
         raise ValueError(f"'{path}' is not a file in skill '{skill.name}'")
     return target.read_text()
+
+
+class Skills:
+    """An agent's skills: the listing for its system prompt, the two tools its model calls, and the `/name` commands.
+
+    Holds no transcript: whether a skill's instructions are still in context is the model's to judge. A skill can be
+    loaded again, e.g. after compaction summarized its instructions away.
+    """
+
+    def __init__(self, skills_dir: str | Path | None):
+        self.catalog: dict[str, Skill] = discover_skills(skills_dir) if skills_dir else {}
+        self.loaded: list[str] = []  # names loaded this session, first load first; for UIs
+
+    def prompt(self) -> str:
+        """The level-1 listing for the system prompt: names and descriptions only. Empty without skills."""
+        if not self.catalog:
+            return ""
+        lines = [
+            "## Skills",
+            "Skills hold instructions for specific tasks. When a task matches a skill, call load_skill with its "
+            "name, unless its instructions are already in the conversation.",
+            "",
+        ]
+        lines += [f"- {skill.name}: {skill.description}" for skill in self.catalog.values()]
+        return "\n".join(lines)
+
+    def tools(self) -> dict[str, Callable]:
+        """The tools to give the model, by name; none without skills."""
+        if not self.catalog:
+            return {}
+        return {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
+
+    def commands(self) -> dict[str, Callable[[str], str | None]]:
+        """`/name` for each skill, as a function of the rest of the line: loads the skill."""
+        return {
+            name: lambda rest, name=name: self.load_skill(name) for name in self.catalog  # Default arg to avoid late closure
+        }
+
+    @tool
+    def load_skill(self, name: str) -> str:
+        """Load a skill's instructions. Call this before starting a task that matches a skill.
+
+        Args:
+            name: Name of the skill, from the list of available skills.
+
+        Returns:
+            The skill's instructions, followed by the other files it provides.
+        """
+        body = instructions(self._get(name))
+        if name not in self.loaded:
+            self.loaded.append(name)
+        return body
+
+    @tool
+    def read_skill_file(self, name: str, path: str) -> str:
+        """Read a file bundled with a skill, such as a reference document or a script.
+
+        Args:
+            name: Name of the skill the file belongs to.
+            path: Path of the file relative to the skill's folder, as listed by load_skill.
+
+        Returns:
+            The file's text.
+        """
+        return read_file(self._get(name), path)
+
+    def _get(self, name: str) -> Skill:
+        if name not in self.catalog:
+            raise ValueError(f"unknown skill '{name}'; available: {', '.join(self.catalog)}")
+        return self.catalog[name]

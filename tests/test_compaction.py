@@ -318,7 +318,7 @@ def test_second_compaction_folds_the_first_summary_in():
     assert len(agent.context_history) == 3
 
 
-# ---------------------------------------------------------------- budget, skills, hard limit
+# ---------------------------------------------------------------- budget, hard limit
 
 
 def test_summary_call_is_billed_and_respects_the_budget():
@@ -332,22 +332,6 @@ def test_summary_call_is_billed_and_respects_the_budget():
     client.responses += [response("reply 5", usage=BIG)]  # the 5th $0.001: the budget is spent
     agent.run_turn("turn 5")
     assert not any(map(is_summary_request, client.requests))
-
-
-def test_a_skill_summarized_away_can_be_loaded_again(tmp_path):
-    # Catches "already loaded" for instructions the model can no longer see.
-    (tmp_path / "demo").mkdir()
-    (tmp_path / "demo" / "SKILL.md").write_text("---\nname: demo\ndescription: A demo.\n---\nDEMO BODY\n")
-    agent, client = make_agent([], skills_dir=tmp_path)
-    run_small_turns(agent, 2)
-    client.responses.append(response("reply 3" + BULK, usage=SMALL))
-    agent.run_turn("/demo")  # turn 3: its body goes into the user message, which ends up in the middle
-    assert agent.loaded_skills == ["demo"]
-    run_small_turns(agent, 1, start=4)
-    client.responses += [response("reply 5", usage=BIG), summary()]
-    agent.run_turn("turn 5")
-    assert agent.loaded_skills == []
-    assert "DEMO BODY" in agent.load_skill("demo")
 
 
 def test_hard_limit_stops_the_turn():

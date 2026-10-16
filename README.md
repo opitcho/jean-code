@@ -125,7 +125,7 @@ src/
   shell.py      host and Docker shell backends
   subagents.py  starting, waiting for and managing subagent runs
   research.py   research runs: a lead, researchers and the notebook of checked facts they share
-  skills.py     skill discovery
+  skills.py     skills: discovery, the load tools and /name commands
   tools.py      the web tools agents call: search, and fetching a page a window at a time
   pages.py      page text from HTML and PDFs, cached per URL, and the windows cut from it
   llm.py        OpenRouter client, and tool schemas built from functions
