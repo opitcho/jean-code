@@ -1,13 +1,17 @@
-"""The chat-completions wire format: typed messages and usage, and an OpenRouter client.
+"""The chat-completions wire format: typed messages and usage, and OpenRouter clients, plain and streaming.
 
 `parse_completion` is the only code that reads a response, and `render_request` and `render_message` the only code
-that writes one. The message types mirror the OpenAI chat format field for field and keep unknown fields as pydantic
-extras, so a message renders back to exactly the dict it was parsed from.
+that writes one; a streamed reply is first rebuilt into the response it stands for. The message types mirror the
+OpenAI chat format field for field and keep unknown fields as pydantic extras, so a message renders back to exactly
+the dict it was parsed from.
 """
 
+import copy
 import json
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
@@ -114,6 +118,14 @@ class Completion:
 
 
 @dataclass(frozen=True)
+class TextDelta:
+    """A piece of a streamed reply as it arrives: part of the answer (`content`) or of the model's `reasoning`."""
+
+    kind: Literal["content", "reasoning"]
+    text: str
+
+
+@dataclass(frozen=True)
 class ChatRequest:
     """One chat request. `tools` are JSON Schemas; `reasoning` is the effort ("low", "medium", "high") or None."""
 
@@ -160,6 +172,48 @@ def parse_completion(data: object) -> Completion:
     return Completion(choice.message, choice.finish_reason, r.id, r.provider, r.model, r.created, r.usage)
 
 
+def _entry_at(entries: list[dict], index: object) -> dict | None:
+    return next((entry for entry in entries if entry.get("index") == index), None)
+
+
+def _merge_tool_calls(calls: list[dict], fragments: list[dict]) -> None:
+    """Fragments of one call share its `index`: the first brings the `id` and `name`, the rest more `arguments`."""
+    for fragment in fragments:
+        call = _entry_at(calls, fragment.get("index"))
+        if call is None:
+            calls.append(copy.deepcopy(fragment))
+            continue
+        function = call.setdefault("function", {})
+        piece = (fragment.get("function") or {}).get("arguments") or ""
+        function["arguments"] = (function.get("arguments") or "") + piece
+
+
+def _merge_reasoning_details(details: list[dict], fragments: list[dict]) -> None:
+    """Fragments of one reasoning entry share its `index`, each carrying the next piece of its `text`."""
+    for fragment in fragments:
+        entry = _entry_at(details, fragment.get("index"))
+        if entry is None:
+            details.append(dict(fragment))
+        else:
+            entry["text"] = (entry.get("text") or "") + (fragment.get("text") or "")
+
+
+def _apply_delta(message: dict, delta: dict) -> None:
+    """Merge one chunk's delta into the message being rebuilt. Null fields are skipped; a field that isn't text,
+    a tool call or reasoning details (`role`, `refusal`, …) keeps its latest value."""
+    for key, value in delta.items():
+        if value is None:
+            continue
+        if key in ("content", "reasoning"):
+            message[key] = (message.get(key) or "") + value
+        elif key == "tool_calls":
+            _merge_tool_calls(message.setdefault("tool_calls", []), value)
+        elif key == "reasoning_details":
+            _merge_reasoning_details(message.setdefault("reasoning_details", []), value)
+        else:
+            message[key] = value
+
+
 def render_message(message: Message) -> dict:
     """The wire dict for a message: exactly what it was parsed from, with `None`s left out."""
     return message.model_dump(mode="json", exclude_none=True)
@@ -187,6 +241,13 @@ class HasCredits(Protocol):
     """An endpoint that reports the API key's spend and limit, like OpenRouter's."""
 
     def credits(self) -> dict: ...
+
+
+class StreamingBackend(Protocol):
+    """An endpoint that streams its reply: each `TextDelta` as it arrives, then the whole `Completion`, always last.
+    `StreamingClient` is the real one."""
+
+    def stream(self, request: ChatRequest) -> Iterator[TextDelta | Completion]: ...
 
 
 class ChatClient:
@@ -217,23 +278,69 @@ class ChatClient:
         return parse_completion(data)
 
     def _post(self, body: dict) -> httpx.Response:
-        """POST a chat completion, retrying the statuses in RETRY_STATUSES with backoff. Raises on any other error."""
+        """POST a chat completion and read the whole response. Retries and raises like `_request`."""
+        with self._request(body) as response:
+            response.read()
+        return response
+
+    @contextmanager
+    def _request(self, body: dict) -> Iterator[httpx.Response]:
+        """POST a chat completion and hold the response open for reading, retrying the statuses in RETRY_STATUSES
+        with backoff. Raises on any other error."""
         attempt = 0
         while True:
-            response = self.http.post(f"{self.base_url}/chat/completions", json=body)
-            if response.status_code in RETRY_STATUSES and attempt < self.retries:
-                time.sleep(2**attempt)
-                attempt += 1
-                continue
-            if response.is_error:
-                raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
-            return response
+            with self.http.stream("POST", f"{self.base_url}/chat/completions", json=body) as response:
+                if response.status_code not in RETRY_STATUSES or attempt >= self.retries:
+                    if response.is_error:
+                        response.read()
+                        raise RuntimeError(f"HTTP {response.status_code} from {self.base_url}: {response.text}")
+                    yield response
+                    return
+            time.sleep(2**attempt)
+            attempt += 1
 
     def credits(self) -> dict:
         """The API key's spend and limit, from OpenRouter's /key endpoint."""
         response = self.http.get(f"{self.base_url}/key")
         response.raise_for_status()
         return response.json()["data"]
+
+
+class StreamingClient(ChatClient):
+    """A `ChatClient` that can also stream a reply; `complete` and `credits` are unchanged."""
+
+    def stream(self, request: ChatRequest) -> Iterator[TextDelta | Completion]:
+        """Send `request` with streaming on: yield each piece of reasoning and answer as it arrives, then the parsed
+        `Completion`. Nothing is sent until the first item is asked for, and stopping early closes the connection.
+        Raises like `complete`."""
+        data: dict = {}
+        message: dict = {"role": "assistant"}
+        finish_reason = None
+        with self._request({**self.extra, **render_request(request), "stream": True}) as response:
+            for line in response.iter_lines():
+                # Blank separators, ": OPENROUTER PROCESSING" keep-alives and the end marker carry no chunk
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                try:
+                    chunk = json.loads(line.removeprefix("data: "))
+                except ValueError as e:
+                    raise MalformedResponse(f"stream chunk is not JSON: {e}") from e
+                if not isinstance(chunk, dict):
+                    raise MalformedResponse(f"stream chunk is not a JSON object: {line}")
+                if "error" in chunk:  # OpenRouter reports a provider error mid-stream as a chunk
+                    raise RuntimeError(f"model error: {chunk['error']}")
+                data.update((key, value) for key, value in chunk.items() if key != "choices" and value is not None)
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    _apply_delta(message, delta)
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    if delta.get("reasoning"):
+                        yield TextDelta("reasoning", delta["reasoning"])
+                    if delta.get("content"):
+                        yield TextDelta("content", delta["content"])
+        if not data:
+            raise MalformedResponse("stream ended without a chunk")
+        yield parse_completion({**data, "choices": [{"message": message, "finish_reason": finish_reason}]})
 
 
 def openrouter(api_key: str | None = None) -> ChatClient:
