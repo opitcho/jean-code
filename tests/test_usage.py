@@ -36,6 +36,12 @@ def test_log_line_of_the_real_payload(utc):
     assert real_call().log_line() == LOG_LINE
 
 
+def test_finish_reason_is_kept_but_not_logged(utc):
+    # Catches a reply cut off at "length" looking like an answer in a trace, or a new key in logs/usage.jsonl.
+    assert real_call().finish_reason == "stop"
+    assert '"finish_reason"' not in real_call().log_line()
+
+
 def test_kind_is_logged_only_when_set(utc):
     # Catches `"kind": null` on every ordinary call, which the log never had.
     assert '"kind": "compaction"' in real_call(kind="compaction").log_line()

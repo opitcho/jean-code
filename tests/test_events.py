@@ -276,7 +276,9 @@ def test_a_foreground_subagent_rebuilds_under_its_path_with_its_profile():
     assert agent.run_turn("go") == "answered"
     check_replay(agent, events)
     added = events.of("main/1")[0]
-    assert added == AgentAdded(path="main/1", profile="echo", task="t1", model=agent.model)
+    child = agent.node.children[0].agent
+    tools = list(child.last_request.tools)
+    assert added == AgentAdded(path="main/1", profile="echo", task="t1", model=agent.model, tools=tools)
 
 
 def test_a_background_subagent_delivered_by_claim_rebuilds():
@@ -319,9 +321,20 @@ def test_an_agent_built_on_any_child_node_is_seen():
     agent = Agent(client=FakeClient([response("planned")]), node=group.child(None, name="plan", profile="planner"))
     agent.run_turn("plan it")
     added = events[0]
-    assert added == AgentAdded(path="main/wf1/plan", profile="planner", task="", model=agent.model)
+    tools = list(agent.last_request.tools)
+    assert added == AgentAdded(path="main/wf1/plan", profile="planner", task="", model=agent.model, tools=tools)
     assert tuple(rebuild(events)["main/wf1/plan"]) == agent.messages
     assert agent.node.agent is agent
+
+
+def test_agent_added_carries_the_tools_it_sends():
+    # Catches a trace that can't rebuild a request: the schemas are sent with every call but emitted nowhere.
+    events = Recorder()
+    agent = make_agent(events, [response("hi")])
+    agent.run_turn("go")
+    names = [schema["function"]["name"] for schema in events[0].tools]
+    assert {"add", "rm"} <= set(names)
+    assert events[0].tools == list(agent.last_request.tools)
 
 
 def test_no_listener_no_events_and_nothing_breaks():

@@ -35,12 +35,14 @@ class AgentAdded(Event):
         profile: What kind of agent it is; "" for the root.
         task: What its node was created for; "" for the root.
         model: Its model id.
+        tools: The tool schemas it sends with every request.
     """
 
     type: Literal["agent_added"] = "agent_added"
     profile: str
     task: str
     model: str
+    tools: list[dict]
 
 
 class MessageAdded(Event):

@@ -137,6 +137,7 @@ def test_each_call_is_booked_with_its_receipt():
             prompt_tokens=317,
             completion_tokens=76,
             reasoning_tokens=15,
+            finish_reason="tool_calls",
         ),
         ModelCall(
             "gen-1789747506-TZDb0XyTFfYczXFe7HA9",
@@ -147,6 +148,7 @@ def test_each_call_is_booked_with_its_receipt():
             path,
             prompt_tokens=410,
             completion_tokens=12,
+            finish_reason="stop",
         ),
     ]
     assert agent.total_cost == pytest.approx(9.315e-05 + 6.87e-05)

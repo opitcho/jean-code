@@ -73,6 +73,7 @@ def test_usage_entry_has_the_response_metadata():
             "main",
             prompt_tokens=500,
             completion_tokens=10,
+            finish_reason="stop",
         )
     ]
 

@@ -216,7 +216,15 @@ class Agent:
 
         # Last: the system message's event carries the context size, which needs the tool schemas above.
         self.node.agent = self
-        self.node.emit(AgentAdded(path=self.node.path, profile=self.node.profile, task=self.node.task, model=model))
+        self.node.emit(
+            AgentAdded(
+                path=self.node.path,
+                profile=self.node.profile,
+                task=self.node.task,
+                model=model,
+                tools=self._tool_schemas(),
+            )
+        )
         self.messages: tuple[Message, ...] = ()
         if system:
             self._append(SystemMessage(content=system))

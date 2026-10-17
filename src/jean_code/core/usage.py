@@ -30,6 +30,7 @@ class ModelCall:
         completion_tokens: Tokens in the reply.
         reasoning_tokens: Reply tokens spent reasoning.
         kind: "compaction" for summary calls; None for the others.
+        finish_reason: Why the model stopped, as sent; None for a cut-off stream.
     """
 
     generation_id: str
@@ -43,6 +44,7 @@ class ModelCall:
     completion_tokens: int = 0
     reasoning_tokens: int = 0
     kind: str | None = None
+    finish_reason: str | None = None
 
     @classmethod
     def from_completion(cls, completion: Completion, path: str, kind: str | None = None) -> "ModelCall":
@@ -66,6 +68,7 @@ class ModelCall:
             completion_tokens=usage.completion_tokens or 0,
             reasoning_tokens=(usage.completion_tokens_details or TokenDetails()).reasoning_tokens or 0,
             kind=kind,
+            finish_reason=completion.finish_reason,
         )
 
     @property
