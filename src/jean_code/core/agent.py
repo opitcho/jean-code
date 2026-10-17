@@ -1,3 +1,9 @@
+"""The tool-calling agent.
+
+`Agent` runs turns: it calls the model, and the tools the model asks for, until the model answers. `TurnStopped`
+ends a turn early. `estimate_tokens` and `message_tokens` estimate prompt sizes.
+"""
+
 import itertools
 import json
 import logging
@@ -37,7 +43,11 @@ NOT_RUN = "Not run: the turn was stopped."  # the result of a call the turn ende
 
 
 class TurnStopped(Exception):
-    """Raised anywhere inside a turn to end it before the model answers; `run_turn` returns its `reason`."""
+    """A turn was stopped before the model answered.
+
+    Args:
+        reason: How the turn ended; kept as `reason`.
+    """
 
     def __init__(self, reason: TurnEnd):
         super().__init__(reason)
@@ -45,7 +55,17 @@ class TurnStopped(Exception):
 
 
 def parse_arguments(arguments: str) -> dict:
-    """A tool call's arguments, which the model sends as a JSON string. Raises ValueError if not a JSON object."""
+    """Parses a tool call's arguments, which the model sends as a JSON string.
+
+    Args:
+        arguments: The JSON text; empty means no arguments.
+
+    Returns:
+        The arguments by name.
+
+    Raises:
+        ValueError: `arguments` isn't a JSON object.
+    """
     value = json.loads(arguments or "{}")
     if not isinstance(value, dict):
         raise ValueError(f"arguments must be a JSON object, got {arguments!r}")
@@ -53,33 +73,37 @@ def parse_arguments(arguments: str) -> dict:
 
 
 def estimate_tokens(value) -> int:
-    """A high estimate of the tokens `value` takes in a prompt: the UTF-8 bytes of its JSON, divided by 3.
+    """Returns a high estimate of the tokens `value` takes in a prompt.
 
-    Bytes rather than characters, so text in scripts like Chinese isn't underestimated.
+    The estimate is the UTF-8 bytes of its JSON, divided by 3: bytes rather than characters, so text in scripts
+    like Chinese isn't underestimated.
+
+    Args:
+        value: Anything `json.dumps` accepts.
     """
     return -(-len(json.dumps(value, ensure_ascii=False).encode()) // 3)
 
 
 def message_tokens(message: Message) -> int:
-    """A high estimate of the tokens a message takes in a prompt: of the wire dict it's sent as."""
+    """Returns a high estimate of the tokens `message` takes in a prompt, as sent.
+
+    Args:
+        message: The message to measure.
+    """
     return estimate_tokens(render_message(message))
 
 
 class Agent:
-    """A tool-calling agent: one conversation with a model, and the tools the model may call.
+    """A tool-calling agent: a conversation with a model, and the tools it may call.
 
-    Drive it with `run_turn(text)`. It returns how the turn ended (a `TurnEnd`): "answered", or why it stopped
-    early. Call `close()` at the end.
-
-    Callers read its state directly, or receive its events (events.py) through the root node's listener.
-    `messages` is the transcript as typed `Message`s (llm.py), with each reply as the provider sent it: a tuple,
-    grown only by `_append`, which emits each message. `usage` has one `ModelCall` per paid model call, and `node`,
-    its place in the agent tree, holds the spend.
+    Drive it with `run_turn(text)`, which returns how the turn ended: "answered", or why it stopped early. Call
+    `close()` at the end. Everything the agent does is also emitted as an `AgentEvent` through its node. The
+    arguments it keeps are attributes of the same name.
 
     Args:
         model: OpenRouter model id.
         system_prompt: Goes first; the skills and subagents listings are appended to it.
-        tools: Functions marked `@tool` (llm.py), by the name the model calls them.
+        tools: Functions marked `@tool`, by the name the model calls them.
         needs_approval: Names of the tools whose calls are run only if `approve` allows them.
         approve: Asked before each such call, on the turn's thread, with the tool's name and arguments; the turn
             waits for it. Returns None to run the call, or the text the model gets as its result instead.
@@ -88,14 +112,30 @@ class Agent:
         reasoning: Effort: "low", "medium" or "high". None sends no reasoning setting.
         max_tool_rounds: A turn makes at most 1 + this many model calls.
         client: Where requests are sent. OpenRouter by default.
-        skills_dir: Folder of skills the model can load
+        skills_dir: Folder of skills the model can load.
         max_cost: Limit in USD for this agent and its subagents. Not together with `node`.
-        node: This agent's node in an existing agent tree (node.py). Subagents get one from their parent.
-        subagent_profiles: The kinds of subagent the model may start, by name (subagents.py).
+        node: This agent's node in an existing agent tree. Subagents get one from their parent.
+        subagent_profiles: The kinds of subagent the model may start, by name.
         compact_at: Context size in tokens at which the agent compacts after a turn. None: never on its own.
         keep_first: Turns at the start that a compaction keeps verbatim.
         keep_last: Turns at the end that a compaction keeps verbatim.
         context_window: The model's context window, in tokens.
+
+    Attributes:
+        tool_map: The `tools` argument.
+        skills: The skills the model can load, from `skills_dir`.
+        commands: What the user runs by starting a message with `/name`: name → a function of the rest of the line.
+        node: Its place in the agent tree: `node` if given, else the root of a new tree.
+        subagents: The kinds of subagent it may start, and their runs; None if `subagent_profiles` is empty.
+        messages: The transcript, oldest first, with each reply as the provider sent it.
+        usage: One `ModelCall` per paid model call, in call order.
+        head_end: The index just after the head marker, once there is one; nothing before it is ever compacted.
+        compactions: One record per compaction attempt that got past the checks.
+        last_request: The last request sent to the model; None before the first.
+
+    Raises:
+        ValueError: An argument is out of range; `max_cost` and `node` are both given; some tools need approval
+            but there's no `approve`; or a tool isn't marked `@tool`, or is named like one of the agent's own.
     """
 
     def __init__(
@@ -133,7 +173,6 @@ class Agent:
         self.cleanup: list[Callable[[], None]] = list(cleanup or [])
 
         self.skills = Skills(skills_dir)
-        # What the user runs by starting a message with `/name`: name → a function of the rest of the line.
         # Currently only skills included, optional second argument is never used.
         self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
 
@@ -144,8 +183,8 @@ class Agent:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
         if max_cost is not None and node is not None:
             raise ValueError("pass max_cost or node, not both: a given node carries its own limit")
-        self.node = node or AgentNode(max_cost)  # this agent's node; a new root unless a parent's tree is given
-        self.usage: list[ModelCall] = []  # one per paid model call, in call order
+        self.node = node or AgentNode(max_cost)
+        self.usage: list[ModelCall] = []
 
         if compact_at is not None and compact_at > context_window // 2:
             raise ValueError(f"compact_at must leave room for the summary call: at most {context_window // 2}")
@@ -155,13 +194,13 @@ class Agent:
         self.keep_first = keep_first
         self.keep_last = keep_last
         self.context_window = context_window
-        self.head_end: int | None = None  # index just after the head marker; nothing before it is ever removed
-        self.compactions: list[dict] = []  # one record per compaction attempt that got past the checks
+        self.head_end: int | None = None
+        self.compactions: list[dict] = []
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
         self.last_request: ChatRequest | None = None
         self._interrupt = threading.Event()
-        # The kinds of subagent it may start; runs exist only once the model calls spawn. Waits watch _interrupt.
+        # Runs exist only once the model calls spawn. Waits watch _interrupt.
         self.subagents = Subagents(subagent_profiles, self.node, self._interrupt) if subagent_profiles else None
         # Every tool the model can call, as (validating wrapper, schema) by name. Should never be changed: the schemas
         # sit near the top of the prompt, so any change would invalidate the cache.
@@ -178,12 +217,12 @@ class Agent:
 
     @property
     def total_cost(self) -> float:
-        """USD spent on model calls this session."""
+        """USD this agent has spent on model calls."""
         return sum(call.cost or 0 for call in self.usage)
 
     @property
     def max_cost(self) -> float | None:
-        """This agent's limit in USD: its node's. Settable, e.g. to raise it mid-session."""
+        """This agent's limit in USD, which is its node's; settable."""
         return self.node.limit
 
     @max_cost.setter
@@ -192,13 +231,15 @@ class Agent:
 
     @property
     def over_budget(self) -> bool:
-        """True once this agent's node, or any ancestor's, has spent its limit."""
+        """Whether this agent's node, or an ancestor's, has spent its limit."""
         return self.node.exhausted
 
     @property
     def context_tokens(self) -> int:
-        """Tokens the next request's prompt will take: the last call's prompt and completion, plus an estimate
-        for the messages added since."""
+        """Tokens the next request's prompt will take.
+
+        It's the last call's prompt and completion as measured, plus an estimate for the messages added since.
+        """
         measured, messages = self._measured, self.messages  # read once: another thread may be running the turn
         if measured is None:  # no call yet: estimate the whole transcript and the tool schemas
             return estimate_tokens(self._tool_schemas()) + sum(message_tokens(m) for m in messages)
@@ -207,30 +248,43 @@ class Agent:
 
     @property
     def context_history(self) -> list[tuple[Message, ...]]:
-        """Every context the session has had: the one before each compaction, then the current one."""
+        """Every context the agent has had: one per compaction, then the current one."""
         return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
     def interrupt(self):
-        """Stop the turn once the model call or tool call in flight returns. The reply's tool calls that haven't
-        started are not run.
+        """Stops the turn once the model call or tool call in flight returns.
 
-        Safe to call from another thread or a signal handler.
+        The reply's tool calls that haven't started are not run. Safe to call from another thread or a signal
+        handler.
         """
         self._interrupt.set()
 
     def close(self) -> None:
-        """Stop every subagent run and wait for them, then release what the tools hold (background jobs,
-        containers) by running `cleanup`."""
+        """Stops every subagent run and waits for them, then runs `cleanup`.
+
+        `cleanup` releases what the tools hold, such as background jobs and containers.
+        """
         if self.subagents:  # first: no run outlives its parent
             self.subagents.close()
         for fn in self.cleanup:
             fn()
 
     def run_turn(self, user_input: str) -> TurnEnd:
-        """Add the user's message (with a command's output, if it starts with one, and any background subagent
-        results nobody has read), then call the model until it answers. Returns how the turn ended.
+        """Runs one turn on `user_input`, until the model answers or the turn stops.
 
-        Emits `TurnStarted`, then exactly one `TurnEnded`, also when the turn raises."""
+        Adds the user's message, with a command's output if it starts with `/name` and any background subagent
+        results not yet delivered, then calls the model until it answers. Emits `TurnStarted`, then exactly one
+        `TurnEnded`, also when the turn raises.
+
+        Args:
+            user_input: The user's message.
+
+        Returns:
+            "answered", or why the turn stopped early.
+
+        Raises:
+            MalformedResponse: A model response couldn't be used.
+        """
         self.node.emit(TurnStarted(path=self.node.path, text=user_input))
         end: TurnEnd | None = None
         error: str | None = None
@@ -261,7 +315,14 @@ class Agent:
         return "answered"
 
     def step(self) -> None:
-        """One model call on the current context: append its reply, then run its tool calls."""
+        """Makes one model call on the current context, then runs the reply's tool calls.
+
+        The reply and each tool result are appended to `messages`.
+
+        Raises:
+            MalformedResponse: The response couldn't be used.
+            TurnStopped: The turn was interrupted between tool calls.
+        """
         completion = self._call(self._build_request())
         usage = completion.usage
         # The prompt plus the reply: measured before the append, so the reply's event carries the measured size.
@@ -271,11 +332,16 @@ class Agent:
         self._run_tool_calls(completion.message.tool_calls)
 
     def compact(self, force: bool = False) -> str:
-        """Replace the middle of the conversation with a summary written by the model. The first `keep_first` and
-        last `keep_last` turns are kept as they are. Call it between turns.
+        """Replaces the middle of the transcript with a summary the model writes.
 
-        Does nothing if the context is under `compact_at`, or if compacting couldn't bring it under; `force` skips
-        both checks. Returns "compacted", or why the transcript was left unchanged. `interrupt()` cancels it.
+        The first `keep_first` and last `keep_last` turns are kept as they are. Call it between turns;
+        `interrupt()` cancels it.
+
+        Args:
+            force: Compact even if the context is under `compact_at`, or if compacting couldn't bring it under.
+
+        Returns:
+            "compacted", or why the transcript was left unchanged.
         """
         self._interrupt.clear()
         if self.over_budget:
@@ -309,7 +375,7 @@ class Agent:
                 )
 
     def _compact(self, record: dict, messages: tuple[Message, ...], region: tuple[int, int], force: bool) -> str:
-        """`compact` from the point its attempt is recorded: sets `record["status"]` and returns it."""
+        """Runs a recorded compaction attempt; sets `record["status"]` and returns it."""
         start, end = region
         head, replaced, tail = messages[:start], messages[start:end], messages[end:]
         tokens_before = record["tokens_before"]
@@ -353,7 +419,9 @@ class Agent:
         return record["status"]
 
     def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
-        """The one place the agent calls the model. Books the call, and warns if the response reported no cost.
+        """Calls the model; the only place the agent does.
+
+        Books the call, and logs a warning if the response reported no cost.
 
         Raises:
             MalformedResponse: The response couldn't be used. The call isn't booked.
@@ -366,15 +434,19 @@ class Agent:
         return completion
 
     def _book(self, completion: Completion, kind: str | None) -> ModelCall:
-        """Record a paid call in `usage` and charge it to the budget."""
+        """Records a paid call in `usage` and charges it to the node."""
         call = ModelCall.from_completion(completion, path=self.node.path, kind=kind)
         self.usage.append(call)
         self.node.charge(call)
         return call
 
     def _all_tools(self) -> dict[str, Callable]:
-        """`tool_map` plus the agent's own tools. Raises on a tool not marked `@tool`, and on one named like one of
-        the agent's, which would otherwise silently replace it."""
+        """Returns `tool_map` plus the agent's own tools.
+
+        Raises:
+            ValueError: A tool isn't marked `@tool`, or is named like one of the agent's own, which it would
+                otherwise silently replace.
+        """
         own: dict[str, Callable] = {}
         own |= self.skills.tools()
         if self.subagents:
@@ -393,14 +465,14 @@ class Agent:
         return self.tool_map | own
 
     def _build_request(self, *extra: Message) -> ChatRequest:
-        """The request for the current transcript, plus any messages appended for this call only."""
+        """Builds the request for the transcript, plus `extra` for this call only."""
         return ChatRequest(self.model, (*self.messages, *extra), tuple(self._tool_schemas()), self.reasoning)
 
     def _tool_schemas(self) -> list[dict]:
         return [schema for _, schema in self._tools.values()]
 
     def _run_command(self, user_input: str) -> str:
-        """The user's message; if it starts with `/name` for a command, run it and append its output."""
+        """Returns the message, with a command's output appended if it starts with one."""
         first, _, rest = user_input.strip().partition(" ")
         command = self.commands.get(first[1:]) if first.startswith("/") else None
         if command is None:  # not a command, or an unknown `/foo`: plain text
@@ -411,10 +483,12 @@ class Agent:
         return f'{user_input}\n\n<command name="{first[1:]}">\n{output}\n</command>'
 
     def _loop(self) -> None:
-        """Call the model until it answers, running the tools it calls. Raises `TurnStopped` if the turn has to end
-        first.
+        """Calls the model until it answers, running the tools it calls.
 
-        Once the model has answered, compact the context if it's over `compact_at`.
+        Once the model has answered, compacts the context if it's over `compact_at`.
+
+        Raises:
+            TurnStopped: The turn has to end before the model answers.
         """
         for calls in itertools.count():
             if self.node.cancelled:  # before the budget: a cancelled one also counts as spent
@@ -435,8 +509,13 @@ class Agent:
                 raise TurnStopped("interrupted")
 
     def _run_tool_calls(self, calls: tuple[ToolCall, ...]) -> None:
-        """Append one result per call, in call order. If the turn is stopped part-way, the calls left get `NOT_RUN`:
-        a request can't hold a call without a result."""
+        """Appends one result per call, in call order.
+
+        If the turn is stopped part-way, the calls left get `NOT_RUN`: a request can't hold a call without a result.
+
+        Raises:
+            TurnStopped: The turn was interrupted between calls.
+        """
         done = 0
         try:
             for call in calls:
@@ -452,13 +531,22 @@ class Agent:
         self._append(ToolMessage(tool_call_id=call.id, content=content))
 
     def _append(self, message: Message) -> None:
-        """The only way `messages` grows, so a client can rebuild the transcript from the events."""
+        """Appends `message` to `messages` and emits it as `MessageAdded`.
+
+        Use it for every append, so the events stay enough to rebuild the transcript.
+        """
         self.messages = (*self.messages, message)
         self.node.emit(MessageAdded(path=self.node.path, message=message, context_tokens=self.context_tokens))
 
     def _run_tool(self, call: ToolCall) -> str:
-        """A call's result: the tool's output, or what `approve` gave instead if the tool needs approval. Errors
-        (bad JSON, invalid arguments, failures) are returned too, so the model can retry."""
+        """Runs one tool call and returns its result.
+
+        If the tool needs approval, `approve` may give the result instead. Errors (bad JSON, invalid arguments,
+        failures) are returned as the result too, so the model can retry.
+
+        Raises:
+            RuntimeError: The tool needs approval but the agent has no `approve`.
+        """
         name = call.function.name
         tool = self._tools.get(name)
         if tool is None:

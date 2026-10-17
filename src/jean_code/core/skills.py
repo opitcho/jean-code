@@ -1,6 +1,7 @@
-"""Skill folders: a SKILL.md (YAML frontmatter plus instructions) and the files bundled with it.
+"""Skills: folders of instructions a model loads when it needs them.
 
-A skill loads in three levels, so the model only pays for what it uses:
+A skill folder holds a SKILL.md (YAML frontmatter plus instructions) and the files bundled with it. `Skills` holds
+an agent's skills. A skill loads in three levels, so the model only pays for what it uses:
     1. its name and description, listed in the system prompt (`Skills.prompt`)
     2. its SKILL.md body, when the model calls `load_skill` or the user types `/name` (`Skills.load_skill`)
     3. its bundled files, one at a time through `read_skill_file` (`Skills.read_skill_file`)
@@ -18,7 +19,13 @@ from jean_code.core.tool_schema import tool
 
 @dataclass
 class Skill:
-    """A skill folder: SKILL.md metadata plus the folder holding its instructions and files."""
+    """A skill folder and its SKILL.md metadata.
+
+    Attributes:
+        name: The skill's name: the frontmatter's, or else the folder's.
+        description: What it's for, from the frontmatter.
+        path: Its folder.
+    """
 
     name: str
     description: str
@@ -26,7 +33,14 @@ class Skill:
 
 
 def split_frontmatter(text: str) -> tuple[dict, str]:
-    """Split a SKILL.md into its YAML frontmatter and its body."""
+    """Splits a SKILL.md into its YAML frontmatter and its body.
+
+    Args:
+        text: The file's text.
+
+    Returns:
+        The frontmatter as a dict (empty if there's none), and the body.
+    """
     match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)(.*)", text, re.DOTALL)
     if match is None:
         return {}, text
@@ -34,7 +48,13 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def skill_files(skill_dir: Path) -> list[Path]:
-    """Files bundled with a skill, relative to its folder, skipping SKILL.md and hidden or dunder paths."""
+    """Returns the files bundled with a skill, relative to its folder.
+
+    SKILL.md and hidden or dunder paths are left out.
+
+    Args:
+        skill_dir: The skill's folder.
+    """
     files = []
     for path in sorted(skill_dir.rglob("*")):
         rel = path.relative_to(skill_dir)
@@ -45,7 +65,14 @@ def skill_files(skill_dir: Path) -> list[Path]:
 
 
 def discover_skills(skills_dir: str | Path) -> dict[str, Skill]:
-    """Read the metadata of every `<skills_dir>/<name>/SKILL.md`, keyed by skill name."""
+    """Reads the metadata of every `<skills_dir>/<name>/SKILL.md`.
+
+    Args:
+        skills_dir: The folder of skill folders.
+
+    Returns:
+        The skills, by name.
+    """
     skills = {}
     for skill_md in sorted(Path(skills_dir).glob("*/SKILL.md")):
         meta, _ = split_frontmatter(skill_md.read_text())
@@ -55,7 +82,11 @@ def discover_skills(skills_dir: str | Path) -> dict[str, Skill]:
 
 
 def instructions(skill: Skill) -> str:
-    """A skill's SKILL.md body, followed by the list of its other files."""
+    """Returns a skill's SKILL.md body, followed by the list of its other files.
+
+    Args:
+        skill: The skill.
+    """
     _, body = split_frontmatter((skill.path / "SKILL.md").read_text())
     files = skill_files(skill.path)
     if files:
@@ -65,7 +96,15 @@ def instructions(skill: Skill) -> str:
 
 
 def read_file(skill: Skill, path: str) -> str:
-    """A file bundled with a skill; raises ValueError for paths outside its folder."""
+    """Returns the text of a file bundled with a skill.
+
+    Args:
+        skill: The skill.
+        path: The file's path, relative to the skill's folder.
+
+    Raises:
+        ValueError: `path` isn't a file in the skill's folder.
+    """
     root = skill.path.resolve()
     target = (root / path).resolve()
     if not target.is_relative_to(root) or not target.is_file():
@@ -74,18 +113,28 @@ def read_file(skill: Skill, path: str) -> str:
 
 
 class Skills:
-    """An agent's skills: the listing for its system prompt, the two tools its model calls, and the `/name` commands.
+    """An agent's skills, with their prompt listing, tools and `/name` commands.
 
     Holds no transcript: whether a skill's instructions are still in context is the model's to judge. A skill can be
     loaded again, e.g. after compaction summarized its instructions away.
+
+    Args:
+        skills_dir: The folder of skill folders; None for no skills.
+
+    Attributes:
+        catalog: The skills, by name.
+        loaded: The names of the skills loaded so far, first load first.
     """
 
     def __init__(self, skills_dir: str | Path | None):
         self.catalog: dict[str, Skill] = discover_skills(skills_dir) if skills_dir else {}
-        self.loaded: list[str] = []  # names loaded this session, first load first; for UIs
+        self.loaded: list[str] = []
 
     def prompt(self) -> str:
-        """The level-1 listing for the system prompt: names and descriptions only. Empty without skills."""
+        """Returns the level-1 listing for the system prompt: names and descriptions.
+
+        It's empty without skills.
+        """
         if not self.catalog:
             return ""
         lines = [
@@ -98,13 +147,16 @@ class Skills:
         return "\n".join(lines)
 
     def tools(self) -> dict[str, Callable]:
-        """The tools to give the model, by name; none without skills."""
+        """Returns the tools to give the model, by name; none without skills."""
         if not self.catalog:
             return {}
         return {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
 
     def commands(self) -> dict[str, Callable[[str], str | None]]:
-        """`/name` for each skill, as a function of the rest of the line: loads the skill."""
+        """Returns a `/name` command per skill, which loads the skill.
+
+        Each is a function of the rest of the line, which it ignores.
+        """
         return {
             # name=name binds each name now: a closure would see only the loop's last one
             name: lambda rest, name=name: self.load_skill(name)

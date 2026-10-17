@@ -1,6 +1,7 @@
-"""Where agents' logs go on disk: a folder per process, a folder per agent tree in it, and a file name per agent.
+"""Where agents' logs go on disk.
 
-Nothing is created until a path is asked for, so a process that logs nothing leaves no folder.
+There's a folder per process, a folder per agent tree in it, and a file per agent; `process_logs` is this
+process's. Nothing is created until a path is asked for, so a process that logs nothing leaves no folder.
 """
 
 import itertools
@@ -15,10 +16,13 @@ from jean_code.core.node import AgentNode
 
 
 class ProcessLogs:
-    """This process's log folder, `<root>/<YYYYmmdd-HHMMSS>-<pid>/`, with one numbered folder per agent tree in it.
+    """A process's log folder, with one numbered folder per agent tree in it.
 
-    An agent tree is a root agent and every subagent below it. Trees are numbered from 1 in the order they first ask
-    for a path. Thread-safe: subagents ask from their own threads.
+    The folder is `<root>/<YYYYmmdd-HHMMSS>-<pid>/`. An agent tree is a root agent and every subagent below it;
+    trees are numbered from 1 in the order they first ask for a path. Thread-safe.
+
+    Args:
+        root: The folder the process folders go in; kept as `root`.
     """
 
     def __init__(self, root: Path):
@@ -36,7 +40,11 @@ class ProcessLogs:
             return self._process_dir()
 
     def tree_dir(self, node: AgentNode) -> Path:
-        """The folder of the agent tree `node` is in, created on first use."""
+        """Returns the folder of the agent tree `node` is in, created on first use.
+
+        Args:
+            node: Any node of the tree.
+        """
         root = node.root
         with self._lock:
             if (tree := self._trees.get(root)) is None:
@@ -46,12 +54,18 @@ class ProcessLogs:
             return tree
 
     def agent_file(self, node: AgentNode, suffix: str = ".jsonl") -> Path:
-        """The file of the agent at `node`, in its tree's folder, e.g. `3/main-1-2.jsonl`. The folder exists; the
-        file is the caller's to create."""
+        """Returns the log file of the agent at `node`, e.g. `3/main-1-2.jsonl`.
+
+        The file is in its tree's folder, which exists; creating the file is the caller's job.
+
+        Args:
+            node: The agent's node.
+            suffix: The file's extension.
+        """
         return self.tree_dir(node) / (node.path.replace("/", "-") + suffix)
 
     def _process_dir(self) -> Path:
-        """The caller holds the lock."""
+        """Returns the process's folder, created on first use; the caller holds the lock."""
         if self._dir is None:
             dir = self.root / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
             dir.mkdir(parents=True)  # no exist_ok: a second owner of this process's folder is a bug

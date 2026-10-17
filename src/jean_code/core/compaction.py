@@ -1,9 +1,11 @@
-"""Compaction's messages and markers, and the parts of compaction that only read the transcript: where the turns
-start, which messages a compaction replaces, the prompt asking for the summary, and whether the reply is usable.
+"""Compaction's texts, and the parts of compaction that only read the transcript.
 
-`Agent.compact` does the rest: the summary call, and swapping in the new transcript. The texts here are static,
-so the prompt prefix stays cached. The marker and the summary are user messages the agent writes; their opening
-tags tell them apart from the user's own messages.
+The texts are the head marker, the summary message and the prompt asking for the summary. They are static, so the
+prompt prefix stays cached. The marker and the summary are user messages the agent writes; their opening tags
+(`HEAD_MARKER_TAG`, `SUMMARY_TAG`) tell them apart from the user's own messages.
+
+The functions find where turns start (`turn_starts`) and which messages a compaction replaces (`middle`), write
+the summary prompt (`summary_prompt`), and check whether the reply is usable (`summary_failure`).
 """
 
 from collections.abc import Sequence
@@ -49,27 +51,56 @@ EARLIER_SUMMARY_NOTE = (
 
 
 def is_synthetic(message: Message) -> bool:
-    """True for the user messages the agent writes itself: the head marker and summaries. They aren't the user's
-    turns, so compaction doesn't count them as turns."""
+    """Returns whether the agent wrote `message` itself: the head marker or a summary.
+
+    They aren't the user's turns, so compaction doesn't count them as turns.
+
+    Args:
+        message: Any message.
+    """
     return isinstance(message, UserMessage) and message.content.startswith((HEAD_MARKER_TAG, SUMMARY_TAG))
 
 
 def is_summary(message: Message) -> bool:
-    """True for a summary from an earlier compaction, which the next compaction folds into its own."""
+    """Returns whether `message` is a summary from an earlier compaction.
+
+    The next compaction folds it into its own.
+
+    Args:
+        message: Any message.
+    """
     return isinstance(message, UserMessage) and message.content.startswith(SUMMARY_TAG)
 
 
 def ordinal(n: int) -> str:
+    """Returns the `n`th-from-last position in words: "last", "2nd-to-last", ….
+
+    Args:
+        n: The position from the end, from 1.
+    """
     return "last" if n == 1 else f"{n}{ {2: 'nd', 3: 'rd'}.get(n, 'th') }-to-last"
 
 
 def turn_starts(messages: Sequence[Message]) -> list[int]:
-    """Indices of the user's own messages, each of which starts a turn."""
+    """Returns the indices of the user's own messages, each of which starts a turn.
+
+    Args:
+        messages: A transcript.
+    """
     return [i for i, m in enumerate(messages) if isinstance(m, UserMessage) and not is_synthetic(m)]
 
 
 def middle(messages: Sequence[Message], head_end: int | None, keep_last: int) -> tuple[int, int] | None:
-    """(start, end) of the messages a compaction would replace, or None if they hold no turn of the user's."""
+    """Returns the span of messages a compaction would replace.
+
+    Args:
+        messages: The transcript.
+        head_end: The index just after the head marker; None if there's none yet.
+        keep_last: Turns at the end that are kept.
+
+    Returns:
+        `(start, end)` of the span, or None if it holds no turn of the user's.
+    """
     starts = turn_starts(messages)
     if head_end is None or len(starts) < keep_last:
         return None
@@ -80,7 +111,19 @@ def middle(messages: Sequence[Message], head_end: int | None, keep_last: int) ->
 
 
 def summary_prompt(replaced: Sequence[Message], tail: Sequence[Message], keep_last: int) -> str:
-    """The prompt asking the model to summarize `replaced`, naming where the kept tail begins."""
+    """Returns the prompt asking the model to summarize `replaced`.
+
+    The prompt names where the kept tail begins, and asks to fold in an earlier summary if `replaced` starts
+    with one.
+
+    Args:
+        replaced: The messages the summary replaces.
+        tail: The messages kept after them, starting with a turn of the user's.
+        keep_last: How many turns `tail` holds.
+
+    Raises:
+        RuntimeError: `tail` doesn't start with a user message.
+    """
     first = tail[0]
     if not isinstance(first, UserMessage):  # `middle()` cuts at a turn start, so this can't happen
         raise RuntimeError("compaction's kept tail doesn't start with a user turn")
@@ -94,7 +137,15 @@ def summary_prompt(replaced: Sequence[Message], tail: Sequence[Message], keep_la
 
 
 def summary_failure(completion: Completion, interrupted: bool) -> str | None:
-    """Why the summary call's reply can't replace the middle, as a "failed: ..." status, or None if it can."""
+    """Returns why the summary reply can't replace the middle, or None if it can.
+
+    Args:
+        completion: The summary call's reply.
+        interrupted: Whether the agent was interrupted during the call.
+
+    Returns:
+        A "failed: ..." status, or None.
+    """
     if completion.message.tool_calls:
         return "failed: the model called a tool instead of summarizing"
     if completion.finish_reason == "length":

@@ -1,8 +1,7 @@
 """Accounting for model calls: what each call used and cost.
 
-`ModelCall` is one paid model call as the agent books it, `append_log` writes calls to a JSON Lines log
-(`config.USAGE_LOG`), and `usage_line` sums them into the line the REPL prints after each turn. The agent tree that
-charges them, with its limits, is in node.py.
+`ModelCall` is one paid model call. `append_log` writes calls to a JSON Lines log, and `usage_line` and
+`breakdown_lines` sum them into lines for the user.
 """
 
 import json
@@ -15,24 +14,45 @@ from jean_code.core.llm import Completion, TokenDetails, Usage
 
 @dataclass(frozen=True)
 class ModelCall:
-    """One paid model call, as `agent.usage`, the agent's node and the usage log hold it. Unknown token counts read
-    as 0; an unknown cost stays None, so it's never mistaken for a free call."""
+    """One paid model call: what it used and what it cost.
+
+    Unknown token counts read as 0; an unknown cost stays None, so it's never mistaken for a free call.
+
+    Attributes:
+        generation_id: The response's id.
+        provider: Who served it, if reported.
+        model: The model that answered.
+        created: When it was made, in Unix seconds.
+        cost: What it cost, in USD; None if unknown.
+        path: The path of the node charged, e.g. "main/1".
+        prompt_tokens: Tokens in the prompt.
+        cached_tokens: Prompt tokens read from the cache.
+        completion_tokens: Tokens in the reply.
+        reasoning_tokens: Reply tokens spent reasoning.
+        kind: "compaction" for summary calls; None for the others.
+    """
 
     generation_id: str
     provider: str | None
     model: str
-    created: int  # Unix seconds
+    created: int
     cost: float | None
-    path: str  # path of the node charged, e.g. "main/1"
+    path: str
     prompt_tokens: int = 0
     cached_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
-    kind: str | None = None  # "compaction" for summary calls
+    kind: str | None = None
 
     @classmethod
     def from_completion(cls, completion: Completion, path: str, kind: str | None = None) -> "ModelCall":
-        """The call `completion` answered, charged to the node at `path`."""
+        """Returns the call `completion` answered, charged to the node at `path`.
+
+        Args:
+            completion: The parsed response.
+            path: The node's path.
+            kind: "compaction" for summary calls.
+        """
         usage = completion.usage or Usage()
         return cls(
             completion.generation_id,
@@ -54,8 +74,11 @@ class ModelCall:
         return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(self.created))
 
     def log_line(self) -> str:
-        """The usage log's JSON line: the keys, order and values the log has always had, so old and new lines sum
-        together. `kind` and `budget` (the path) are left out when empty."""
+        """Returns the call as the usage log's JSON line.
+
+        The keys, order and values are the ones the log has always had, so old and new lines sum together. `kind`
+        and `budget` (the path) are left out when empty.
+        """
         line = {
             "time": self.time,
             "generation_id": self.generation_id,
@@ -73,10 +96,14 @@ class ModelCall:
 
 
 def append_log(path: str | Path, calls: list[ModelCall]) -> None:
-    """Append model calls to a JSON Lines log, one `ModelCall.log_line` per line.
+    """Appends model calls to a JSON Lines log, one `ModelCall.log_line` per line.
 
-    The log only grows, so summing its `cost` fields gives the spend across all sessions.
-    The file and its parent folders are created if missing. Nothing is written if `calls` is empty.
+    The log only grows, so summing its `cost` fields gives the spend across all sessions. The file and its parent
+    folders are created if missing.
+
+    Args:
+        path: The log file.
+        calls: The calls to append; nothing is written if it's empty.
     """
     if not calls:
         return
@@ -88,15 +115,19 @@ def append_log(path: str | Path, calls: list[ModelCall]) -> None:
 
 
 def human(n: int) -> str:
-    """Format a token count briefly: `999` stays `999`, `3400` becomes `3.4k`."""
+    """Formats a token count briefly: `999` stays `999`, `3400` becomes `3.4k`.
+
+    Args:
+        n: The token count.
+    """
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 def usage_line(calls: list[ModelCall]) -> str:
-    """Sum some model calls into one line for the user, e.g. `$0.0012 · 3.4k in (82% cached) · 210 out`.
+    """Sums model calls into one line for the user.
 
-    Calls with an unknown cost are left out of the dollar amount and flagged: `+?` after the known
-    amount, or `$?` if no call's cost is known.
+    For example `$0.0012 · 3.4k in (82% cached) · 210 out`. Calls with an unknown cost are left out of the dollar
+    amount and flagged: `+?` after the known amount, or `$?` if no call's cost is known.
 
     Args:
         calls: Model calls to sum, usually the calls of one turn: a slice of `AgentNode.journal`.
@@ -117,7 +148,16 @@ def usage_line(calls: list[ModelCall]) -> str:
 
 
 def breakdown_lines(rows: list[dict]) -> list[str]:
-    """`AgentNode.breakdown()` rows as a table, most expensive first: which agent took the money, and why."""
+    """Formats `AgentNode.breakdown` rows as a table, most expensive first.
+
+    The table shows which agent took the money, and why.
+
+    Args:
+        rows: The rows.
+
+    Returns:
+        The table's lines, header first.
+    """
     lines = [
         f"{'path':<12} {'task':<40} {'calls':>5} {'prompt':>7} {'cached':>6} {'peak ctx':>8} "
         f"{'out':>6} {'reason':>6} {'cost':>9}"

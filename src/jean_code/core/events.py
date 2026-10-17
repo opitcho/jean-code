@@ -16,29 +16,55 @@ TurnEnd = Literal["answered", "interrupted", "budget spent", "cancelled", "conte
 
 
 class Event(BaseModel):
+    """Something an agent did, as it reports it.
+
+    Attributes:
+        path: The emitting agent's node, e.g. "main/1".
+    """
+
     model_config = ConfigDict(frozen=True)
-    path: str  # the emitting agent's node, e.g. "main/1"
+    path: str
 
 
 class AgentAdded(Event):
-    """An agent was built on the node at `path`. Comes before any other event from that path."""
+    """An agent was built on the node at `path`.
+
+    It comes before any other event from that path.
+
+    Attributes:
+        profile: What kind of agent it is; "" for the root.
+        task: What its node was created for; "" for the root.
+        model: Its model id.
+    """
 
     type: Literal["agent_added"] = "agent_added"
-    profile: str  # what kind of agent: "" for the root
-    task: str  # what its node was created for: "" for the root
+    profile: str
+    task: str
     model: str
 
 
 class MessageAdded(Event):
-    """`message` was appended to the agent's transcript."""
+    """`message` was appended to the agent's transcript.
+
+    Attributes:
+        message: The message appended.
+        context_tokens: The agent's context size with the message in it.
+    """
 
     type: Literal["message"] = "message"
     message: Message
-    context_tokens: int  # the agent's context size with the message in it
+    context_tokens: int
 
 
 class Delta(Event):
-    """A piece of a reply as it streams in; the reply itself follows as a `MessageAdded`."""
+    """A piece of a reply as it streams in.
+
+    The whole reply follows as a `MessageAdded`.
+
+    Attributes:
+        kind: Whether the piece is reply text or reasoning.
+        text: The piece.
+    """
 
     type: Literal["delta"] = "delta"
     kind: Literal["content", "reasoning"]
@@ -46,12 +72,24 @@ class Delta(Event):
 
 
 class TurnStarted(Event):
+    """A turn started.
+
+    Attributes:
+        text: The user's input, before any command expands it.
+    """
+
     type: Literal["turn_started"] = "turn_started"
-    text: str  # the user's input, before any command expands it
+    text: str
 
 
 class TurnEnded(Event):
-    """Every `TurnStarted` gets exactly one, however the turn ended. `end` is None when the turn raised."""
+    """A turn ended; every `TurnStarted` gets exactly one, however the turn ends.
+
+    Attributes:
+        end: How the turn ended; None when it raised.
+        error: What it raised, if it did.
+        context_tokens: The agent's context size at the end.
+    """
 
     type: Literal["turn_ended"] = "turn_ended"
     end: TurnEnd | None
@@ -60,8 +98,20 @@ class TurnEnded(Event):
 
 
 class Compaction(Event):
-    """A compaction attempt that `agent.compactions` recorded. Only status "compacted" changes the transcript:
-    `messages[start:start + removed]` was replaced by `summary`."""
+    """A compaction attempt that got past the checks.
+
+    Only status "compacted" changed the transcript: `messages[start:start + removed]` was replaced by `summary`.
+
+    Attributes:
+        status: "compacted", or why the transcript was left unchanged.
+        start: The index of the first message replaced.
+        removed: How many messages were replaced.
+        summary: The summary message, if compacted.
+        tokens_before: The context size before.
+        tokens_after: The context size after, if compacted.
+        cost: The summary call's cost, if the attempt made one and it reported a cost.
+        context_tokens: The agent's context size now.
+    """
 
     type: Literal["compaction"] = "compaction"
     status: str
@@ -70,12 +120,16 @@ class Compaction(Event):
     summary: UserMessage | None = None
     tokens_before: int
     tokens_after: int | None = None
-    cost: float | None = None  # the summary call's, if the attempt made one and it reported a cost
+    cost: float | None = None
     context_tokens: int
 
 
 class Charged(Event):
-    """A paid model call, charged to the node at `path`."""
+    """A paid model call, charged to the node at `path`.
+
+    Attributes:
+        call: What the call used and cost.
+    """
 
     type: Literal["charged"] = "charged"
     call: ModelCall

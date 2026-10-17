@@ -55,13 +55,19 @@ select = [
     "S",       # bandit
     "T20",     # print outside the front-ends
     "PLE", "PLW",  # pylint errors and warnings
+    "D",       # docstrings, Google style (CLAUDE.md)
 ]
 ignore = [
     "RUF001", "RUF002", "RUF003",  # ambiguous unicode: curly quotes, dashes and ✓/⚠ are deliberate (agents/research.py)
+    "D1",  # a docstring isn't required: obvious helpers go without
 ]
 
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is how pytest checks
+"src/jean_code/{session,agents,tools,ui}/**" = ["D"]  # TEMPORARY: docstring rework in progress
+"tests/**" = ["S101", "D"]  # assert is how pytest checks; TEMPORARY D: docstring rework in progress
 "tests/test_research.py" = ["E501"]  # verbatim quotes from real pages, split across literals
 "src/jean_code/ui/repl.py" = ["T20"]  # the terminal front-end prints
 "src/jean_code/tools/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH

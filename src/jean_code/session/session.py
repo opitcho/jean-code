@@ -1,11 +1,17 @@
-"""`Session`: drives one agent tree for any number of clients (the REPL, Streamlit).
+"""The one interface clients drive an agent through.
 
-Commands (`send`, `cancel`, `answer`, `compact`, `configure`, `reset`, `close`) come from any thread and return at
-once; what they cause arrives as events. The session is the root node's listener: every agent in the tree emits to
-`_publish`, which folds the event into the state and queues it for each subscriber, under one lock.
+`Session` holds the agent; a client sends it commands and follows it through a `Subscription`. `build_agent` is how
+a session builds its agent from `Settings` by default.
 
-A turn or a compaction runs on the session's job thread, between `JobStarted` and `JobEnded`. Tool approvals wait
-on that thread until a client answers them.
+Typical usage:
+
+    session = Session(Settings(kind="coding"))
+    with session.subscribe() as (state, events):
+        session.send("Fix the failing test")
+        for event in events:
+            if isinstance(event, JobEnded):
+                break
+    session.close()
 """
 
 import itertools
@@ -86,7 +92,11 @@ class Subscription:
 
 
 class Session:
-    """Drives one agent tree for any number of clients. Commands from any thread; events pushed to subscribers.
+    """One agent, with its subagents, shared by any number of clients.
+
+    Commands can be called from any thread and return at once; what they cause reaches every subscriber as events.
+    A turn or a compaction is a job: one runs at a time, between `JobStarted` and `JobEnded`, and starting another
+    meanwhile raises `Busy`. A tool call that needs approval waits until a client calls `answer`.
 
     Args:
         settings: What to build the agent from.

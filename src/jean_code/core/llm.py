@@ -1,9 +1,9 @@
-"""The chat-completions wire format: typed messages and usage, and OpenRouter clients, plain and streaming.
+"""The chat-completions wire format, and the OpenRouter clients that speak it.
 
-`parse_completion` reads a response and `_parse_chunk` a streamed chunk, and `render_request` and `render_message`
-are the only code that writes one; a streamed reply is rebuilt from its chunks by `_join_chunks`. The message types
-mirror the OpenAI chat format field for field and keep unknown fields as pydantic extras, so a message renders back
-to exactly the dict it was parsed from.
+The message types (`Message`), `Usage` and `ChatRequest` mirror the OpenAI chat format field for field, and keep
+unknown fields as pydantic extras, so a message renders back to exactly the dict it was parsed from.
+`parse_completion` reads a response; `render_request` and `render_message` write one. `ChatClient` sends
+requests, and `StreamingClient` can also stream the reply.
 """
 
 import json
@@ -24,18 +24,22 @@ RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
 def _null_as(empty: object) -> BeforeValidator:
-    """Null reads as the field's empty value, as the agent has always treated it; the field keeps its plain type."""
+    """Makes null read as the field's empty value, so the field keeps its plain type."""
     return BeforeValidator(lambda value: empty if value is None else value)
 
 
 def _json_text(value: object) -> object:
-    """Arguments as the JSON text the tool boundary parses: an object from a provider that didn't encode it is
-    encoded here."""
+    """Encodes arguments a provider sent as an object into the JSON text tools parse."""
     return json.dumps(value) if isinstance(value, dict | list) else value
 
 
 class FunctionCall(BaseModel):
-    """The function a tool call names, with its arguments as the model wrote them: JSON text, parsed by the tool."""
+    """The function a tool call names, with its arguments as the model wrote them.
+
+    Attributes:
+        name: The tool's name.
+        arguments: JSON text; the tool parses it.
+    """
 
     model_config = ConfigDict(frozen=True, extra="allow")
     name: str
@@ -43,7 +47,14 @@ class FunctionCall(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """One tool call in an assistant message. Wire keys we don't use (`index`, `type`) are kept as extras."""
+    """One tool call in an assistant message.
+
+    Wire keys we don't use (`index`, `type`) are kept as extras.
+
+    Attributes:
+        id: The call's id, which its result refers to.
+        function: The tool and its arguments.
+    """
 
     model_config = ConfigDict(frozen=True, extra="allow")
     id: str
@@ -51,8 +62,16 @@ class ToolCall(BaseModel):
 
 
 class AssistantMessage(BaseModel):
-    """A model's reply, as the provider sent it. Unknown fields (`reasoning_details`, `refusal`, provider extras) are
-    kept as extras, because the provider needs them back."""
+    """A model's reply, as the provider sent it.
+
+    Unknown fields (`reasoning_details`, `refusal`, provider extras) are kept as extras, because the provider needs
+    them back.
+
+    Attributes:
+        content: The reply's text; "" if there's none.
+        reasoning: The model's reasoning text, if the provider sent it.
+        tool_calls: The tools it calls; empty for a plain reply.
+    """
 
     model_config = ConfigDict(frozen=True, extra="allow")
     role: Literal["assistant"] = "assistant"
@@ -60,22 +79,41 @@ class AssistantMessage(BaseModel):
     reasoning: str | None = None
     tool_calls: Annotated[tuple[ToolCall, ...], _null_as(())] = Field(
         default=(), exclude_if=lambda calls: not calls
-    )  # a plain reply has none
+    )
 
 
 class UserMessage(BaseModel):
+    """A message from the user, or one the agent writes in the user's place.
+
+    Attributes:
+        content: Its text.
+    """
+
     model_config = ConfigDict(frozen=True)
     role: Literal["user"] = "user"
     content: str
 
 
 class SystemMessage(BaseModel):
+    """The system prompt, as a message.
+
+    Attributes:
+        content: Its text.
+    """
+
     model_config = ConfigDict(frozen=True)
     role: Literal["system"] = "system"
     content: str
 
 
 class ToolMessage(BaseModel):
+    """A tool call's result.
+
+    Attributes:
+        tool_call_id: The id of the call it answers.
+        content: The result's text.
+    """
+
     model_config = ConfigDict(frozen=True)
     role: Literal["tool"] = "tool"
     tool_call_id: str
@@ -86,13 +124,29 @@ Message = Annotated[SystemMessage | UserMessage | AssistantMessage | ToolMessage
 
 
 class TokenDetails(BaseModel):
+    """A breakdown of a usage token count; None means not reported.
+
+    Attributes:
+        cached_tokens: Prompt tokens read from the cache.
+        reasoning_tokens: Completion tokens spent reasoning.
+    """
+
     cached_tokens: int | None = None
     reasoning_tokens: int | None = None
 
 
 class Usage(BaseModel):
-    """The provider's usage object as sent: None means "not reported", which is not the same as 0. Fields we don't
-    read (`cost_details`, `is_byok`, …) are dropped: usage is never sent back."""
+    """The provider's usage object as sent; None means "not reported", not 0.
+
+    Fields we don't read (`cost_details`, `is_byok`, …) are dropped: usage is never sent back.
+
+    Attributes:
+        prompt_tokens: Tokens in the prompt.
+        completion_tokens: Tokens in the reply.
+        cost: What the call cost, in USD.
+        prompt_tokens_details: How many of the prompt tokens were cached.
+        completion_tokens_details: How many of the reply tokens were reasoning.
+    """
 
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -103,21 +157,35 @@ class Usage(BaseModel):
 
 @dataclass(frozen=True)
 class Completion:
-    """A parsed response: the reply, why the model stopped (as sent), and what the provider says it served and
-    charged, which is everything needed to book the call."""
+    """A parsed response: everything needed to book the call.
+
+    Attributes:
+        message: The reply.
+        finish_reason: Why the model stopped, as sent.
+        generation_id: The response's id.
+        provider: Who served it; OpenRouter's field, which other endpoints leave out.
+        model: The model that answered.
+        created: When it was created, in Unix seconds.
+        usage: What the provider says it served and charged.
+    """
 
     message: AssistantMessage
     finish_reason: str | None
     generation_id: str
-    provider: str | None  # OpenRouter's field; other endpoints leave it out
+    provider: str | None
     model: str
-    created: int  # Unix seconds
+    created: int
     usage: Usage | None
 
 
 @dataclass(frozen=True)
 class TextDelta:
-    """A piece of a streamed reply as it arrives: part of the answer (`content`) or of the model's `reasoning`."""
+    """A piece of a streamed reply as it arrives.
+
+    Attributes:
+        kind: Whether it's part of the answer (`content`) or of the model's `reasoning`.
+        text: The piece.
+    """
 
     kind: Literal["content", "reasoning"]
     text: str
@@ -125,7 +193,14 @@ class TextDelta:
 
 @dataclass(frozen=True)
 class ChatRequest:
-    """One chat request. `tools` are JSON Schemas; `reasoning` is the effort ("low", "medium", "high") or None."""
+    """One chat request.
+
+    Attributes:
+        model: OpenRouter model id.
+        messages: The transcript to send.
+        tools: The tools' JSON Schemas.
+        reasoning: The effort ("low", "medium" or "high"), or None to send no setting.
+    """
 
     model: str
     messages: tuple[Message, ...]
@@ -134,7 +209,10 @@ class ChatRequest:
 
 
 class MalformedResponse(RuntimeError):
-    """The response isn't a chat completion we can use. The call isn't booked: nothing in it is trusted."""
+    """The response isn't a chat completion we can use.
+
+    Nothing in it is trusted, not even its usage.
+    """
 
 
 class _Choice(BaseModel):
@@ -154,12 +232,28 @@ class _Response(BaseModel):
 
 
 def describe(e: ValidationError) -> str:
-    """One `path: message` per problem, without the input, which can be the whole response."""
+    """Formats `e` as one `path: message` per problem, without the input.
+
+    The input is left out because it can be the whole response.
+
+    Args:
+        e: A pydantic validation error.
+    """
     return "; ".join(f"{'.'.join(map(str, err['loc'])) or '(root)'}: {err['msg']}" for err in e.errors())
 
 
 def parse_completion(data: object) -> Completion:
-    """The response as a `Completion`. Raises `MalformedResponse` naming every field that doesn't fit."""
+    """Parses a chat-completions response.
+
+    Args:
+        data: The response's JSON.
+
+    Returns:
+        The response as a `Completion`.
+
+    Raises:
+        MalformedResponse: The response doesn't fit; the message names every field that doesn't.
+    """
     if not isinstance(data, dict):
         raise MalformedResponse(f"response is not a JSON object: {type(data).__name__}")
     try:
@@ -171,16 +265,21 @@ def parse_completion(data: object) -> Completion:
 
 
 class _FunctionDelta(BaseModel):
-    """The `function` of a tool-call fragment: the call's first fragment brings the `name`, and each fragment the
-    next piece of the `arguments`."""
+    """The `function` of a tool-call fragment.
+
+    The call's first fragment brings the `name`, and each fragment the next piece of the `arguments`.
+    """
 
     name: str | None = None
     arguments: Annotated[str, _null_as("")] = ""
 
 
 class _ToolCallDelta(BaseModel):
-    """A fragment of one tool call. A call's fragments share its `index` and arrive in order: the first brings the
-    call's `id`, `type` and `name`, the later ones the rest of its `arguments`."""
+    """A fragment of one tool call.
+
+    A call's fragments share its `index` and arrive in order: the first brings the call's `id`, `type` and `name`,
+    the later ones the rest of its `arguments`.
+    """
 
     index: int
     id: str | None = None
@@ -189,8 +288,11 @@ class _ToolCallDelta(BaseModel):
 
 
 class _Delta(BaseModel):
-    """What one chunk adds to the reply; null reads as nothing added. `reasoning_details` fragments stay plain dicts,
-    kept as sent: their fields differ by provider (`text`, `summary`, encrypted `data`)."""
+    """What one chunk adds to the reply; null reads as nothing added.
+
+    `reasoning_details` fragments stay plain dicts, kept as sent: their fields differ by provider (`text`,
+    `summary`, encrypted `data`).
+    """
 
     content: Annotated[str, _null_as("")] = ""
     reasoning: Annotated[str, _null_as("")] = ""
@@ -204,7 +306,10 @@ class _ChunkChoice(BaseModel):
 
 
 class _Chunk(BaseModel):
-    """One streamed chunk. `id`, `provider`, `model` and `created` repeat on every chunk; `usage` comes on the last."""
+    """One streamed chunk.
+
+    `id`, `provider`, `model` and `created` repeat on every chunk; `usage` comes on the last.
+    """
 
     id: str
     provider: str | None = None
@@ -215,8 +320,12 @@ class _Chunk(BaseModel):
 
 
 def _parse_chunk(line: str) -> _Chunk:
-    """One `data:` line of a stream as a chunk. Raises `RuntimeError` for a provider error reported mid-stream, and
-    `MalformedResponse` for a line that isn't a chunk."""
+    """Parses one `data:` line of a stream.
+
+    Raises:
+        RuntimeError: The provider reported an error mid-stream.
+        MalformedResponse: The line isn't a chunk.
+    """
     try:
         data = json.loads(line.removeprefix("data: "))
     except ValueError as e:
@@ -232,8 +341,10 @@ def _parse_chunk(line: str) -> _Chunk:
 
 
 def _join_tool_calls(deltas: list[_Delta]) -> list[dict]:
-    """The tool calls of a streamed reply, each joined from its fragments: a new `index` starts a new call, and a
-    fragment with the last call's `index` adds to its `arguments`."""
+    """Joins a streamed reply's tool calls from their fragments.
+
+    A new `index` starts a new call, and a fragment with the last call's `index` adds to its `arguments`.
+    """
     calls: list[dict] = []
     for delta in deltas:
         for fragment in delta.tool_calls:
@@ -245,8 +356,11 @@ def _join_tool_calls(deltas: list[_Delta]) -> list[dict]:
 
 
 def _join_reasoning_details(deltas: list[_Delta]) -> list[dict]:
-    """The `reasoning_details` of a streamed reply. A fragment with the same `index` as the last entry adds to its
-    `text` (DeepSeek streams its reasoning this way); any other fragment is a new entry, kept as sent."""
+    """Joins a streamed reply's `reasoning_details` from their fragments.
+
+    A fragment with the same `index` as the last entry adds to its `text` (DeepSeek streams its reasoning this
+    way); any other fragment is a new entry, kept as sent.
+    """
     details: list[dict] = []
     for delta in deltas:
         for fragment in delta.reasoning_details:
@@ -259,8 +373,12 @@ def _join_reasoning_details(deltas: list[_Delta]) -> list[dict]:
 
 
 def _join_chunks(chunks: list[_Chunk]) -> Completion:
-    """The completion a streamed reply stands for, rebuilt from its chunks. Raises `MalformedResponse` for a stream
-    with no chunk, or a reply that isn't a valid message (a tool call without an `id` or a `name`)."""
+    """Rebuilds the completion a streamed reply stands for from its chunks.
+
+    Raises:
+        MalformedResponse: There's no chunk, or the reply isn't a valid message (a tool call without an `id` or a
+            `name`).
+    """
     if not chunks:
         raise MalformedResponse("stream ended without a chunk")
     deltas: list[_Delta] = []
@@ -291,12 +409,24 @@ def _join_chunks(chunks: list[_Chunk]) -> Completion:
 
 
 def render_message(message: Message) -> dict:
-    """The wire dict for a message: exactly what it was parsed from, with `None`s left out."""
+    """Returns the wire dict for `message`: exactly what it was parsed from.
+
+    `None`s are left out.
+
+    Args:
+        message: The message to render.
+    """
     return message.model_dump(mode="json", exclude_none=True)
 
 
 def render_request(request: ChatRequest) -> dict:
-    """The request body: the model, the rendered messages, and the reasoning effort and tools when set."""
+    """Returns the wire body for `request`.
+
+    The body holds the model and the rendered messages, plus the reasoning effort and the tools when set.
+
+    Args:
+        request: The request to render.
+    """
     body: dict = {"model": request.model, "messages": [render_message(m) for m in request.messages]}
     if request.reasoning:
         body["reasoning"] = {"effort": request.reasoning}
@@ -306,17 +436,33 @@ def render_request(request: ChatRequest) -> dict:
 
 
 class ChatBackend(Protocol):
-    """What an agent needs from a model endpoint: one chat completion per call. `ChatClient` is the real one;
-    tests pass scripted ones."""
+    """What an agent needs from a model endpoint: one chat completion per call.
 
-    def complete(self, request: ChatRequest) -> Completion: ...
+    `ChatClient` is the real one.
+    """
+
+    def complete(self, request: ChatRequest) -> Completion:
+        """Returns the completion for `request`.
+
+        Args:
+            request: The request to send.
+        """
+        ...
 
 
 class ChatClient:
-    """Sends chat completions to an OpenAI-compatible endpoint and returns the parsed response.
+    """A client for an OpenAI-compatible chat-completions endpoint.
 
-    `extra` holds request fields sent with every call (such as provider routing).
-    Failed requests are retried with backoff.
+    Failed requests are retried with backoff. The arguments it keeps are attributes of the same name.
+
+    Args:
+        base_url: The endpoint's base URL, e.g. "https://openrouter.ai/api/v1".
+        api_key: Sent as the bearer token.
+        extra: Request fields sent with every call, such as provider routing.
+        retries: How many times a request is retried on a retryable status.
+
+    Attributes:
+        http: The HTTP client the requests go through.
     """
 
     def __init__(self, base_url: str, api_key: str, extra: dict | None = None, retries: int = 3):
@@ -329,7 +475,15 @@ class ChatClient:
         )
 
     def complete(self, request: ChatRequest) -> Completion:
-        """Send `request` and return the parsed completion. Raises `MalformedResponse` for a response it can't use."""
+        """Sends `request` and returns the parsed completion.
+
+        Args:
+            request: The request to send.
+
+        Raises:
+            MalformedResponse: The response can't be used.
+            RuntimeError: The endpoint returned an HTTP error, or reported a model error.
+        """
         response = self._send({**self.extra, **render_request(request)})
         response.read()
         try:
@@ -341,8 +495,13 @@ class ChatClient:
         return parse_completion(data)
 
     def _send(self, body: dict) -> httpx.Response:
-        """POST a chat completion and return the response with its body unread: the caller reads or closes it.
-        Retries the statuses in RETRY_STATUSES with backoff; raises on any other error."""
+        """POSTs a chat completion and returns the response with its body unread.
+
+        The caller reads or closes it. Retries the statuses in `RETRY_STATUSES` with backoff.
+
+        Raises:
+            RuntimeError: The final response is an HTTP error.
+        """
         request = self.http.build_request("POST", f"{self.base_url}/chat/completions", json=body)
         attempt = 0
         while True:
@@ -358,19 +517,34 @@ class ChatClient:
         return response
 
     def credits(self) -> dict:
-        """The API key's spend and limit, from OpenRouter's /key endpoint."""
+        """Returns the API key's spend and limit, from OpenRouter's /key endpoint.
+
+        Raises:
+            httpx.HTTPStatusError: The endpoint returned an error.
+        """
         response = self.http.get(f"{self.base_url}/key")
         response.raise_for_status()
         return response.json()["data"]
 
 
 class StreamingClient(ChatClient):
-    """A `ChatClient` that can also stream a reply; `complete` and `credits` are unchanged."""
+    """A `ChatClient` that can also stream a reply."""
 
     def stream(self, request: ChatRequest) -> Iterator[TextDelta | Completion]:
-        """Send `request` with streaming on: yield each piece of reasoning and answer as it arrives, then the parsed
-        `Completion`. Nothing is sent until the first item is asked for, and stopping early closes the connection.
-        Raises like `complete`."""
+        """Sends `request` with streaming on, and yields the reply as it arrives.
+
+        Nothing is sent until the first item is asked for, and stopping early closes the connection.
+
+        Args:
+            request: The request to send.
+
+        Yields:
+            Each piece of reasoning or answer as a `TextDelta`, then the parsed `Completion`.
+
+        Raises:
+            MalformedResponse: A chunk, or the reply joined from them, can't be used.
+            RuntimeError: The endpoint returned an HTTP error, or reported a model error mid-stream.
+        """
         chunks: list[_Chunk] = []
         response = self._send({**self.extra, **render_request(request), "stream": True})
         try:
@@ -391,7 +565,14 @@ class StreamingClient(ChatClient):
 
 
 def openrouter(api_key: str | None = None) -> ChatClient:
-    """A client for OpenRouter, pinned to DeepSeek's endpoint. Reads OPENROUTER_API_KEY by default."""
+    """Returns a client for OpenRouter, pinned to DeepSeek's endpoint.
+
+    Args:
+        api_key: The OpenRouter key; `OPENROUTER_API_KEY` by default.
+
+    Raises:
+        RuntimeError: No key was given, and `OPENROUTER_API_KEY` is not set.
+    """
     api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set; run with `uv run --env-file .env ...`")

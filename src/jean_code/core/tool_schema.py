@@ -1,5 +1,7 @@
-"""Tool schemas from Python functions: what a model sees of a tool is its name, its typed parameters and its
-Google-style docstring. `@tool` marks a function as a tool; `tool_schema` builds the OpenAI tool definition for it.
+"""Tool schemas, built from Python functions.
+
+What a model sees of a tool is its name, its typed parameters and its Google-style docstring. `@tool` marks a
+function as a tool; `tool_schema` builds the OpenAI tool definition for it.
 """
 
 import inspect
@@ -14,9 +16,15 @@ DATA_KEYWORDS = {"default", "examples", "const", "enum"}  # schema keywords whos
 
 
 def parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
-    """Split a Google-style docstring into its description and its argument descriptions by name.
+    """Splits a Google-style docstring into its description and its argument docs.
 
     Arguments come from `Args:` and `Keyword Args:`; other sections (Returns, Raises, Note, …) are left out.
+
+    Args:
+        doc: The docstring; None reads as empty.
+
+    Returns:
+        The description, and each argument's description by name.
     """
     sections = Docstring(inspect.cleandoc(doc or ""), lineno=1).parse("google", warnings=False)
     description = [s.value for s in sections if s.kind is DocstringSectionKind.text]
@@ -25,7 +33,16 @@ def parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
 
 
 def drop_titles(schema: Any) -> Any:
-    """Remove the `title` strings pydantic adds; they only cost tokens. Properties named `title` are kept."""
+    """Removes the `title` strings pydantic adds to `schema`; they only cost tokens.
+
+    Properties named `title` are kept.
+
+    Args:
+        schema: A JSON Schema, or any part of one.
+
+    Returns:
+        The schema without them.
+    """
     if isinstance(schema, dict):
         return {
             k: v if k in DATA_KEYWORDS else drop_titles(v)
@@ -38,10 +55,16 @@ def drop_titles(schema: Any) -> Any:
 
 
 def tool_schema(name: str, fn: Callable) -> dict:
-    """The OpenAI tool definition for `fn`, from its type hints and Google-style docstring.
+    """Returns the OpenAI tool definition for `fn`, from its type hints and docstring.
 
-    Arguments with defaults are optional and show their default. Pass bound methods, so `self` is not an argument.
-    `*args` and `**kwargs` are left out; positional-only parameters are refused, since tools are called by keyword.
+    Arguments with defaults are optional and show their default. `*args` and `**kwargs` are left out.
+
+    Args:
+        name: The name the model calls the tool by.
+        fn: The function; pass a bound method, so `self` is not an argument.
+
+    Raises:
+        ValueError: A parameter is positional-only, but tools are called by keyword.
     """
     description, arg_docs = parse_docstring(inspect.getdoc(fn))
     hints = get_type_hints(fn, include_extras=True)  # keeps Annotated[..., Field(...)] constraints
@@ -67,12 +90,26 @@ def tool_schema(name: str, fn: Callable) -> dict:
 
 
 def tool(fn: Callable) -> Callable:
-    """Mark `fn` as a tool: a function a model calls. Its name, parameters and docstring are what the model sees, so
-    changing any of them changes the model's API. `Agent` refuses tools without the mark."""
+    """Marks `fn` as a tool: a function a model calls.
+
+    Its name, parameters and docstring are what the model sees, so changing any of them changes the model's API.
+
+    Args:
+        fn: The function.
+
+    Returns:
+        `fn` itself.
+    """
     fn.is_tool = True  # pyright: ignore[reportFunctionMemberAccess] - functions take attributes; the stubs don't say
     return fn
 
 
 def is_tool(fn: Callable) -> bool:
-    """Whether `fn` was marked with `@tool`. A bound method has its function's mark."""
+    """Returns whether `fn` was marked with `@tool`.
+
+    A bound method has its function's mark.
+
+    Args:
+        fn: Any callable.
+    """
     return getattr(fn, "is_tool", False) is True
