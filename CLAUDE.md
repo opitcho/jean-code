@@ -14,6 +14,8 @@ with the rules below on top.
    it as a promise ("Thread-safe.", "Waits until a client answers.").
 4. Each fact once. A module docstring doesn't repeat its class's, and a class doesn't repeat its methods'.
 5. Refer to other code by name (`AgentNode`), not by file (`node.py`). Names can be searched; files move.
+6. Readable without context: whole sentences, and no term whose meaning lives in other code. "So a quote across a
+   window boundary verifies" assumes the reader knows the quote checker; say what the result guarantees instead.
 
 A maintainer's invariant ("this is safe because…") is a one-line comment at the line it protects, not docstring
 text.
@@ -21,6 +23,8 @@ text.
 ### Shape
 - **Summary**: one line of at most 80 characters, ending in a period. A longer docstring continues after a blank
   line, wrapped at 120, with the closing quotes on their own line.
+- **Many facts**: three or more independent facts (a file layout, the ways something ends, what happens on
+  failure) go one per line, as a list or an indented block, not packed into one paragraph.
 - **Mood**: descriptive, in every file: "Fetches rows from…", "Starts a turn on `text`.", "Returns the result…".
   Not imperative ("Fetch…"), and not a bare noun phrase ("The rows…"), except on properties.
 - **Module**: the summary, what the module exports, and optionally a short usage example.

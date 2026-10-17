@@ -280,9 +280,8 @@ class DockerShell(Shell):
     dies with this object or this process, even on a crash. It runs as the host user, so files it writes to the
     workspace are yours. Commands run without approval by default: the sandbox is the safety net.
 
-    Several can share one workspace (an agent and its subagents), each in its own container, so each keeps its jobs
-    in its own folder: job ids count from 1 per shell, and would otherwise overwrite each other's files. The
-    arguments it keeps are attributes of the same name.
+    Several can share one workspace (an agent and its subagents), each in its own container and with its own
+    background jobs. The arguments it keeps are attributes of the same name.
 
     Args:
         workdir: The workspace folder, mounted at /workspace.
@@ -303,7 +302,8 @@ class DockerShell(Shell):
         network: bool = True,
         max_timeout: int = 600,
     ):
-        self._jobs_folder = f"{JOBS_DIR}/{uuid.uuid4().hex[:8]}"  # relative to the workspace
+        # One per shell, relative to the workspace: every shell numbers its jobs from 1
+        self._jobs_folder = f"{JOBS_DIR}/{uuid.uuid4().hex[:8]}"
         super().__init__(workdir, Path(workdir) / self._jobs_folder, max_timeout)
         self.image = image
         self.network = network

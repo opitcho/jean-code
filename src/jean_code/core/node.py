@@ -149,8 +149,7 @@ class AgentNode:
     def reopen(self) -> None:
         """Lets this node's agent call the model again.
 
-        Only this node: its descendants stay cancelled, and a cancelled ancestor still stops it. The caller that
-        starts the agent's next turn reopens it, before that turn starts, so a cancel sent to a turn holds for it.
+        Only this node is reopened: its descendants stay cancelled, and a cancelled ancestor still stops it.
         """
         self._cancelled = False
 

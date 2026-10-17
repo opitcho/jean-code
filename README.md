@@ -1,169 +1,39 @@
-# Jean-Code - A minimal Coding Harness for Educational Purposes.
+# Jean-Code
 
-A small coding agent that works in your shell and in your browser. Built on [OpenRouter](https://openrouter.ai) (DeepSeek V4.1 Flash by default) - Supports all the goodies you're used to in agents: bash, tools, web-browsing, subagents, etc.
+A minimal coding agent for educational purposes, in your terminal or your browser. Built on
+[OpenRouter](https://openrouter.ai), with DeepSeek V4.1 Flash by default.
 
 ![The Streamlit UI: the timeline of a turn, with a tool call open in the inspector and two subagents in the sidebar](docs/screenshot.png)
 
-## Running it
+## Getting started
 
-You need [uv](https://docs.astral.sh/uv/). Docker is optional, but the sandbox and the `general` subagent need it
-(see [Where commands run](#where-commands-run)).
-
-**1. Add your OpenRouter key.** Create a key at <https://openrouter.ai/keys>, then put it in a `.env` file at the
-repo root (it is gitignored):
+You need [uv](https://docs.astral.sh/uv/) and an [OpenRouter key](https://openrouter.ai/keys) with some credits.
 
 ```sh
 echo 'OPENROUTER_API_KEY=sk-or-v1-...' > .env
-```
 
-The key needs credits on your OpenRouter account. With the default model, sessions are cheap: the one in the
-screenshot above (11 model calls, 104k input tokens) cost $0.006.
-
-**2. (Optional) Build the sandbox image.** Skip this if you don't have Docker.
-
-```sh
-docker build -t jean-code-sandbox sandbox/
-# if your user id isn't 1000:
-docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t jean-code-sandbox sandbox/
-```
-
-The sandbox mounts the repo's `workspace/` folder into the container (and nothing else). Docker Desktop can only
-mount folders under your home directory by default, so if the repo is cloned elsewhere (e.g. `/tmp`), the sandbox
-fails with "Mounts denied": clone it under your home, or add its location under Settings → Resources → File sharing.
-
-**3. Start a front-end.** `uv run` installs the dependencies on first use.
-
-```sh
-# Streamlit UI, at http://localhost:8501
+# Browser UI, at http://localhost:8501
 uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
-# Terminal REPL
+# or the terminal
 uv run --env-file .env jean-code
 ```
 
-jean-code runs from its repo checkout: it reads `skills/` and writes `workspace/` and `logs/` next to its code. To
-put `jean-code` on your PATH, install it editable with `uv tool install -e ~/jean-code`; a copying install refuses to
-start.
+For the Docker sandbox and the `general` subagent, build the image once:
 
-In the UI, the sidebar has the Agent select (Coding or Orchestrator), the sandbox switch ("Run bash in Docker
-sandbox", for the coding agent) and the reasoning effort. Changing the agent or the switch starts a new chat. Type `/compact` in the chat to summarize older turns now.
-
-REPL options: `--agent orchestrator` starts the orchestrator instead of the coding agent, `--sandbox` runs the
-coding agent's commands in Docker, `--no-network` cuts the containers off from the network,
-`--model` takes any OpenRouter model id, `--reasoning low|medium|high`, `--max-cost` stops the session at a USD
-limit, and `--compact-at` sets the token count that triggers compaction. Type `/cost` to see what the session has
-spent, and `exit` to quit.
-
-### Where commands run
-
-- **On your machine (the default):** commands run in the directory you started the front-end from, and each one
-  waits for your approval. Started from the repo root, the agent works on jean-code itself. To point it at another
-  project, start it from there:
-
-  ```sh
-  cd ~/my-project
-  uv run --project ~/jean-code --env-file ~/jean-code/.env jean-code
-  ```
-
-- **In the sandbox (`--sandbox`, or the UI switch):** commands run in a container, in `/workspace`, which is the
-  repo's `workspace/` folder. They don't ask for approval, and they can't see the rest of your machine.
-
-The `general` subagent always runs in its own sandbox container, even when the main agent runs on your machine, so
-without Docker and the image it fails, and only the `searcher` subagent works.
-
-## Key features
-
-- **Runs commands for you**, on your machine with your approval, or in a Docker sandbox without asking.
-- **Searches the web** and reads pages when it needs documentation or answers.
-- **Delegates to subagents**: a web researcher, and a coding agent that experiments in the sandbox while the main
-  one keeps working.
-- **Research reports**: ask it to research something and it agrees a brief with you, then a research run works in
-  the background. Researchers record facts with quotes that are checked against the pages they fetched, and a lead
-  writes a report citing them, to `workspace/research/<run>/report.md`.
-- **Builds with expert agents**: the orchestrator (`--agent orchestrator`) has no shell. It runs a planner, a
-  product manager, an architect, an engineer and an auditor, each in its own sandbox, through plan → PRD → spec →
-  implementation, with every step audited against `skills/build/rules.md`. The files land in
-  `workspace/builds/<slug>/`.
-- **Skills**: teach it a task with a folder in `skills/`: a `SKILL.md` (YAML front matter with a `name` and a
-  `description`, then the instructions) plus any reference files. See `skills/unit-conversion/` for an example.
-- **Long sessions**: when the conversation gets too long, it summarizes the older turns and carries on.
-- **Cost control**: shows what each session costs, and stops at a spending limit you set. Every model call is also
-  logged to `logs/usage.jsonl`.
-- **Full traces**: every session writes everything each agent did (messages, model calls, turns, compactions,
-  approvals) to `logs/processes/`, one folder per agent, nested like the agent tree.
-- **See what it's doing**: the UI shows every thought, tool call and result live, for the main agent and each subagent.
-
-## How a turn works
-
-The whole agent is the `Agent` class in `src/jean_code/core/agent.py`. A turn is one call to `agent.run_turn(text)`:
-
-1. The user's message is appended to `agent.messages`, the transcript in the OpenAI chat format.
-2. The transcript and the tool schemas are sent to the model. Its reply is appended as the API returned it.
-3. If the reply has tool calls, each one is run and its result appended, and the loop goes back to step 2.
-   If it has none, the reply is the answer and the turn ends.
-
-A tool call that needs the user's approval doesn't end the turn. The agent is built with an `approve` function,
-which it calls with the tool's name and arguments and waits for: it returns None to run the call, or the text the
-model gets as the result instead.
-
-A turn ends early when it's stopped, when the budget is spent, when the context is nearly full, or when it runs out
-of tool rounds. Whatever notices raises `TurnStopped`, and `run_turn` catches it and returns which: "answered",
-"cancelled", "budget spent", "context full" or "out of tool rounds". A stop takes effect before the next model call:
-the tool calls of a reply that has arrived still run, while a reply still streaming in is cut off, keeping its text.
-
-The front-ends act through a `Driver` (`core/driver.py`), which runs each turn on a thread of its own and holds
-the approval handshake, and draw what its `AgentView` (`core/view.py`) folds from the agent's events. Every agent
-streams its replies (`stream=True`), subagents included, and a message sent while it works stops it and runs next.
-
-Everything else is built on that loop:
-
-| Feature | How | Read |
-|---|---|---|
-| Tools | Typed, documented functions marked `@tool`; the schema comes from the signature and docstring | `core/llm.py`, `tools/web.py` |
-| Shell | The `bash` and `job` tools, on the host or in a container | `tools/shell.py` |
-| Skills | Listed in the system prompt; the model loads a skill's instructions when a task matches | `core/skills.py` |
-| Subagents | The `spawn` tool starts another `Agent` on its own thread, with its own limit inside the parent's budget | `core/subagents.py` |
-| Compaction | Between turns, the model summarizes the middle of a long conversation | `Agent.compact`, `core/compaction.py` |
-| Budget | A tree of spending limits that mirrors the agents: each agent's node holds its path, task and limit | `core/node.py` |
-
-## Layout
-
-```
-src/jean_code/
-  config.py                paths in the repo
-  logs.py                  logging from a tree's view: the trace and the usage log, and reading a trace back
-  core/                    the agent machinery; imports nothing from the packages below
-    agent.py               the agent loop: tool calls, and running compactions
-    llm.py                 OpenRouter client, and tool schemas built from functions
-    usage.py               cost records, and the lines that sum them
-    node.py                the agent tree: paths, spend, limits, cancel
-    subagents.py           starting, waiting for and managing subagent runs
-    skills.py              skills: discovery, the load tools and /name commands
-    compaction.py          compaction's prompts, and which turns it replaces
-  tools/                   what a model calls; imports only core
-    shell.py               host and Docker shell backends
-    web.py                 the web tools agents call: search, and fetching a page a window at a time
-    pages.py               page text from HTML and PDFs, cached per URL, and the windows cut from it
-    notebook.py            a research run's folder of checked facts, and the report rendered from it
-  agents/                  agents assembled from core and tools; each module: prompts, *_agent, *_profile(s)
-    common.py              the subagent note and the shell-plus-web toolset several agents share
-    coding.py              the coding agent (a root) and its searcher and general subagents
-    experts.py             the orchestrator (a root, no shell) and its experts
-    research.py            research runs: a lead and the researchers it starts
-  ui/                      the front-ends
-    repl.py                terminal front-end
-    app.py                 Streamlit front-end (app.css holds its styles)
-    approval.py            asking the user before a tool call runs
-skills/                    skill folders
-sandbox/                   Dockerfile for the sandbox
-tests/                     unit tests (test_layout.py checks the layers), with a scripted fake model: no API key needed
-docs/                      the README's screenshot
-
-Created at runtime (gitignored):
-workspace/                 the sandbox's /workspace; research runs in workspace/research/
-logs/                      usage.jsonl, one line per model call; processes/, one folder per run, holding a
-                           chat-<n>/ folder per chat: its events.jsonl, and a <run>-<profile>/ folder per subagent
+```sh
+docker build -t jean-code-sandbox sandbox/
 ```
 
-Run the tests with `uv run pytest`, the linter with `uv run ruff check` and the type checker with
-`uv run pyright`. All three should pass.
+## Features
+
+| Feature | What it does |
+|---|---|
+| Shell | Runs commands on your machine with your approval, or in a Docker sandbox without asking |
+| Web | Searches the web and reads pages |
+| Subagents | Hands work to a web researcher, or a coding agent in its own sandbox |
+| Research reports | Runs researchers in the background and writes a cited report |
+| Expert builds | An orchestrator takes a project through plan, PRD, spec and implementation |
+| Skills | Learns a task from a folder in `skills/` |
+| Cost control | Shows what a session costs and stops at a limit you set |
+| Live view | Shows every thought, tool call and result, for every agent |

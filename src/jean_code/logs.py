@@ -40,12 +40,16 @@ _STOP = object()  # ends the recorder's loop; put on the queue after everything 
 class Recorder:
     """Writes everything an agent tree's view receives, on a thread of its own.
 
-    The root agent's file is `<trace_dir>/events.jsonl`; a subagent's is in a folder under its parent's, named
-    `<run>-<profile>`, e.g. `1-research/2-researcher/events.jsonl`. Folders are made on their first line. Each line
-    is an event's JSON plus `seq`, its place among the lines written, and `at`, the Unix time it was written.
-    Streamed deltas aren't written. A write that fails turns off that one sink, the trace or the usage
-    log, and adds to `errors`; nothing reaches the agents. A recorder that isn't closed is closed at exit. The
-    arguments it keeps are attributes of the same name; each is set to None once its sink fails.
+    - Each agent's events go to its own `events.jsonl`: the root's in `trace_dir`, a subagent's in a folder under
+      its parent's named `<run>-<profile>`, e.g. `1-research/2-researcher/events.jsonl`. A folder is made when its
+      first line is written.
+    - Each line is an event's JSON plus `seq`, its place among the lines written, and `at`, the Unix time it was
+      written. Streamed deltas aren't written.
+    - A write that fails turns off its sink (the trace or the usage log), sets that sink's argument to None and adds
+      to `errors`. The agents never see the failure.
+    - A recorder that isn't closed is closed at exit.
+
+    The arguments it keeps are attributes of the same name.
 
     Args:
         view: The view to subscribe to; it must have received no event yet.

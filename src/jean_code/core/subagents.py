@@ -321,12 +321,12 @@ class Subagents:
         subagent  check on a run, wait for it, or cancel it
         resume    send a stopped run's agent a follow-up: its next turn, under the same id
 
-    Only here do runs have ids and results become text. Waits end early when the parent agent is stopped, and a stop
-    of the parent stops its runs too, background ones included.
+    It numbers the runs from 1, and turns their outcomes into the text the model reads. Waits end early when the
+    parent agent is stopped, and stopping the parent stops its runs too, background ones included.
 
-    A background result is delivered once: a finished background run is pending until `claim` or `subagent`
-    marks it delivered. Delivery is tracked per `Run`, not per id, because a resumed id gets a new run. The
-    arguments it keeps are attributes of the same name.
+    A background run's result is delivered once: when the run finishes, its result is pending until `claim` or
+    `subagent` marks it delivered. A resumed run has a new result to deliver, under the same id. The arguments it
+    keeps are attributes of the same name.
 
     Args:
         profiles: The kinds of subagent the model may start, by name.
@@ -342,7 +342,7 @@ class Subagents:
         self.runs: dict[int, tuple[str, Run]] = {}
         self._ids = itertools.count(1)  # only spawn uses it, on the parent's thread
         self._background: set[Run] = set()  # runs started in the background; never removed
-        self._delivered: set[Run] = set()  # runs whose result the model has received; never removed
+        self._delivered: set[Run] = set()  # by Run, not id, since resume gives an id a new Run; never removed
         self._lock = threading.Lock()  # guards runs, _background and _delivered
 
     # ---------------------------------------------------------------- tools

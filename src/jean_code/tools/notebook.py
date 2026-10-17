@@ -435,9 +435,8 @@ def cited_ids(markdown: str) -> list[str]:
 def seen_text(text: str, windows: list[list[int]]) -> str:
     """Returns the parts of a page's `text` that `windows` cover, in page order.
 
-    Page order whatever order they were fetched in, so a quote across a window boundary verifies. Overlapping or
-    touching windows merge into one stretch; stretches with unread text between them are split by "[…]", which
-    `normalize` keeps, so no quote verifies across the gap.
+    Windows that overlap or touch merge into one stretch, whatever order they were fetched in. Stretches with unread
+    text between them are separated by "[…]", so two parts of the page never read as one continuous text.
 
     Args:
         text: The page's whole text.
@@ -449,6 +448,7 @@ def seen_text(text: str, windows: list[list[int]]) -> str:
             stretches[-1][1] = max(stretches[-1][1], end)
         else:
             stretches.append([start, end])
+    # `normalize` keeps "[…]", so no quote verifies across unread text
     return "\n\n[…]\n\n".join(text[start:end] for start, end in stretches) + "\n"
 
 
@@ -464,11 +464,10 @@ def page_key(url: str) -> str:
 
 
 def normalize(text: str) -> str:
-    """Returns `text` as quotes are compared.
+    """Returns `text` in the form quotes are compared in.
 
-    That's NFKC, straight quotes, case-folded, and without whitespace, hyphens, dashes, invisible format characters
-    (U+2060 word joiners, soft hyphens) or in-text citations. The quote and the page both go through it, so a quote
-    that does include a citation verifies too.
+    The text is NFKC-normalized and case-folded, with straight quotes, and without whitespace, hyphens, dashes,
+    invisible format characters (U+2060 word joiners, soft hyphens) or in-text citations.
 
     Args:
         text: A quote, or a page's text.
