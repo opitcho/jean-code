@@ -303,6 +303,7 @@ class Agent:
                         summary=record.get("summary"),
                         tokens_before=tokens_before,
                         tokens_after=record.get("tokens_after"),
+                        cost=record["call"].cost if record.get("call") else None,
                         context_tokens=self.context_tokens,
                     )
                 )

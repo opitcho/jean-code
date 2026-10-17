@@ -219,6 +219,7 @@ def test_a_forced_compaction_rebuilds_through_the_splice():
     compaction = events[-1]
     assert isinstance(compaction, Compaction) and compaction.summary is agent.compactions[-1]["summary"]
     assert compaction.tokens_after == agent.compactions[-1]["tokens_after"]
+    assert compaction.cost == agent.compactions[-1]["call"].cost == 0.002
 
 
 def test_an_automatic_compaction_rebuilds():

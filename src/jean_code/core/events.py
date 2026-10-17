@@ -1,10 +1,7 @@
-"""What agents tell the outside world: typed events, emitted through `AgentNode.emit` to the root node's listener.
+"""The events an agent emits as it works.
 
-The listener is the one hook an agent tree has (see node.py). Every agent in the tree emits through its own node,
-so a client that listens at the root sees all of them, each event carrying the emitting agent's `path`.
-
-Events are enough to rebuild each agent's transcript: `AgentAdded` starts it, `MessageAdded` appends to it, and a
-`Compaction` with status "compacted" replaces `messages[start:start + removed]` with its `summary`.
+They are enough to rebuild the agent's transcript: `AgentAdded` starts it, `MessageAdded` appends to it, and a
+`Compaction` with status "compacted" replaces part of it with a summary.
 """
 
 from typing import Annotated, Literal
@@ -73,6 +70,7 @@ class Compaction(Event):
     summary: UserMessage | None = None
     tokens_before: int
     tokens_after: int | None = None
+    cost: float | None = None  # the summary call's, if the attempt made one and it reported a cost
     context_tokens: int
 
 

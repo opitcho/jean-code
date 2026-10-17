@@ -2,6 +2,7 @@
 fold into. Clients import from here only (tests/test_layout.py), so this re-exports what they render too."""
 
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN
+from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
 from jean_code.core.events import (
     AgentAdded,
     Charged,
@@ -12,7 +13,15 @@ from jean_code.core.events import (
     TurnEnded,
     TurnStarted,
 )
-from jean_code.core.llm import AssistantMessage, Message, SystemMessage, ToolCall, ToolMessage, UserMessage
+from jean_code.core.llm import (
+    AssistantMessage,
+    Message,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+    render_message,
+)
 from jean_code.core.usage import ModelCall, breakdown_lines, human, usage_line
 from jean_code.session.contract import (
     AgentDetails,
@@ -36,7 +45,9 @@ from jean_code.session.session import Session, Subscription, build_agent, denied
 
 __all__ = [
     "DEFAULT_MODEL",
+    "HEAD_MARKER_TAG",
     "NOT_RUN",
+    "SUMMARY_TAG",
     "AgentAdded",
     "AgentDetails",
     "AgentState",
@@ -74,5 +85,6 @@ __all__ = [
     "build_agent",
     "denied",
     "human",
+    "render_message",
     "usage_line",
 ]

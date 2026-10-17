@@ -16,7 +16,6 @@ FORBIDDEN = {  # layer -> the layers it must not import
     "session": ("ui",),
     "ui": ("core", "tools", "agents", "config"),
 }
-NOT_YET_ON_SESSION = {"app.py"}  # ui files whose move to `Session` is a plan of its own
 
 
 def imports(path: Path) -> list[ast.Import | ast.ImportFrom]:
@@ -30,8 +29,6 @@ def test_layer_imports_nothing_above_it(layer):
     assert files
     banned = tuple(f"jean_code.{name}" for name in FORBIDDEN[layer])
     for path in files:
-        if layer == "ui" and path.name in NOT_YET_ON_SESSION:
-            continue
         for node in imports(path):  # includes TYPE_CHECKING blocks
             assert getattr(node, "level", 0) == 0, (path.name, "relative import")
             if isinstance(node, ast.Import):
