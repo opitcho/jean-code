@@ -47,6 +47,15 @@ def test_the_orchestrator_lists_the_experts():
         agent.close()
 
 
+def test_the_orchestrator_and_its_experts_stream():
+    # Catches an expert whose reply lands whole: nothing shows while it works, and a stop can't cut it off.
+    for agent in [orchestrator_agent("m", skills_dir=None)] + [
+        expert_agent(prompt, "m", AgentNode(1.0), network=False) for _, prompt, _, _ in EXPERTS.values()
+    ]:
+        assert agent.stream
+        agent.close()
+
+
 @pytest.mark.parametrize("name", list(EXPERTS))
 def test_experts_run_bash_in_docker_without_approval(name):
     # Catches an expert that Run.start refuses (host bash needs approval) or that runs on the host.

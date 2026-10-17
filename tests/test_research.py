@@ -12,11 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import call, response, usage
+from conftest import call, response, stream_response, usage
 from jean_code.agents.research import (
     research_lead_agent,
     research_profile,
     research_result,
+    researcher_agent,
     researcher_profile,
     summary_of,
 )
@@ -52,7 +53,7 @@ class TaskClient:
     """A scripted client per agent: each request goes to the script of its first user message (the agent's task).
 
     An item is a response, an exception to raise, or a callable returning a response (to wait for something first).
-    Thread-safe, since the lead and its researchers call it at once.
+    `stream` sends the same responses in chunks. Thread-safe, since the lead and its researchers call it at once.
     """
 
     def __init__(self, scripts: dict[str, list]):
@@ -62,6 +63,12 @@ class TaskClient:
         self._lock = threading.Lock()
 
     def complete(self, request: ChatRequest) -> Completion:
+        return parse_completion(self._next(request))
+
+    def stream(self, request: ChatRequest, stop=None):
+        yield from stream_response(self._next(request), request, stop)
+
+    def _next(self, request: ChatRequest) -> dict:
         task = next(m.content for m in request.messages if isinstance(m, UserMessage))
         with self._lock:
             script = self.scripts.get(task)
@@ -70,7 +77,7 @@ class TaskClient:
             item = script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return parse_completion(copy.deepcopy(item() if callable(item) else item))
+        return copy.deepcopy(item() if callable(item) else item)
 
 
 def new_notebook(tmp_path) -> Notebook:
@@ -484,6 +491,15 @@ def test_the_summary_is_the_summary_section_else_the_first(tmp_path):
 
 
 # ---------------------------------------------------------------- results and stopping
+
+
+def test_the_lead_and_its_researchers_stream(tmp_path):
+    # Catches a researcher whose reply lands whole: nothing shows while it works, and a stop can't cut it off.
+    notebook = new_notebook(tmp_path)
+    client = TaskClient({})
+    lead = research_lead_agent(notebook, AgentNode(1.0), client=client)
+    researcher = researcher_agent(notebook, lead.node.child(0.1, "1"), client=client)
+    assert lead.stream and researcher.stream
 
 
 def test_a_researcher_stopped_by_its_budget_keeps_its_facts(tmp_path, pages):

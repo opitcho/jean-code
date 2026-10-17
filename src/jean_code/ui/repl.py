@@ -289,7 +289,7 @@ def main() -> None:
         parser.error(f"--max-cost must be positive, got {cli.max_cost}")
 
     def build(node: AgentNode, approve: Approve) -> Agent:
-        common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node, "stream": True}
+        common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node}
         if cli.agent == "orchestrator":  # nothing it calls needs approval
             return orchestrator_agent(cli.model, network=not cli.no_network, **common)
         return coding_agent(cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approve, **common)

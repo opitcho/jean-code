@@ -5,7 +5,7 @@ and the experts, and no other tools: no shell, so it routes the work and can't d
 prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so files it writes there are
 shared with the other experts and with the user. The experts don't know about any particular pipeline: the brief
 names what to read and what to write, and for the auditor which rules to check. A skill decides how to put them
-together (the `build` skill is one way).
+together (the `build` skill is one way). Every agent built here streams its replies.
 """
 
 from pathlib import Path
@@ -151,7 +151,7 @@ def orchestrator_agent(
         skills_dir: Folder of skills the model can load.
         max_tool_rounds: As for `Agent`. Agent's default of 10 runs out halfway through a build: 5 steps, each
             spawned and audited.
-        **kwargs: Passed on to `Agent`.
+        **kwargs: Passed on to `Agent`, except `stream`.
     """
     return Agent(
         model,
@@ -160,6 +160,7 @@ def orchestrator_agent(
         skills_dir=skills_dir,
         subagent_profiles=expert_profiles(model, network),
         max_tool_rounds=max_tool_rounds,
+        stream=True,
         **kwargs,
     )
 
@@ -185,6 +186,7 @@ def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = 
         cleanup=tools.cleanup,
         node=node,
         max_tool_rounds=40,
+        stream=True,
     )
 
 

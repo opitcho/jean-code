@@ -1,10 +1,10 @@
-"""Streamlit UI: a live, clickable timeline of an agent's turns, plus an inspector.
+"""Streamlit UI: a live chat with an agent and its tool calls, plus an inspector.
 
 Run with: uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
-The view updates live while a job or any subagent runs. Every message an agent has had stays in its timeline:
-those a compaction took out of the context are dimmed, not lost. The sidebar picks which agent the timeline and
-inspector show: the main agent, or any agent in its tree.
+The chat updates live while a job or any subagent runs, the reply streaming in as it's written. Every message an
+agent has had stays in its chat: those a compaction took out of the context are dimmed, not lost. The sidebar picks
+which agent the chat and inspector show: the main agent, or any agent in its tree.
 """
 
 import html
@@ -25,7 +25,6 @@ from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
 from jean_code.core.driver import Approve, Busy, Driver, denied
 from jean_code.core.events import Compaction
-from jean_code.core.llm import render_message
 from jean_code.core.node import AgentNode
 from jean_code.core.usage import human, usage_line
 from jean_code.core.view import AgentState, AgentView, Item, TreeState
@@ -49,7 +48,7 @@ KINDS = {
     "marker": ("HEAD END", "┄", "#94A3B8"),
     "summary": ("SUMMARY", "≡", "#2DD4BF"),
 }
-MONO_KINDS = {"tool_call", "tool_result"}
+REASONING_TAIL = 400  # characters of a streaming thought its closed row shows: its latest ones
 # status -> (color in the agent picker, dot and pill classes in the header). A turn's other stops use "stopped".
 STATUSES = {
     "running": ("green", "run", "status-run"),
@@ -158,17 +157,19 @@ def clip(text, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def call_summary(call) -> str:
-    """Returns a call as `name · first argument`, e.g. `bash · ls -la`."""
-    args = parse_args(call)
+def first_arg(args: dict) -> str:
+    """Returns a call's first argument as one line; "" if it has none.
+
+    For example `ls -la` for a bash call.
+    """
     first = next(iter(args.values()), None)
     if first is None:
-        return call.function.name
-    return f"{call.function.name} · {first if isinstance(first, str) else json.dumps(first)}"
+        return ""
+    return one_line(first if isinstance(first, str) else json.dumps(first))
 
 
-def result_summary(msg, name: str) -> str:
-    """Returns a result as `name → first line of output`.
+def result_line(msg) -> str:
+    """Returns a result's first line of output.
 
     A failed command's exit code comes before the line.
     """
@@ -178,49 +179,7 @@ def result_summary(msg, name: str) -> str:
         content = content[exit_code.end() :]
     first = next((line for line in content.splitlines() if line.strip()), "(no output)")
     failed = f"exit {exit_code.group(1)} · " if exit_code and exit_code.group(1) != "0" else ""
-    return f"{name} → {failed}{first}"
-
-
-def preview(msg, kind: str, names: dict, limit: int = 90) -> str:
-    """Returns a one-line summary of a message, for its timeline block."""
-    if kind == "tool_call":
-        text = "; ".join(call_summary(c) for c in mget(msg, "tool_calls"))
-    elif kind == "tool_result":
-        text = result_summary(msg, names.get(mget(msg, "tool_call_id"), "tool"))
-    elif kind == "thinking":
-        text = mget(msg, "reasoning")
-    else:
-        text = mget(msg, "content") or "(no content)"
-    if kind in ("agent", "user"):
-        text = re.sub(r"[*_`#>]+", "", str(text))  # drop markdown markers from the one-liner
-    return clip(text, limit)
-
-
-def results_of(entries: list[Item], pos: int) -> list[Item]:
-    """Returns the tool results after the call at `pos`, in call order.
-
-    Results match calls by position.
-    """
-    results = []
-    for e in entries[pos + 1 :]:
-        if turn_kind(e.message) != "tool_result":
-            break
-        results.append(e)
-    return results
-
-
-def call_of(entries: list[Item], pos: int) -> Item | None:
-    """Returns the call the result at `pos` answers: the nearest one before its run.
-
-    None if a message other than a result comes first.
-    """
-    for e in reversed(entries[:pos]):
-        kind = turn_kind(e.message)
-        if kind == "tool_call":
-            return e
-        if kind != "tool_result":
-            return None
-    return None
+    return failed + first
 
 
 def call_names(entries: list[Item]) -> dict[str, str]:
@@ -314,7 +273,7 @@ def live(state: TreeState) -> bool:
 
 def reset_view() -> None:
     """Forgets what the UI showed of the previous chat."""
-    st.session_state.selected = {}  # path -> selected uid; None or missing follows the latest
+    st.session_state.open = {}  # path -> keys of the rows opened in its chat
     st.session_state.view = MAIN  # the agent picker's value
     st.session_state.compactions_seen = 0
     st.session_state.last_job_seen = None
@@ -341,7 +300,7 @@ def choice() -> tuple[bool, bool]:
 
 def build_agent(node: AgentNode, approve: Approve) -> Agent:
     """Builds the agent the sidebar picks, on `node`; it streams its replies."""
-    common = {"reasoning": reasoning_effort(), "node": node, "stream": True}
+    common = {"reasoning": reasoning_effort(), "node": node}
     orchestrator, sandbox = choice()
     if orchestrator:  # nothing it calls needs approval
         return orchestrator_agent(DEFAULT_MODEL, **common)
@@ -381,9 +340,14 @@ def new_chat() -> None:
     reset_view()
 
 
-def select(uid: int | None) -> None:
-    """Selects a block in the timeline of the agent on view; None follows the latest."""
-    st.session_state.selected[st.session_state.view] = uid
+def opened() -> set[str]:
+    """Returns the keys of the rows open in the chat of the agent on view."""
+    return st.session_state.open.setdefault(st.session_state.view, set())
+
+
+def toggle(key: str) -> None:
+    """Opens the row `key` in the chat of the agent on view, or closes it."""
+    opened().symmetric_difference_update({key})
 
 
 def show(path: str) -> None:
@@ -392,11 +356,6 @@ def show(path: str) -> None:
     It's a button callback because the picker's value can only change before the picker is drawn.
     """
     st.session_state.view = path
-
-
-def answer_approval(approval_id: int, refusal: str | None = None) -> None:
-    driver().answer(approval_id, refusal)
-    select(None)
 
 
 # ---------------------------------------------------------------- html snippets (styles in app.css)
@@ -425,31 +384,22 @@ def chips(items, *, on=(), empty_text: str = "none") -> str:
     return '<div class="row">' + "".join(pill(i, cls="mono on" if i in on else "mono") for i in items) + "</div>"
 
 
-def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mono: bool = False) -> str:
-    """Returns a timeline card: kind label and icon, optional #number, and a preview."""
-    label, icon, _ = KINDS[kind]
-    num_html = f'<span class="tl-num">#{num}</span>' if num is not None else ""
-    return (
-        f'<div class="tl-card k-{kind} {classes}"><div class="tl-head"><span>{icon}</span><span>{label}</span>'
-        f'{num_html}</div><div class="tl-prev{" mono" if mono else ""}">{html.escape(text)}</div></div>'
-    )
+def row(
+    kind: str, body: str, *, name: str = "", aside: str = "", is_open: bool | None = None, classes: str = ""
+) -> str:
+    """Returns a one-line chat row: an icon, a tool's name or a label, then `body`.
 
-
-def draft_card(draft: dict[str, str]) -> str:
-    """Returns the live card for a reply streaming in, shown in full.
-
-    Its thinking is dimmed, and its answer comes after.
+    The icon and label are the kind's. `aside` goes on the right, and a chevron after it if the row opens (`is_open`
+    not None).
     """
-    kind = "agent" if draft.get("content") else "thinking"
     label, icon, _ = KINDS[kind]
-    parts = "".join(
-        f'<div class="tl-prev {cls}">{html.escape(text)}</div>'
-        for cls, text in (("draft-thinking", draft.get("reasoning", "")), ("", draft.get("content", "")))
-        if text
-    )
+    lead = f'<span class="tl-name">{html.escape(name)}</span>' if name else f'<span class="tl-label">{label}</span>'
+    mono = " mono" if kind in ("tool_call", "tool_result") else ""
+    aside_html = f'<span class="tl-aside">{aside}</span>' if aside else ""
+    chevron = "" if is_open is None else f'<span class="tl-chev">{"▾" if is_open else "▸"}</span>'
     return (
-        f'<div class="tl-card k-{kind} ghost full"><div class="tl-head"><span>{icon}</span><span>{label}</span>'
-        f"</div>{parts}</div>"
+        f'<div class="tl-row k-{kind}{" open" if is_open else ""} {classes}"><span class="tl-icon">{icon}</span>'
+        f'{lead}<span class="tl-body{mono}">{html.escape(body)}</span>{aside_html}{chevron}</div>'
     )
 
 
@@ -472,12 +422,6 @@ def eyebrow(text: str) -> str:
 
 def empty(icon: str, text: str) -> None:
     st.html(f'<div class="empty"><div class="big">{icon}</div>{text}</div>')
-
-
-def show_reasoning(text: str) -> None:
-    st.html(eyebrow("REASONING"))
-    with st.container(key="thought"):
-        st.markdown(text)
 
 
 # ---------------------------------------------------------------- rendering
@@ -609,8 +553,9 @@ def render_agents(state: TreeState) -> None:
 def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[Item]) -> None:
     """Draws the header of the agent on view: its status, counts, context and actions.
 
-    The action is Stop or New chat for the main agent, and Cancel run or Back to main for a subagent. Below the
-    header goes a failure, or why the agent stopped before answering.
+    The Inspector toggle opens the inspector beside the chat. The other action is Stop or New chat for the main
+    agent, and Cancel run or Back to main for a subagent. Below the header goes a failure, or why the agent stopped
+    before answering.
     """
     agent = state.agents[path]
     tool_calls = sum(turn_kind(e.message) == "tool_call" for e in entries)
@@ -635,6 +580,7 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
 
     with st.container(horizontal=True, vertical_alignment="center", wrap=False):
         st.html(f'<div class="hdr"><span class="hdr-title">jean-code</span>{"".join(pills)}</div>')
+        st.toggle("Inspector", key="inspector", help="The agent's last request, its context and its state.")
         if path == MAIN:
             if state.busy:  # also while a call waits for approval: Stop answers it
                 st.button("Stop", icon=":material/stop_circle:", on_click=driver().cancel, type="primary")
@@ -660,19 +606,127 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
         st.warning(f"Stopped before answering: {status}", icon=":material/warning:")
 
 
-def render_timeline(
-    agent: AgentState, entries: list[Item], selected: Item | None, running: bool, pending, queued: str | None
-) -> None:
-    """Draws the agent's timeline: one clickable block per message.
+def fold(key: str, row_html) -> bool:
+    """Draws a row that opens and closes on click; returns whether it's open.
 
-    Compacted messages are dimmed, with a divider where the context starts again. After the last block comes the
-    reply streaming in (or a placeholder) while the agent runs, or the call waiting for approval; then a message
-    waiting for the agent to stop.
+    `row_html` takes whether the row is open and returns its HTML. What it opens to is drawn by the caller, after.
+    """
+    is_open = key in opened()
+    with st.container(key=f"head-{key}"):
+        st.html(row_html(is_open))
+        st.button(" ", key=f"hit-{key}", on_click=toggle, args=(key,), width="stretch")
+    return is_open
+
+
+def render_thought(key: str, text: str, out: str) -> None:
+    """Draws a thought as a row, which opens to the thought in full."""
+    with st.container(key=f"blk-thinking-{out}{key}"):
+        if fold(key, lambda is_open: row("thinking", "" if is_open else one_line(text), is_open=is_open)):
+            with st.container(key=f"detail-{key}"):
+                st.markdown(text)
+
+
+def render_call(key: str, name: str, args: dict, result: Item | None, waiting: str, out: str) -> None:
+    """Draws a tool call and its result as one row, which opens to their content.
+
+    That's the arguments, then the output. Without a result, `waiting` says why: "running…", "awaiting approval"
+    or "no result".
+    """
+    err = result is not None and is_error(result.message)
+    if result is None:
+        aside, classes = html.escape(waiting), "run" if waiting == "running…" else ""
+    else:
+        aside, classes = ("✗ " if err else "✓ ") + html.escape(clip(result_line(result.message), 60)), ""
+    with st.container(key=f"blk-tool_call-{'err-' if err else ''}{out}{key}"):
+        if fold(
+            key,
+            lambda is_open: row("tool_call", first_arg(args), name=name, aside=aside, is_open=is_open, classes=classes),
+        ):
+            with st.container(key=f"detail-{key}"):
+                render_args(args)
+                if result is not None:
+                    st.html(eyebrow("OUTPUT"))
+                    render_output(result)
+
+
+def render_item(agent: AgentState, e: Item, results: dict[str, Item], waiting: str) -> None:
+    """Draws one message: its thought, its text, and each of its calls with its result.
+
+    Users' messages are bubbles and an agent's text is prose; other messages are rows that open to their content.
+    A call without a result shows `waiting`.
+    """
+    msg, kind = e.message, turn_kind(e.message)
+    out = "" if e.in_context else "out-"
+    if reasoning := mget(msg, "reasoning"):
+        render_thought(f"r{e.uid}", reasoning, out)
+    content = mget(msg, "content")
+    if kind in ("user", "agent") or (kind == "tool_call" and content):
+        with st.container(key=f"blk-{'user' if kind == 'user' else 'agent'}-{out}{e.uid}"):
+            st.markdown(content or "*(no content)*")
+    elif kind in ("system", "marker", "summary"):
+        key = f"m{e.uid}"
+        with st.container(key=f"blk-{kind}-{out}{key}"):
+            if fold(key, lambda is_open: row(kind, "" if is_open else one_line(content or ""), is_open=is_open)):
+                with st.container(key=f"detail-{key}"):
+                    if kind == "summary" and (rec := compaction_of(agent, msg)):
+                        st.html(
+                            kv_grid(
+                                {
+                                    "messages removed": rec.removed,
+                                    "tokens": f"~{human(rec.tokens_before)} → ~{human(rec.tokens_after or 0)}",
+                                    "summary call": money(rec.cost),
+                                },
+                                fmt=str,
+                            )
+                        )
+                    st.markdown(content or "*(no content)*")
+    if kind == "tool_call":
+        for i, call in enumerate(mget(msg, "tool_calls")):
+            render_call(f"c{e.uid}-{i}", call.function.name, parse_args(call), results.get(call.id), waiting, out)
+    elif kind == "tool_result":  # a result whose call isn't in the timeline
+        render_call(f"c{e.uid}", "tool", {}, e, "", out)
+
+
+def render_draft(agent: AgentState) -> None:
+    """Draws the reply streaming in: its thought, then its text so far.
+
+    The thought is a row showing its latest words, which opens to the thought in full as it grows. It stays open
+    once the reply lands.
+    """
+    draft = agent.draft
+    if not draft:
+        with st.container(key="blk-thinking-live"):
+            st.html(row("thinking", "thinking…", classes="ghost"))
+        return
+    if reasoning := draft.get("reasoning"):
+        tail = reasoning if len(reasoning) <= REASONING_TAIL else "…" + reasoning[-REASONING_TAIL:]
+        # the reply lands as the agent's next item, so this is the key its thought's row will have
+        key = f"r{max((i.uid for i in agent.items), default=0) + 1}"
+        with st.container(key="blk-thinking-live"):
+            if fold(
+                key, lambda is_open: row("thinking", "" if is_open else tail, is_open=is_open, classes="ghost stream")
+            ):
+                with st.container(key=f"detail-{key}"):
+                    st.markdown(reasoning)
+    if content := draft.get("content"):
+        with st.container(key="blk-agent-live"):
+            st.markdown(content)
+
+
+def render_chat(agent: AgentState, entries: list[Item], running: bool, pending, queued: str | None) -> None:
+    """Draws the agent's chat, every message it has had in order.
+
+    A call shows on one row with its result. Compacted messages are dimmed, with a divider where the context
+    starts again. After the last message comes the reply streaming in while the agent runs, or the call waiting
+    for approval; then a message waiting for the agent to stop.
     """
     names = call_names(entries)
+    results = {mget(e.message, "tool_call_id"): e for e in entries if turn_kind(e.message) == "tool_result"}
+    last_calls = next((e for e in reversed(entries) if turn_kind(e.message) == "tool_call"), None)
+    live = "running…" if running else "awaiting approval" if pending is not None else "no result"
     with st.container(height=640, autoscroll=True, border=False, key="timeline"):
         if not entries and not running:
-            empty("✦", "Ask something below — every thought, tool call and answer<br>shows up here as a block.")
+            empty("✦", "Ask something below — the agent's thoughts, tool calls and answers<br>show up here.")
         with st.container(key="rail"):
             compacted_run = 0
             for e in entries:
@@ -682,29 +736,17 @@ def render_timeline(
                         text += f" · ~{human(rec.tokens_before)} → ~{human(rec.tokens_after or 0)} tokens"
                     st.html(f'<div class="divider">{text}</div>')
                 compacted_run = 0 if e.in_context else compacted_run + 1
-
-                kind = turn_kind(e.message)
-                err = kind == "tool_result" and is_error(e.message)
-                flags = (("sel", selected is e), ("out", not e.in_context), ("err", err))
-                classes = " ".join(c for c, on in flags if on)
-                with st.container(key=f"blk-{kind}-{'err-' if err else ''}{e.uid}"):
-                    st.html(
-                        card(kind, preview(e.message, kind, names), num=e.uid, classes=classes, mono=kind in MONO_KINDS)
-                    )
-                    st.button(" ", key=f"hit-{e.uid}", on_click=select, args=(e.uid,), width="stretch")
+                if turn_kind(e.message) == "tool_result" and mget(e.message, "tool_call_id") in names:
+                    continue  # drawn on its call's row
+                render_item(agent, e, results, live if e is last_calls else "no result")
 
             if running:
-                with st.container(key="blk-thinking-live"):
-                    st.html(
-                        draft_card(agent.draft)
-                        if agent.draft
-                        else card("thinking", "waiting for model…", classes="ghost")
-                    )
+                render_draft(agent)
             elif pending is not None:
                 render_approval(pending)
             if queued is not None:
                 with st.container(key="blk-user-queued"):
-                    st.html(card("user", f"stopping… then: {queued}", classes="ghost"))
+                    st.markdown(f"*stopping… then:* {queued}")
 
 
 def render_approval(approval) -> None:
@@ -713,7 +755,7 @@ def render_approval(approval) -> None:
     Sending a message instead denies it, with the message as the reason.
     """
     with st.container(key="blk-approval-pending"):
-        st.html(card("approval", f"{approval.tool}() wants to run:", mono=True))
+        st.html(row("approval", f"{approval.tool}() wants to run:"))
         command = approval.arguments.get("command") if approval.tool == "bash" else None
         code = command or json.dumps(approval.arguments, indent=2)
         st.code(code, language="bash" if command else "json", wrap_lines=True)
@@ -725,10 +767,10 @@ def render_approval(approval) -> None:
         )
         with st.container(horizontal=True):
             if st.button("Approve", icon=":material/check:", type="primary"):
-                answer_approval(approval.id)
+                driver().answer(approval.id)
                 st.rerun()
             if st.button("Deny", icon=":material/block:"):
-                answer_approval(approval.id, denied(reason))
+                driver().answer(approval.id, denied(reason))
                 st.rerun()
 
 
@@ -765,113 +807,6 @@ def render_output(result: Item) -> None:
     height = 420 if content.count("\n") > 20 else "content"
     with st.container(key=f"errout-{result.uid}") if is_error(result.message) else nullcontext():
         st.code(content, language=language, wrap_lines=True, height=height)
-
-
-def render_tool_call(entries: list[Item], pos: int, running: bool, pending: bool) -> None:
-    """Draws a tool-call message in the inspector: each call, its arguments and result."""
-    msg = entries[pos].message
-    if mget(msg, "reasoning"):
-        show_reasoning(mget(msg, "reasoning"))
-    if mget(msg, "content"):
-        st.markdown(mget(msg, "content"))
-    results = {mget(e.message, "tool_call_id"): e for e in results_of(entries, pos)}
-    is_last = pos + len(results) == len(entries) - 1
-    for call in mget(msg, "tool_calls"):
-        st.html(f'<div class="fn-name">{html.escape(call.function.name)}()</div>')
-        render_args(parse_args(call))
-        result = results.get(call.id)
-        with st.container(horizontal=True, vertical_alignment="center"):
-            st.html(eyebrow("↳ RESULT"))
-            if result is not None:
-                st.button(
-                    "Jump to result",
-                    icon=":material/arrow_downward:",
-                    on_click=select,
-                    args=(result.uid,),
-                    key=f"jump-result-{result.uid}",
-                    type="tertiary",
-                )
-        if result is not None:
-            render_output(result)
-        elif running and is_last:
-            st.caption("running…")
-        elif pending and is_last:
-            st.caption("waiting for approval")
-        else:
-            st.caption("no result")
-
-
-def render_tool_result(entries: list[Item], pos: int) -> None:
-    """Draws a tool result in the inspector, with a link back to its call."""
-    result = entries[pos]
-    name = call_names(entries).get(mget(result.message, "tool_call_id"), "tool")
-    err = " err" if is_error(result.message) else ""
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.html(f'{eyebrow("FROM")}<div class="fn-name{err}">{html.escape(name)}()</div>')
-        if call := call_of(entries, pos):
-            st.button(
-                "Jump to call", icon=":material/arrow_upward:", on_click=select, args=(call.uid,), type="tertiary"
-            )
-    render_output(result)
-
-
-def render_text(msg, kind: str) -> None:
-    """Draws a user, system, agent or thinking message: reasoning, then content."""
-    if mget(msg, "reasoning"):
-        show_reasoning(mget(msg, "reasoning"))
-    if kind != "thinking":
-        st.markdown(mget(msg, "content") or "*(no content)*")
-
-
-def render_turn(
-    agent: AgentState, entries: list[Item], selected: Item | None, ctx: list[Item], running: bool, pending: bool
-) -> None:
-    """Draws the selected message in the inspector, whatever its kind."""
-    if selected is None:
-        empty("◇", "Click a block in the timeline to inspect it.")
-        return
-
-    pos = entries.index(selected)
-    msg, kind = selected.message, turn_kind(selected.message)
-    label, icon, _ = KINDS[kind]
-    err = " err" if kind == "tool_result" and is_error(msg) else ""
-    if selected.in_context:
-        where = next(i for i, item in enumerate(ctx) if item.uid == selected.uid)
-        meta = f'<span class="insp-meta">context message {where + 1} of {len(ctx)}</span>'
-    else:
-        meta = '<span class="insp-meta out">⟲ compacted — no longer in context</span>'
-
-    with st.container(horizontal=True, vertical_alignment="center"):
-        badge = f'<span class="badge">{icon} {label} #{selected.uid}</span>'
-        st.html(f'<div class="insp-head k-{kind}{err}">{badge}{meta}</div>')
-        if st.session_state.selected.get(st.session_state.view) is None:
-            st.html(pill("⤓ following latest"), width="content")
-        else:
-            st.button(
-                "Follow latest", icon=":material/vertical_align_bottom:", on_click=select, args=(None,), type="tertiary"
-            )
-
-    if kind == "tool_call":
-        render_tool_call(entries, pos, running, pending)
-    elif kind == "tool_result":
-        render_tool_result(entries, pos)
-    else:
-        if kind == "summary" and (rec := compaction_of(agent, msg)):
-            st.html(
-                eyebrow("COMPACTION")
-                + kv_grid(
-                    {
-                        "messages removed": rec.removed,
-                        "tokens": f"~{human(rec.tokens_before)} → ~{human(rec.tokens_after or 0)}",
-                        "summary call": money(rec.cost),
-                    },
-                    fmt=str,
-                )
-            )
-        render_text(msg, kind)
-
-    with st.expander("Raw message", icon=":material/data_object:"):
-        st.json(render_message(msg))
 
 
 def render_request(path: str, agent: AgentState) -> None:
@@ -1011,7 +946,7 @@ st.html(kind_css())
 
 if "driver" not in st.session_state:
     st.session_state.driver = new_driver()
-if "selected" not in st.session_state:
+if "open" not in st.session_state:
     reset_view()
 state = driver().view.state()
 render_sidebar_top(state)
@@ -1022,7 +957,7 @@ st.session_state.signature_seen = signature(state)
 
 @st.fragment(run_every=POLL_SECONDS if live(state) else None)
 def live_view() -> None:
-    """Draws the header, timeline and inspector of the agent on view.
+    """Draws the header, chat and, if toggled on, inspector of the agent on view.
 
     It polls while anything runs, and reruns the whole script when `signature` changes.
     """
@@ -1033,19 +968,23 @@ def live_view() -> None:
     path = st.session_state.view if st.session_state.view in state.agents else MAIN
     agent = state.agents[path]
     entries = agent.items
-    ctx = [e for e in entries if e.in_context]
     running = is_running(state, path)
     approval = state.approval if path == MAIN else None  # only the main agent asks
-    by_uid = {e.uid: e for e in entries}
-    selected = by_uid.get(st.session_state.selected.get(path)) or (entries[-1] if entries else None)
 
-    render_header(state, path, entries, ctx)
-    timeline_col, inspector_col = st.columns([2, 3], gap="large")
+    inspecting = st.session_state.get("inspector", False)
+    page = st.container(key="page-wide" if inspecting else "page")  # without the inspector: one centred column
+    with page:
+        render_header(state, path, entries, [e for e in entries if e.in_context])
+    if inspecting:
+        chat_col, inspector_col = page.columns([3, 2], gap="large")
+    else:
+        chat_col, inspector_col = page.container(), None
 
-    with timeline_col:
-        st.html(eyebrow("TIMELINE" if path == MAIN else f"TIMELINE · {agent_label(state, path).strip()}"))
+    with chat_col:
+        if path != MAIN:
+            st.html(eyebrow(f"CHAT · {agent_label(state, path).strip().replace('**', '')}"))
         queued = state.queued if path == MAIN else None
-        render_timeline(agent, entries, selected, running, approval, queued)
+        render_chat(agent, entries, running, approval, queued)
         if path != MAIN:
             st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
         elif prompt := st.chat_input(
@@ -1060,26 +999,24 @@ def live_view() -> None:
         ):
             try:
                 if approval is not None:
-                    answer_approval(approval.id, denied(prompt))
+                    driver().answer(approval.id, denied(prompt))
                 elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
                     driver().compact()
                 else:
                     driver().send(prompt)  # while busy: stops the turn, and this message's turn runs next
             except Busy:
                 st.toast("The agent is busy: stop it, or wait for it to finish.", icon=":material/hourglass_top:")
-            select(None)
             st.rerun()
 
-    with inspector_col:
-        turn_tab, request_tab, context_tab, state_tab = st.tabs(["Turn", "Request", "Context", "Agent state"])
-        with turn_tab:
-            render_turn(agent, entries, selected, ctx, running, approval is not None)
-        with request_tab:
-            render_request(path, agent)
-        with context_tab:
-            render_context(path, agent)
-        with state_tab:
-            render_state(path, agent)
+    if inspector_col is not None:
+        with inspector_col:
+            request_tab, context_tab, state_tab = st.tabs(["Request", "Context", "Agent state"])
+            with request_tab:
+                render_request(path, agent)
+            with context_tab:
+                render_context(path, agent)
+            with state_tab:
+                render_state(path, agent)
 
 
 live_view()

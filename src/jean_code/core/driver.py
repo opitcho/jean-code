@@ -149,7 +149,8 @@ class Driver:
     def configure(self, **settings) -> None:
         """Changes settings the agent reads on every request.
 
-        All are checked before any applies.
+        All are checked before any applies. A change to `model` or `reasoning` invalidates the whole prompt cache, so
+        the next request pays the uncached price for every token of the prompt.
 
         Args:
             **settings: Any of `model`, `reasoning` ("low", "medium", "high" or None), `max_cost` (USD, positive,

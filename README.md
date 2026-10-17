@@ -112,8 +112,8 @@ of tool rounds. Whatever notices raises `TurnStopped`, and `run_turn` catches it
 the tool calls of a reply that has arrived still run, while a reply still streaming in is cut off, keeping its text.
 
 The front-ends act through a `Driver` (`core/driver.py`), which runs each turn on a thread of its own and holds
-the approval handshake, and draw what its `AgentView` (`core/view.py`) folds from the agent's events. The agent the
-user talks to streams its replies (`stream=True`), and a message sent while it works stops it and runs next.
+the approval handshake, and draw what its `AgentView` (`core/view.py`) folds from the agent's events. Every agent
+streams its replies (`stream=True`), subagents included, and a message sent while it works stops it and runs next.
 
 Everything else is built on that loop:
 

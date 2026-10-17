@@ -2,7 +2,7 @@
 
 The lead has no web tools. It writes the report from the facts its researchers record in the run's `Notebook`,
 which is the run's only state. `research_profile` gives each run a fresh folder and a lead; `researcher_profile`
-gives a lead researchers that write into its notebook.
+gives a lead researchers that write into its notebook. Every agent built here streams its replies.
 """
 
 from dataclasses import asdict
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from jean_code.config import RESEARCH_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
-from jean_code.core.llm import ChatBackend, render_message
+from jean_code.core.llm import StreamingBackend, render_message
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Profile, Run, agent_tree, last_reply
 from jean_code.tools import web
@@ -95,7 +95,7 @@ RESEARCHER_DESCRIPTION = (
 
 
 def researcher_agent(
-    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: StreamingBackend | None = None
 ) -> Agent:
     """Returns a researcher: web search, plus the notebook's researcher tools.
 
@@ -113,11 +113,12 @@ def researcher_agent(
         max_tool_rounds=15,
         compact_at=None,
         client=client,
+        stream=True,
     )
 
 
 def research_lead_agent(
-    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
+    notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: StreamingBackend | None = None
 ) -> Agent:
     """Returns the lead: it reads the facts, writes the draft and starts researchers.
 
@@ -139,10 +140,13 @@ def research_lead_agent(
         max_tool_rounds=40,
         compact_at=None,
         client=client,
+        stream=True,
     )
 
 
-def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: ChatBackend | None = None) -> Profile:
+def researcher_profile(
+    notebook: Notebook, model: str = DEFAULT_MODEL, client: StreamingBackend | None = None
+) -> Profile:
     """Returns the lead's profile for researchers that all write into `notebook`.
 
     Args:
@@ -159,7 +163,7 @@ def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: C
 
 
 def research_profile(
-    model: str = DEFAULT_MODEL, client: ChatBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
+    model: str = DEFAULT_MODEL, client: StreamingBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
 ) -> Profile:
     """Returns the research profile: a fresh folder and a lead for each run.
 

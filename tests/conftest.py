@@ -79,10 +79,7 @@ class FakeClient:
         return parse_completion(self._next(request))
 
     def stream(self, request: ChatRequest, stop=None):
-        body = "".join(f"data: {json.dumps(c)}\n\n" for c in stream_chunks(self._next(request))) + "data: [DONE]\n\n"
-        client = StreamingClient("https://fake.test", "key")
-        client.http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body)))
-        yield from client.stream(request, stop)
+        yield from stream_response(self._next(request), request, stop)
 
     def _next(self, request: ChatRequest) -> dict:
         self.requests.append(render_request(request))
@@ -173,6 +170,14 @@ def stream_chunks(r: dict) -> list[dict]:
     extra = {"usage": r["usage"]} if "usage" in r else {}
     chunks.append(chunk({}, choice["finish_reason"], **extra))
     return chunks
+
+
+def stream_response(r: dict, request: ChatRequest, stop=None):
+    """Yields what `StreamingClient.stream` yields for `request` when `r` arrives as the chunks `stream_chunks` cuts."""
+    body = "".join(f"data: {json.dumps(c)}\n\n" for c in stream_chunks(r)) + "data: [DONE]\n\n"
+    client = StreamingClient("https://fake.test", "key")
+    client.http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body)))
+    yield from client.stream(request, stop)
 
 
 def call(name: str, id: str | None = None, **args) -> dict:

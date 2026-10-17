@@ -14,7 +14,7 @@ import jean_code
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
-from jean_code.core.events import Delta
+from jean_code.core.events import Delta, MessageAdded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
@@ -71,27 +71,40 @@ def htmls(at: AppTest) -> list[str]:
     return [e.proto.body for e in at.get("html")]
 
 
+def markdowns(at: AppTest) -> list[str]:
+    return [m.value for m in at.markdown]
+
+
+def block_keys(at: AppTest) -> list[str]:
+    """Returns the key of every keyed container in the main area."""
+    keys, todo = [], [at.main]
+    while todo:
+        node = todo.pop()
+        todo.extend(getattr(node, "children", {}).values())
+        block_id = getattr(getattr(node, "proto", None), "id", "")
+        if block_id.startswith("$$ID-"):
+            keys.append(block_id.split("-", 2)[2])
+    return keys
+
+
 def no_errors(at: AppTest) -> None:
     assert not at.exception, [e.value for e in at.exception]
 
 
-def test_a_turn_with_a_tool_call_renders_one_block_per_message_and_its_result():
-    # Catches a timeline that misses messages, or a call whose result the inspector can't find.
+def test_a_turn_with_a_tool_call_shows_the_call_with_its_result_and_opens_to_them():
+    # Catches a chat that misses messages, or a call whose result its row can't find.
     session, _ = make_session([response(tool_calls=[call("add", a=1, b=2)]), response("three")])
     at = app(session)
     at.chat_input[0].set_value("add 1 and 2").run()
     idle(session)
     at.run()
     no_errors(at)
-    assert sorted(b.key for b in at.button if b.key and b.key.startswith("hit-")) == [
-        "hit-1",
-        "hit-2",
-        "hit-3",
-        "hit-4",
-    ]
-    at.button(key="hit-2").click().run()  # the tool call
+    assert {"add 1 and 2", "three"} <= set(markdowns(at))
+    assert [b.key for b in at.button if b.key and b.key.startswith("hit-")] == ["hit-c2-0"]  # one row: call and result
+    assert any("add" in h and "✓ 3" in h for h in htmls(at))
+    at.button(key="hit-c2-0").click().run()
     no_errors(at)
-    assert any("add()" in h for h in htmls(at)) and "3" in [c.value for c in at.code]
+    assert "3" in [c.value for c in at.code]
 
 
 @tool
@@ -139,8 +152,7 @@ def test_compacted_messages_are_dimmed_under_a_divider():
     idle(session)
     at = app(session)
     no_errors(at)
-    cards = [h for h in htmls(at) if 'class="tl-card' in h]
-    assert sum(" out" in h.split('"')[1] for h in cards) == 2  # turn 3's message and reply
+    assert sum("-out-" in k for k in block_keys(at)) == 2  # turn 3's message and reply
     assert any("2 messages compacted" in h for h in htmls(at))
 
 
@@ -163,7 +175,7 @@ def test_a_subagent_appears_in_the_picker_with_how_its_turn_ended():
     assert picker.proto.captions[1].startswith(":violet[●] answered · 1 calls")
     picker.set_value("main/1").run()
     no_errors(at)
-    assert any("answer to t" in h for h in htmls(at))
+    assert "answer to t" in markdowns(at)
 
 
 def held_session(release: threading.Event, *script) -> Driver:
@@ -210,17 +222,17 @@ def test_a_message_while_busy_waits_on_a_card_then_runs():
     at.chat_input[0].set_value("do this instead").run()
     no_errors(at)
     try:
-        assert any("stopping… then: do this instead" in h for h in htmls(at))
+        assert "*stopping… then:* do this instead" in markdowns(at)
         assert at.chat_input[0].proto.disabled and at.chat_input[0].proto.placeholder == "Stopping…"
     finally:
         release.set()
     eventually(lambda: (job := session.view.state().last_job) is not None and job.result == "answered")
     at.run()
-    assert not any("stopping…" in h for h in htmls(at))
+    assert not any("stopping…" in m for m in markdowns(at))
     assert session.view.state().agents["main"].items[-1].message.content == "redirected"
 
 
-def test_a_reply_streaming_in_shows_in_the_live_card():
+def test_a_reply_streaming_in_shows_at_the_end_of_the_chat():
     # Catches streamed text that never reaches the screen until the reply lands.
     release = threading.Event()
     session = held_session(release)
@@ -232,8 +244,38 @@ def test_a_reply_streaming_in_shows_in_the_live_card():
     at.run()
     no_errors(at)
     try:
-        live = [h for h in htmls(at) if "ghost full" in h]
-        assert len(live) == 1 and "weighing it" in live[0] and "half an answer" in live[0]
+        assert any("stream" in h and "weighing it" in h for h in htmls(at))
+        assert "half an answer" in markdowns(at)
+    finally:
+        release.set()
+        idle(session)
+
+
+def test_a_thought_streaming_in_opens_in_full_and_stays_open_when_it_lands():
+    # Catches a live thought clipped to its tail when opened, or closing on its own when the reply lands.
+    release = threading.Event()
+    session = held_session(release)
+    at = app(session)
+    at.chat_input[0].set_value("go").run()
+    eventually(lambda: session.view.state().agents["main"].running)
+    thought = "first idea. " + "x" * 500 + " last idea."
+    session.view.listen(Delta(path="main", kind="reasoning", text=thought))
+    at.run()
+    try:
+        hit = next(b for b in at.button if b.key and b.key.startswith("hit-r"))
+        assert not any("first idea" in h for h in htmls(at))  # closed, it shows the latest words only
+        hit.click().run()
+        no_errors(at)
+        assert thought in markdowns(at)
+        uids = [i.uid for i in session.view.state().agents["main"].items]
+        session.view.listen(
+            MessageAdded(
+                path="main", message={"role": "assistant", "content": "ok", "reasoning": thought}, context_tokens=1
+            )
+        )
+        at.run()
+        assert session.view.state().agents["main"].items[-1].uid == max(uids) + 1
+        assert thought in markdowns(at)
     finally:
         release.set()
         idle(session)

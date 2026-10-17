@@ -7,8 +7,8 @@
 - **OpenRouter backend.** Every model call goes through one chat-completions client (`core/llm.py`), so any
   OpenRouter model works.
 - **Streaming or plain completions.** `ChatClient.complete` returns the whole reply at once;
-  `StreamingClient.stream` yields it as it's written, then the same parsed `Completion`. Only the agent the user
-  talks to streams; subagents don't.
+  `StreamingClient.stream` yields it as it's written, then the same parsed `Completion`. Every agent the
+  builders in `agents/` make streams, subagents included; `Agent` itself streams only with `stream=True`.
 - **Logging subscribes to the view; the core writes no files.** A `Recorder` (`logs.py`) subscribes to a tree's
   `AgentView` before the agent is built and writes every event, on its own thread, to
   `logs/processes/<run>/chat-<n>/`, one folder per agent nested like the tree (`1-research/2-researcher/`), and

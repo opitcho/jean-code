@@ -43,6 +43,19 @@ def test_subagents_have_no_subagents_of_their_own():
         agent.close()
 
 
+def test_the_coding_agent_and_its_subagents_stream():
+    # Catches a subagent whose reply lands whole: nothing shows while it works, and a stop can't cut it off.
+    builds = (
+        lambda b: coding_agent(skills_dir=None, approve=yes, node=b),
+        lambda b: searcher_agent("m", b),
+        lambda b: general_agent("m", b, skills_dir=None),
+    )
+    for build in builds:
+        agent = build(AgentNode(1.0))
+        assert agent.stream
+        agent.close()
+
+
 def test_the_general_subagent_runs_bash_in_docker_without_approval():
     # Catches a general subagent that Run.start refuses (host bash needs approval) or that runs on the host.
     node = AgentNode().child(0.5, "1")

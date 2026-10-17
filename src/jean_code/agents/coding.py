@@ -1,6 +1,7 @@
 """The coding agent: a root agent with a shell, web tools and subagents.
 
-`coding_agent` builds it. Its subagents are `searcher`, `general` and `research` (`subagent_profiles`).
+`coding_agent` builds it. Its subagents are `searcher`, `general` and `research` (`subagent_profiles`). Every agent
+built here streams its replies.
 """
 
 from pathlib import Path
@@ -72,7 +73,7 @@ def coding_agent(
         network: Whether containers get a network.
         skills_dir: Folder of skills the model can load.
         subagents: Whether it may start the subagents in `subagent_profiles`.
-        **kwargs: Passed on to `Agent`.
+        **kwargs: Passed on to `Agent`, except `stream`.
     """
     tools = shell_tools(sandbox, network)
     return Agent(
@@ -83,6 +84,7 @@ def coding_agent(
         cleanup=tools.cleanup,
         skills_dir=skills_dir,
         subagent_profiles=subagent_profiles(model, network, skills_dir) if subagents else None,
+        stream=True,
         **kwargs,
     )
 
@@ -95,7 +97,11 @@ def searcher_agent(model: str, node: AgentNode) -> Agent:
         node: Its node in the parent's tree.
     """
     return Agent(
-        model, system_prompt=SEARCHER_PROMPT, tools={"web_search": web_search, "fetch_page": fetch_page}, node=node
+        model,
+        system_prompt=SEARCHER_PROMPT,
+        tools={"web_search": web_search, "fetch_page": fetch_page},
+        node=node,
+        stream=True,
     )
 
 
@@ -121,6 +127,7 @@ def general_agent(
         cleanup=tools.cleanup,
         skills_dir=skills_dir,
         node=node,
+        stream=True,
     )
 
 
