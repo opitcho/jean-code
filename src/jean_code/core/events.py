@@ -1,10 +1,10 @@
-"""The events an agent emits as it works.
+"""The events an agent emits as it works, and those a `Driver` emits around it.
 
-They are enough to rebuild the agent's transcript: `AgentAdded` starts it, `MessageAdded` appends to it, and a
-`Compaction` with status "compacted" replaces part of it with a summary.
+The agent's events are enough to rebuild its transcript: `AgentAdded` starts it, `MessageAdded` appends to it, and a
+`Compaction` with status "compacted" replaces part of it with a summary. `ViewEvent` is every event of both kinds.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -137,4 +137,93 @@ class Charged(Event):
 
 AgentEvent = Annotated[
     AgentAdded | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged, Field(discriminator="type")
+]
+
+
+class Approval(BaseModel):
+    """A tool call waiting for the user's yes or no.
+
+    Attributes:
+        id: Identifies this approval among all those the driver asked.
+        path: The agent asking.
+        tool: The tool's name.
+        arguments: The call's arguments.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    id: int
+    path: str
+    tool: str
+    arguments: dict[str, Any]
+
+
+class JobStarted(BaseModel):
+    """A driver started a turn or a compaction; it's busy until `JobEnded`.
+
+    Attributes:
+        kind: A turn, or a compaction.
+        text: The user's message, for a turn.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["job_started"] = "job_started"
+    kind: Literal["turn", "compact"]
+    text: str = ""
+
+
+class JobEnded(BaseModel):
+    """A driver's job is over, and the driver is idle.
+
+    Attributes:
+        kind: A turn, or a compaction.
+        result: How the turn ended, or what the compaction returned; None when the job raised.
+        error: What the job raised, if it did.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["job_ended"] = "job_ended"
+    kind: Literal["turn", "compact"]
+    result: str | None = None
+    error: str | None = None
+
+
+class ApprovalRequested(BaseModel):
+    """A tool call waits for the user.
+
+    Attributes:
+        approval: The call waiting.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["approval_requested"] = "approval_requested"
+    approval: Approval
+
+
+class ApprovalResolved(BaseModel):
+    """A waiting tool call was answered.
+
+    Attributes:
+        id: The approval answered.
+        refusal: None when the call may run; otherwise the result the model gets instead.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["approval_resolved"] = "approval_resolved"
+    id: int
+    refusal: str | None
+
+
+ViewEvent = Annotated[
+    AgentAdded
+    | MessageAdded
+    | Delta
+    | TurnStarted
+    | TurnEnded
+    | Compaction
+    | Charged
+    | JobStarted
+    | JobEnded
+    | ApprovalRequested
+    | ApprovalResolved,
+    Field(discriminator="type"),
 ]

@@ -1,5 +1,5 @@
 """Tests for what the REPL prints (spend, stops, subagents, compaction) and how it answers approvals, driven through a
-`Session` built on a scripted agent. Logging itself is tested through `AgentNode` in `test_budget.py`.
+`Driver` built on a scripted agent. Logging itself is tested through `AgentNode` in `test_budget.py`.
 
 Each test names the bug it would catch.
 """
@@ -8,10 +8,11 @@ import threading
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent
+from jean_code.core.driver import Driver
+from jean_code.core.events import JobEnded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
-from jean_code.session import JobEnded, Session, Settings
 from jean_code.ui.repl import print_cost, repl, run_and_print
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -32,11 +33,11 @@ def tool_reply(cost=0.004, **kwargs) -> dict:
     return response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=cost), **kwargs)
 
 
-def make_session(responses, credit_data=None, settings: Settings | None = None, log_path=None, **agent_kwargs):
-    """A session whose agent answers from `responses`, and the list it builds that agent into."""
+def make_session(responses, credit_data=None, max_cost: float | None = None, log_path=None, **agent_kwargs):
+    """A driver whose agent answers from `responses`, and the list it builds that agent into."""
     built: list[Agent] = []
 
-    def build(settings: Settings, node: AgentNode, approve) -> Agent:
+    def build(node: AgentNode, approve) -> Agent:
         tools = agent_kwargs.pop("tools", {"add": add})
         agent = Agent(
             client=FakeClient(responses, credit_data), tools=tools, node=node, approve=approve, **agent_kwargs
@@ -44,11 +45,11 @@ def make_session(responses, credit_data=None, settings: Settings | None = None, 
         built.append(agent)
         return agent
 
-    return Session(settings or Settings(), build=build, log_path=log_path), built
+    return Driver(build, max_cost=max_cost, log_path=log_path), built
 
 
-def run(session: Session, line: str) -> JobEnded:
-    with session.subscribe() as (_, events):
+def run(session: Driver, line: str) -> JobEnded:
+    with session.view.subscribe() as (_, events):
         return run_and_print(session, events, line)
 
 
@@ -70,7 +71,7 @@ def scripted_input(lines):
 
 def test_budget_stop_message(capsys):
     # Catches the wrong message on a budget stop.
-    session, _ = make_session([tool_reply() for _ in range(11)], settings=Settings(max_cost=0.01))
+    session, _ = make_session([tool_reply() for _ in range(11)], max_cost=0.01)
     run(session, "go")
     out = capsys.readouterr().out
     assert "[budget spent]" in out
@@ -101,7 +102,7 @@ def test_run_and_print_reports_a_turn_that_raises(capsys):
 
 def test_unknown_cost_message(capsys):
     # Catches an unknown cost ending the turn, or shown as free or as a budget stop.
-    session, _ = make_session([response("hi", no_usage=True)], settings=Settings(max_cost=1.0))
+    session, _ = make_session([response("hi", no_usage=True)], max_cost=1.0)
     assert run(session, "go").result == "answered"
     out = capsys.readouterr().out
     assert "$?" in out and "[error]" not in out
@@ -120,7 +121,7 @@ def test_the_usage_line_sums_the_turns_calls(capsys):
 # ---------------------------------------------------------------- approvals
 
 
-def gated_session(responses) -> tuple[Session, list[str]]:
+def gated_session(responses) -> tuple[Driver, list[str]]:
     """A session whose `rm` needs approval, and the paths `rm` ran on."""
     ran = []
 
@@ -144,7 +145,7 @@ def test_repl_asks_for_approval_and_runs_the_call(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", scripted_input(["delete x", "y"]))
     repl(session)
     out = capsys.readouterr().out
-    assert ran == ["x"] and len(session.state().calls) == 2
+    assert ran == ["x"] and len(session.view.state().calls) == 2
     assert out.index("tool> rm(") < out.index("result> removed x") < out.index("agent> done")
 
 
@@ -225,7 +226,7 @@ def test_background_events_while_the_prompt_waits_are_not_printed_at_the_next_tu
         if line == "next":  # the run finishes while this prompt waits
             release.set()
             for _ in range(TIMEOUT * 100):
-                if session.pending():
+                if session.agent.subagents.pending:
                     break
                 threading.Event().wait(0.01)
         return line
@@ -245,7 +246,7 @@ def test_waiting_results_line_before_the_prompt(monkeypatch, capsys):
     )
     run(session, "go")
     for _ in range(TIMEOUT * 100):
-        if session.pending():
+        if session.agent.subagents.pending:
             break
         threading.Event().wait(0.01)
     capsys.readouterr()

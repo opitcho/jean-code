@@ -11,11 +11,11 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
+from jean_code.core.driver import Driver
 from jean_code.core.llm import parse_completion
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
 from jean_code.core.usage import ModelCall, breakdown_lines
-from jean_code.session import Session, Settings
 from jean_code.ui.repl import print_cost
 from test_compaction import compacted_session
 
@@ -259,10 +259,8 @@ def test_compaction_calls_are_charged():
 def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
     # Catches /cost hiding where the money went once subagents exist.
     credits = {"usage": 0, "limit": None, "limit_remaining": None}
-    session = Session(
-        Settings(), build=lambda s, node, a: Agent(client=FakeClient([], credits), node=node), log_path=None
-    )
-    root = session._agent.node
+    session = Driver(lambda node, approve: Agent(client=FakeClient([], credits), node=node))
+    root = session.agent.node
     root.charge(model_call(root.path, 0.001))
     child = Agent(client=FakeClient([]), node=root.child(None, "1", task="look something up"))
     child.node.charge(model_call("main/1", 0.004))

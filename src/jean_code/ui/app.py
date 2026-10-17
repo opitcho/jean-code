@@ -1,12 +1,10 @@
-"""Streamlit UI for the agent: a live, clickable timeline of turns plus an inspector.
+"""Streamlit UI: a live, clickable timeline of an agent's turns, plus an inspector.
 
 Run with: uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
-The app drives the agent through a `Session` kept in `st.session_state.session`, and draws `session.state()` on each
-rerun, polling while a job or any subagent runs. Every message an agent has had stays in its timeline: those a
-compaction took out of the context are dimmed, not lost.
-
-The sidebar picks which agent the timeline and inspector show: the main agent, or any agent in its tree.
+The view updates live while a job or any subagent runs. Every message an agent has had stays in its timeline:
+those a compaction took out of the context are dimmed, not lost. The sidebar picks which agent the timeline and
+inspector show: the main agent, or any agent in its tree.
 """
 
 import html
@@ -19,20 +17,18 @@ from typing import Any
 
 import streamlit as st
 
-from jean_code.session import (
-    HEAD_MARKER_TAG,
-    SUMMARY_TAG,
-    AgentState,
-    Compaction,
-    Item,
-    Session,
-    SessionState,
-    Settings,
-    denied,
-    human,
-    render_message,
-    usage_line,
-)
+from jean_code.agents.coding import coding_agent
+from jean_code.agents.experts import orchestrator_agent
+from jean_code.config import USAGE_LOG
+from jean_code.core import llm
+from jean_code.core.agent import DEFAULT_MODEL, Agent
+from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.driver import Approve, Driver, denied
+from jean_code.core.events import Compaction
+from jean_code.core.llm import render_message
+from jean_code.core.node import AgentNode
+from jean_code.core.usage import human, usage_line
+from jean_code.core.view import AgentState, Item, TreeState
 
 MAIN = "main"  # the main agent's path
 AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
@@ -78,12 +74,21 @@ USAGE_COLUMNS = {
 }
 
 
-def session() -> Session:
-    return st.session_state.session
+def driver() -> Driver:
+    return st.session_state.driver
+
+
+def results_waiting() -> int:
+    """Returns how many background subagent results the main agent hasn't received yet."""
+    subagents = driver().agent.subagents
+    return subagents.pending if subagents else 0
 
 
 def to_jsonable(value):
-    """Best-effort conversion of models, dataclasses and containers into something st.json can render."""
+    """Converts models, dataclasses and containers into something st.json renders.
+
+    Best effort: anything else becomes its `str`.
+    """
     if isinstance(value, dict):
         return {k: to_jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
@@ -98,14 +103,14 @@ def to_jsonable(value):
 
 
 def mget(msg, key, default=None) -> Any:
-    """Read `key` from a message whether it's a plain dict or an attribute-style object."""
+    """Reads `key` from a message, whether it's a dict or an attribute-style object."""
     if isinstance(msg, dict):
         return msg.get(key, default)
     return getattr(msg, key, default)
 
 
 def turn_kind(msg) -> str:
-    """Classify a transcript message by its most important part: calls, then thinking, then role."""
+    """Returns a message's kind: by its calls, then its thinking, then its role."""
     role = mget(msg, "role")
     if mget(msg, "tool_calls"):
         return "tool_call"
@@ -122,7 +127,10 @@ def turn_kind(msg) -> str:
 
 
 def parse_args(call) -> dict:
-    """A tool call's arguments: the agent stores them as the model sent them, a JSON string."""
+    """Returns a tool call's arguments, parsed from the JSON string the model sent.
+
+    Arguments that don't parse as a JSON object read as none.
+    """
     try:
         value = json.loads(call.function.arguments or "{}")
     except (ValueError, TypeError):
@@ -131,7 +139,10 @@ def parse_args(call) -> dict:
 
 
 def is_error(msg) -> bool:
-    """A tool result that reports a failure: a tool error, a denial, a skipped call or a non-zero exit code."""
+    """Returns whether a tool result reports a failure.
+
+    A failure is a tool error, a denial, a skipped call or a non-zero exit code.
+    """
     content = str(mget(msg, "content") or "")
     exit_code = EXIT_CODE.match(content)
     return content.startswith(ERROR_PREFIXES) or (exit_code is not None and exit_code.group(1) != "0")
@@ -147,7 +158,7 @@ def clip(text, limit: int) -> str:
 
 
 def call_summary(call) -> str:
-    """`name · first argument`, e.g. `bash · ls -la`."""
+    """Returns a call as `name · first argument`, e.g. `bash · ls -la`."""
     args = parse_args(call)
     first = next(iter(args.values()), None)
     if first is None:
@@ -156,7 +167,10 @@ def call_summary(call) -> str:
 
 
 def result_summary(msg, name: str) -> str:
-    """`name → first line of output`, with the exit code when a command failed."""
+    """Returns a result as `name → first line of output`.
+
+    A failed command's exit code comes before the line.
+    """
     content = str(mget(msg, "content") or "")
     exit_code = EXIT_CODE.match(content)
     if exit_code:
@@ -167,7 +181,7 @@ def result_summary(msg, name: str) -> str:
 
 
 def preview(msg, kind: str, names: dict, limit: int = 90) -> str:
-    """One-line summary of a message for its timeline block."""
+    """Returns a one-line summary of a message, for its timeline block."""
     if kind == "tool_call":
         text = "; ".join(call_summary(c) for c in mget(msg, "tool_calls"))
     elif kind == "tool_result":
@@ -182,7 +196,10 @@ def preview(msg, kind: str, names: dict, limit: int = 90) -> str:
 
 
 def results_of(entries: list[Item], pos: int) -> list[Item]:
-    """The tool results following the call at `pos`, in call order (results match calls by position)."""
+    """Returns the tool results after the call at `pos`, in call order.
+
+    Results match calls by position.
+    """
     results = []
     for e in entries[pos + 1 :]:
         if turn_kind(e.message) != "tool_result":
@@ -192,7 +209,10 @@ def results_of(entries: list[Item], pos: int) -> list[Item]:
 
 
 def call_of(entries: list[Item], pos: int) -> Item | None:
-    """The tool call a result at `pos` belongs to: the nearest call before its run of results."""
+    """Returns the call the result at `pos` answers: the nearest one before its run.
+
+    None if a message other than a result comes first.
+    """
     for e in reversed(entries[:pos]):
         kind = turn_kind(e.message)
         if kind == "tool_call":
@@ -203,17 +223,20 @@ def call_of(entries: list[Item], pos: int) -> Item | None:
 
 
 def call_names(entries: list[Item]) -> dict[str, str]:
-    """Tool name of every call seen, by call id, so a result can be matched to its tool by `tool_call_id`."""
+    """Returns each call's tool name by call id, to match a result by `tool_call_id`."""
     return {call.id: call.function.name for e in entries for call in mget(e.message, "tool_calls") or []}
 
 
 def compaction_of(agent: AgentState, msg) -> Compaction | None:
-    """The compaction whose summary is `msg`, if any."""
+    """Returns the compaction whose summary is `msg`, if any."""
     return next((c for c in agent.compactions if c.summary is msg), None)
 
 
 def compaction_line(event: Compaction) -> str:
-    """`[compacted 38 messages · ~210.0k → ~24.0k tokens]`, or why a compaction didn't happen."""
+    """Returns the line for a compaction, or for why it didn't happen.
+
+    For example `[compacted 38 messages · ~210.0k → ~24.0k tokens]`.
+    """
     if event.status == "compacted":
         return (
             f"[compacted {event.removed} messages · ~{human(event.tokens_before)} → "
@@ -227,12 +250,12 @@ def money(cost: float | None) -> str:
 
 
 def own_cost(agent: AgentState) -> float:
-    """What the agent's own calls cost; unknown costs count as 0."""
+    """Returns what the agent's own calls cost; unknown costs count as 0."""
     return sum(c.cost or 0 for c in agent.calls)
 
 
 def context_size(agent: AgentState, compact_at: int | None) -> str:
-    """`~24.0k / 256.0k`: the context's size against the compaction threshold."""
+    """Returns the context size against the compaction threshold: `~24.0k / 256.0k`."""
     size = f"~{human(agent.context_tokens)}"
     return f"{size} / {human(compact_at)}" if compact_at else size
 
@@ -240,17 +263,22 @@ def context_size(agent: AgentState, compact_at: int | None) -> str:
 # ---------------------------------------------------------------- what the state means for the screen
 
 
-def is_running(state: SessionState, path: str) -> bool:
-    """Working, not waiting for the user: the main agent while its job runs and nothing waits for approval; any
-    other agent during its turn."""
+def is_running(state: TreeState, path: str) -> bool:
+    """Returns whether the agent at `path` is working, not waiting for the user.
+
+    The main agent works while its job runs and no call waits for approval; any other agent during its turn.
+    """
     if path == MAIN:
         return state.busy and state.approval is None
     return state.agents[path].running
 
 
-def status_of(state: SessionState, path: str) -> tuple[str, str | None]:
-    """(status, detail): "running", "awaiting approval", or how the agent's last turn ended ("answered", a stop
-    reason, "failed"), else "idle"."""
+def status_of(state: TreeState, path: str) -> tuple[str, str | None]:
+    """Returns the agent's status, and a failure's error as its detail.
+
+    The status is "running", "awaiting approval", how its last turn ended ("answered", a stop reason, "failed"),
+    or else "idle".
+    """
     agent = state.agents[path]
     if path == MAIN and state.approval is not None:
         return "awaiting approval", None
@@ -265,15 +293,18 @@ def style(status: str) -> tuple[str, str, str]:
     return STATUSES.get(status, STATUSES["stopped"])
 
 
-def signature(state: SessionState) -> tuple:
-    """What the sidebar and the input show: each agent and whether it runs, whether the session is busy or waits
-    for approval, results waiting. A change means a full rerun, so they catch up."""
+def signature(state: TreeState) -> tuple:
+    """Returns what the sidebar and the input show, to tell when they're stale.
+
+    That's each agent and whether it runs, whether the session is busy or waits for approval, and how many results
+    wait. A change means a full rerun, so they catch up.
+    """
     agents = tuple((path, a.running) for path, a in state.agents.items())
-    return agents, state.busy, state.approval is not None, session().pending()
+    return agents, state.busy, state.approval is not None, results_waiting()
 
 
-def live(state: SessionState) -> bool:
-    """Whether anything can change without the user: then the view polls."""
+def live(state: TreeState) -> bool:
+    """Returns whether anything can change without the user; the view then polls."""
     return state.busy or any(a.running for a in state.agents.values())
 
 
@@ -281,7 +312,7 @@ def live(state: SessionState) -> bool:
 
 
 def reset_view() -> None:
-    """Forget what the UI showed of the previous chat."""
+    """Forgets what the UI showed of the previous chat."""
     st.session_state.selected = {}  # path -> selected uid; None or missing follows the latest
     st.session_state.view = MAIN  # the agent picker's value
     st.session_state.compactions_seen = 0
@@ -289,50 +320,70 @@ def reset_view() -> None:
 
 
 def orchestrating() -> bool:
-    """Whether the sidebar's Agent select is on the orchestrator."""
+    """Returns whether the sidebar's Agent select is on the orchestrator."""
     return st.session_state.get("agent_kind", AGENT_KINDS[0]) == "Orchestrator"
 
 
 def reasoning_effort() -> str | None:
-    """The sidebar's reasoning level as `Settings.reasoning` takes it: None for "off"."""
+    """Returns the sidebar's reasoning level as `Agent.reasoning` takes it.
+
+    "off" becomes None.
+    """
     level = st.session_state.get("reasoning", "medium")
     return None if level == "off" else level
 
 
-def sidebar_settings() -> dict:
-    return {
-        "kind": "orchestrator" if orchestrating() else "coding",
-        "sandbox": st.session_state.get("sandbox", False),
-        "reasoning": reasoning_effort(),
-    }
+def choice() -> tuple[bool, bool]:
+    """Returns what the sidebar picks to build: (orchestrator, Docker sandbox)."""
+    return orchestrating(), st.session_state.get("sandbox", False)
+
+
+def build_agent(node: AgentNode, approve: Approve) -> Agent:
+    """Builds the agent the sidebar picks, on `node`."""
+    common = {"reasoning": reasoning_effort(), "node": node}
+    orchestrator, sandbox = choice()
+    if orchestrator:  # nothing it calls needs approval
+        return orchestrator_agent(DEFAULT_MODEL, **common)
+    return coding_agent(DEFAULT_MODEL, sandbox=sandbox, approve=approve, **common)
+
+
+def new_driver() -> Driver:
+    st.session_state.built = choice()
+    return Driver(build_agent, log_path=USAGE_LOG)
 
 
 def apply_settings() -> None:
-    """The sidebar changed: the agent kind or the sandbox switch start a new chat; reasoning applies to the next
-    request."""
-    before = session().state().settings
-    session().configure(sidebar_settings())
-    if session().state().settings.kind != before.kind or session().state().settings.sandbox != before.sandbox:
-        reset_view()
+    """Applies the sidebar's settings.
+
+    A new agent kind or sandbox switch starts a new chat; reasoning applies from the next request.
+    """
+    if choice() != st.session_state.get("built", choice()):
+        new_chat()
+    else:
+        driver().configure(reasoning=reasoning_effort())
 
 
 def new_chat() -> None:
-    session().reset()
+    driver().close()
+    st.session_state.driver = new_driver()
     reset_view()
 
 
 def select(uid: int | None) -> None:
-    """Select a block in the timeline of the agent on view; None follows the latest."""
+    """Selects a block in the timeline of the agent on view; None follows the latest."""
     st.session_state.selected[st.session_state.view] = uid
 
 
 def show(path: str) -> None:
-    """Show another agent. A button callback: the picker's value can only change before the picker is drawn."""
+    """Shows the agent at `path`.
+
+    It's a button callback because the picker's value can only change before the picker is drawn.
+    """
     st.session_state.view = path
 
 
 def answer_approval(approval_id: int, refusal: str | None = None) -> None:
-    session().answer(approval_id, refusal)
+    driver().answer(approval_id, refusal)
     select(None)
 
 
@@ -340,27 +391,30 @@ def answer_approval(approval_id: int, refusal: str | None = None) -> None:
 
 
 def kind_css() -> str:
-    """Each kind's accent as `--c`, on its timeline block and on anything tagged `k-<kind>`; errors override it."""
+    """Returns each kind's accent as `--c` CSS, for its blocks and `k-<kind>` tags.
+
+    Errors override it.
+    """
     rules = "".join(f'[class*="st-key-blk-{k}-"], .k-{k} {{ --c:{c}; }}\n' for k, (_, _, c) in KINDS.items())
     return f'<style>{rules}[class*="st-key-blk-"][class*="-err-"], .err {{ --c:var(--err); }}</style>'
 
 
 def pill(text, *, bold=None, cls: str = "", dot: str | None = None) -> str:
-    """A rounded label: an optional status dot, an optional bold value, then the text."""
+    """Returns a rounded label: an optional status dot and bold value, then the text."""
     dot_html = f'<span class="dot {dot}"></span>' if dot is not None else ""
     bold_html = f"<b>{html.escape(str(bold))}</b> " if bold is not None else ""
     return f'<span class="pill {cls}">{dot_html}{bold_html}{html.escape(str(text))}</span>'
 
 
 def chips(items, *, on=(), empty_text: str = "none") -> str:
-    """A wrapping row of pills; items in `on` are highlighted."""
+    """Returns a wrapping row of pills; items in `on` are highlighted."""
     if not items:
         return f'<div class="row">{pill(empty_text)}</div>'
     return '<div class="row">' + "".join(pill(i, cls="mono on" if i in on else "mono") for i in items) + "</div>"
 
 
 def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mono: bool = False) -> str:
-    """A timeline card: kind label and icon, optional #number, and a one-line preview."""
+    """Returns a timeline card: kind label and icon, optional #number, and a preview."""
     label, icon, _ = KINDS[kind]
     num_html = f'<span class="tl-num">#{num}</span>' if num is not None else ""
     return (
@@ -370,7 +424,10 @@ def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mon
 
 
 def kv_grid(rows: dict, fmt=json.dumps) -> str:
-    """A two-column key/value table; values go through `fmt` (JSON by default, so strings show quoted)."""
+    """Returns a two-column key/value table.
+
+    Values go through `fmt`: JSON by default, so strings show quoted.
+    """
     cells = (
         "".join(f'<div class="k">{html.escape(str(k))}</div><div>{html.escape(fmt(v))}</div>' for k, v in rows.items())
         or '<div class="k">—</div><div>none</div>'
@@ -379,7 +436,7 @@ def kv_grid(rows: dict, fmt=json.dumps) -> str:
 
 
 def eyebrow(text: str) -> str:
-    """Small uppercase section label."""
+    """Returns a small uppercase section label."""
     return f'<div class="eyebrow">{html.escape(text)}</div>'
 
 
@@ -396,9 +453,11 @@ def show_reasoning(text: str) -> None:
 # ---------------------------------------------------------------- rendering
 
 
-def render_sidebar_top(state: SessionState) -> None:
-    """Brand, the Agent select and (for the coding agent) the sandbox toggle. Both start a new chat, so they're
-    disabled while a job runs."""
+def render_sidebar_top(state: TreeState) -> None:
+    """Draws the brand, the Agent select and, for the coding agent, the sandbox toggle.
+
+    Both controls start a new chat, so they're disabled while a job runs.
+    """
     with st.sidebar:
         st.html(
             '<div class="brand"><div class="brand-mark">🧮</div>'
@@ -426,20 +485,22 @@ def render_sidebar_top(state: SessionState) -> None:
         )
 
 
-def render_sidebar(state: SessionState) -> None:
+def render_sidebar(state: TreeState) -> None:
+    """Draws the rest of the sidebar: shell, skills, model, reasoning, budget, agents."""
     if orchestrating():
         note = None  # no shell
-    elif state.settings.sandbox:
+    elif choice()[1]:
         note = "<b>Docker sandbox</b> — commands run without asking"
     else:
         note = "<b>Local shell</b> — each command needs approval"
-    details = session().inspect(MAIN)
+    agent = driver().agent
+    skills = sorted(agent.skills.catalog)
     main = state.agents[MAIN]
     with st.sidebar:
         if note:
             st.html(f'<div class="shell-note">{note}</div>')
-        st.html(eyebrow(f"SKILLS · {len(details.skills)}"))
-        st.html(chips(details.skills, on=details.loaded_skills, empty_text="no skills found"))
+        st.html(eyebrow(f"SKILLS · {len(skills)}"))
+        st.html(chips(skills, on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(main.model, cls="model") + "</div>")
         st.segmented_control(
@@ -452,22 +513,28 @@ def render_sidebar(state: SessionState) -> None:
             help="Sent with each of the main agent's requests, from the next one on, "
             "so it can change mid-chat. Subagents keep their own (medium).",
         )
-        if limit := state.settings.max_cost:  # the agent and any subagents
+        if limit := agent.max_cost:  # the agent and any subagents
             st.progress(min(main.spent / limit, 1.0), text=f"${main.spent:.4f} of ${limit:.2f} budget")
         render_agents(state)
 
 
-def agent_label(state: SessionState, path: str) -> str:
-    """The picker's line for an agent: its name, subagents indented by depth. It must never change, status included:
-    the browser sends the picked label back, and a label that no longer matches an option loses the pick."""
+def agent_label(state: TreeState, path: str) -> str:
+    """Returns the picker's line for an agent: its name, subagents indented by depth.
+
+    It must never change, status included: the browser sends the picked label back, and a label that no longer
+    matches an option loses the pick.
+    """
     if path == MAIN:
         return f"**{path}**"
     indent = " " * (path.count("/") - 1)  # em spaces: markdown collapses plain ones
     return f"{indent}↳ **#{path.rsplit('/', 1)[-1]}** {state.agents[path].profile}"
 
 
-def agent_caption(state: SessionState, path: str) -> str:
-    """The picker's second line: a status dot and status, the agent's own calls and spend, and a subagent's task."""
+def agent_caption(state: TreeState, path: str) -> str:
+    """Returns the picker's second line for an agent: status, calls, spend and task.
+
+    That's a status dot and the status, the agent's own calls and spend, and a subagent's task.
+    """
     status, detail = status_of(state, path)
     agent = state.agents[path]
     parts = [
@@ -479,9 +546,12 @@ def agent_caption(state: SessionState, path: str) -> str:
     return " · ".join(parts)
 
 
-def render_agents(state: SessionState) -> None:
-    """The agent picker: the main agent and every agent in its tree, and a notice for results waiting to be
-    delivered. Refreshed by full reruns, which a change of `signature` triggers."""
+def render_agents(state: TreeState) -> None:
+    """Draws the agent picker, and a notice for results waiting to be delivered.
+
+    The picker lists the main agent and every agent in its tree. It's refreshed by full reruns, which a change of
+    `signature` triggers.
+    """
     paths = list(state.agents)
     st.html(eyebrow(f"AGENTS · {len(paths)}"))
     st.radio(
@@ -494,7 +564,7 @@ def render_agents(state: SessionState) -> None:
     )
     if len(paths) == 1:
         st.caption("No subagents started yet.")
-    if pending := session().pending():
+    if pending := results_waiting():
         st.info(
             f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
             f"{'them' if pending > 1 else 'it'}.",
@@ -502,7 +572,12 @@ def render_agents(state: SessionState) -> None:
         )
 
 
-def render_header(state: SessionState, path: str, entries: list[Item], ctx: list[Item]) -> None:
+def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[Item]) -> None:
+    """Draws the header of the agent on view: its status, counts, context and actions.
+
+    The action is Stop or New chat for the main agent, and Cancel run or Back to main for a subagent. Below the
+    header goes a failure, or why the agent stopped before answering.
+    """
     agent = state.agents[path]
     tool_calls = sum(turn_kind(e.message) == "tool_call" for e in entries)
     compacted = sum(not e.in_context for e in entries)
@@ -520,7 +595,7 @@ def render_header(state: SessionState, path: str, entries: list[Item], ctx: list
         )
         if n
     ]
-    pills.append(pill("context", bold=context_size(agent, session().inspect(path).compact_at), cls="mono"))
+    pills.append(pill("context", bold=context_size(agent, driver().agent_at(path).compact_at), cls="mono"))
     if agent.calls:
         pills.append(pill(usage_line(agent.calls), cls="mono"))
 
@@ -528,14 +603,14 @@ def render_header(state: SessionState, path: str, entries: list[Item], ctx: list
         st.html(f'<div class="hdr"><span class="hdr-title">jean-code</span>{"".join(pills)}</div>')
         if path == MAIN:
             if state.busy:  # also while a call waits for approval: Stop answers it
-                st.button("Stop", icon=":material/stop_circle:", on_click=session().cancel, type="primary")
+                st.button("Stop", icon=":material/stop_circle:", on_click=driver().cancel, type="primary")
             else:
                 st.button("New chat", icon=":material/refresh:", on_click=new_chat)
         elif agent.running:
             st.button(
                 "Cancel run",
                 icon=":material/cancel:",
-                on_click=session().cancel,
+                on_click=driver().cancel,
                 args=(path,),
                 type="primary",
                 help="Stops this subagent, and any it started, after the model call it is making.",
@@ -552,6 +627,11 @@ def render_header(state: SessionState, path: str, entries: list[Item], ctx: list
 
 
 def render_timeline(agent: AgentState, entries: list[Item], selected: Item | None, running: bool, pending) -> None:
+    """Draws the agent's timeline: one clickable block per message.
+
+    Compacted messages are dimmed, with a divider where the context starts again. After the last block comes a
+    placeholder while the agent runs, or the call waiting for approval.
+    """
     names = call_names(entries)
     with st.container(height=640, autoscroll=True, border=False, key="timeline"):
         if not entries and not running:
@@ -584,7 +664,10 @@ def render_timeline(agent: AgentState, entries: list[Item], selected: Item | Non
 
 
 def render_approval(approval) -> None:
-    """The call waiting for approval, with Approve / Deny. Sending a message instead denies it, as the reason."""
+    """Draws the call waiting for approval, with Approve and Deny.
+
+    Sending a message instead denies it, with the message as the reason.
+    """
     with st.container(key="blk-approval-pending"):
         st.html(card("approval", f"{approval.tool}() wants to run:", mono=True))
         command = approval.arguments.get("command") if approval.tool == "bash" else None
@@ -606,7 +689,10 @@ def render_approval(approval) -> None:
 
 
 def render_args(args: dict) -> None:
-    """Short arguments in a key/value table; commands and long or multi-line strings as code blocks."""
+    """Draws a call's arguments.
+
+    Short ones go in a key/value table; commands and long or multi-line strings in code blocks.
+    """
 
     def is_long(k, v):
         return isinstance(v, str) and (k == "command" or "\n" in v or len(v) > LONG_ARG)
@@ -621,7 +707,10 @@ def render_args(args: dict) -> None:
 
 
 def render_output(result: Item) -> None:
-    """A tool result's content: pretty JSON when it parses as JSON, height-capped when long, red when it failed."""
+    """Draws a tool result's content.
+
+    It's pretty JSON when it parses as JSON, height-capped when long, and red when the call failed.
+    """
     content, language = str(mget(result.message, "content")), None
     try:
         parsed = json.loads(content)
@@ -635,6 +724,7 @@ def render_output(result: Item) -> None:
 
 
 def render_tool_call(entries: list[Item], pos: int, running: bool, pending: bool) -> None:
+    """Draws a tool-call message in the inspector: each call, its arguments and result."""
     msg = entries[pos].message
     if mget(msg, "reasoning"):
         show_reasoning(mget(msg, "reasoning"))
@@ -668,6 +758,7 @@ def render_tool_call(entries: list[Item], pos: int, running: bool, pending: bool
 
 
 def render_tool_result(entries: list[Item], pos: int) -> None:
+    """Draws a tool result in the inspector, with a link back to its call."""
     result = entries[pos]
     name = call_names(entries).get(mget(result.message, "tool_call_id"), "tool")
     err = " err" if is_error(result.message) else ""
@@ -681,7 +772,7 @@ def render_tool_result(entries: list[Item], pos: int) -> None:
 
 
 def render_text(msg, kind: str) -> None:
-    """User, system, agent and thinking messages: the reasoning, then the markdown content."""
+    """Draws a user, system, agent or thinking message: reasoning, then content."""
     if mget(msg, "reasoning"):
         show_reasoning(mget(msg, "reasoning"))
     if kind != "thinking":
@@ -691,6 +782,7 @@ def render_text(msg, kind: str) -> None:
 def render_turn(
     agent: AgentState, entries: list[Item], selected: Item | None, ctx: list[Item], running: bool, pending: bool
 ) -> None:
+    """Draws the selected message in the inspector, whatever its kind."""
     if selected is None:
         empty("◇", "Click a block in the timeline to inspect it.")
         return
@@ -739,7 +831,9 @@ def render_turn(
 
 
 def render_request(path: str, agent: AgentState) -> None:
-    req = session().last_request(path)
+    """Draws the agent's last request: model, tools, last call, usage and payload."""
+    request = driver().agent_at(path).last_request
+    req = llm.render_request(request) if request else None
     if not req:
         empty("⇅", "No request sent yet.")
         return
@@ -787,8 +881,11 @@ def render_request(path: str, agent: AgentState) -> None:
 
 
 def render_context(path: str, agent: AgentState) -> None:
-    """The context's size against the compaction threshold, the settings, and every compaction attempt."""
-    details = session().inspect(path)
+    """Draws the context's size and settings, and every compaction attempt.
+
+    The size is shown against the compaction threshold.
+    """
+    details = driver().agent_at(path)
     if details.compact_at:
         st.progress(
             min(agent.context_tokens / details.compact_at, 1.0),
@@ -822,10 +919,11 @@ def render_context(path: str, agent: AgentState) -> None:
 
 
 def render_state(path: str, agent: AgentState) -> None:
-    details = session().inspect(path)
+    """Draws the agent's config, the tools needing approval, its skills and its state."""
+    details = driver().agent_at(path)
     st.html(eyebrow("CONFIG") + kv_grid({k: getattr(details, k) for k in STATE_CONFIG}))
-    st.html(eyebrow("NEEDS APPROVAL") + chips(details.needs_approval))
-    st.html(eyebrow("LOADED SKILLS") + chips(details.loaded_skills))
+    st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(details.needs_approval)))
+    st.html(eyebrow("LOADED SKILLS") + chips(details.skills.loaded))
     summary = {
         "path": agent.path,
         "profile": agent.profile,
@@ -838,15 +936,17 @@ def render_state(path: str, agent: AgentState) -> None:
         "calls": len(agent.calls),
         "spent (with its subagents)": round(agent.spent, 6),
         "context tokens": agent.context_tokens,
-        "tools": details.tools,
     }
     st.html(eyebrow("AGENT STATE"))
     st.json(to_jsonable(summary), expanded=1)
 
 
-def announce(state: SessionState) -> None:
-    """Toast each compaction attempt of the main agent's since the last full rerun, and the outcome of a /compact
-    that left no record ("nothing to compact", a refusal). Runs in the full script, which reruns when a job ends."""
+def announce(state: TreeState) -> None:
+    """Toasts the main agent's compaction attempts since the last full rerun.
+
+    It also toasts the outcome of a /compact that left no record ("nothing to compact", a refusal). It runs in
+    the full script, which reruns when a job ends.
+    """
     records = state.agents[MAIN].compactions
     new = records[st.session_state.compactions_seen :]
     for rec in new:
@@ -865,11 +965,11 @@ st.set_page_config(page_title="jean-code", page_icon="🧮", layout="wide")
 st.html(CSS_PATH)
 st.html(kind_css())
 
-if "session" not in st.session_state:
-    st.session_state.session = Session(Settings(**sidebar_settings()))
+if "driver" not in st.session_state:
+    st.session_state.driver = new_driver()
 if "selected" not in st.session_state:
     reset_view()
-state = session().state()
+state = driver().view.state()
 render_sidebar_top(state)
 render_sidebar(state)
 announce(state)
@@ -878,7 +978,11 @@ st.session_state.signature_seen = signature(state)
 
 @st.fragment(run_every=POLL_SECONDS if live(state) else None)
 def live_view() -> None:
-    state = session().state()
+    """Draws the header, timeline and inspector of the agent on view.
+
+    It polls while anything runs, and reruns the whole script when `signature` changes.
+    """
+    state = driver().view.state()
     if signature(state) != st.session_state.signature_seen:
         st.rerun()  # an agent started or stopped, a job ended, or a result is waiting: the sidebar catches up
 
@@ -910,9 +1014,9 @@ def live_view() -> None:
             if approval is not None:
                 answer_approval(approval.id, denied(prompt))
             elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
-                session().compact()
+                driver().compact()
             else:
-                session().send(prompt)
+                driver().send(prompt)
             select(None)
             st.rerun()
 

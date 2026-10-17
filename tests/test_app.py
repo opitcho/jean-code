@@ -1,5 +1,5 @@
-"""Tests for the Streamlit app (ui/app.py), run with Streamlit's AppTest on a `Session` whose agent is scripted.
-The session is put in `st.session_state` before the first run, so the app draws it instead of building its own.
+"""Tests for the Streamlit app (ui/app.py), run with Streamlit's AppTest on a `Driver` whose agent is scripted.
+The driver is put in `st.session_state` before the first run, so the app draws it instead of building its own.
 
 Each test names the bug it would catch.
 """
@@ -13,10 +13,10 @@ from streamlit.testing.v1 import AppTest
 import jean_code
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
+from jean_code.core.driver import Driver
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
-from jean_code.session import Session, Settings
 
 APP = Path(jean_code.__file__).parent / "ui" / "app.py"
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -35,22 +35,22 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
-def make_session(responses, tools=None, **agent_kwargs) -> tuple[Session, list[Agent]]:
+def make_session(responses, tools=None, **agent_kwargs) -> tuple[Driver, list[Agent]]:
     built: list[Agent] = []
 
-    def build(settings: Settings, node: AgentNode, approve) -> Agent:
+    def build(node: AgentNode, approve) -> Agent:
         agent = Agent(
             client=FakeClient(responses), tools=tools or {"add": add}, node=node, approve=approve, **agent_kwargs
         )
         built.append(agent)
         return agent
 
-    return Session(Settings(), build=build, log_path=None), built
+    return Driver(build), built
 
 
-def app(session: Session) -> AppTest:
+def app(session: Driver) -> AppTest:
     at = AppTest.from_file(str(APP), default_timeout=10)
-    at.session_state["session"] = session
+    at.session_state["driver"] = session
     return at.run()
 
 
@@ -62,8 +62,8 @@ def eventually(predicate) -> None:
     raise AssertionError("timed out")
 
 
-def idle(session: Session) -> None:
-    eventually(lambda: not session.state().busy)
+def idle(session: Driver) -> None:
+    eventually(lambda: not session.view.state().busy)
 
 
 def htmls(at: AppTest) -> list[str]:
@@ -111,7 +111,7 @@ def test_a_pending_approval_is_answered_from_its_card(approve):
     )
     at = app(session)
     at.chat_input[0].set_value("delete x").run()
-    eventually(lambda: session.state().approval is not None)
+    eventually(lambda: session.view.state().approval is not None)
     at.run()
     no_errors(at)
     if approve:
@@ -127,7 +127,7 @@ def test_a_pending_approval_is_answered_from_its_card(approve):
 def test_compacted_messages_are_dimmed_under_a_divider():
     # Catches compacted messages dropped from the timeline, or shown as if still in context.
     session, _ = make_session([], system_prompt="sys", compact_at=1000, keep_first=2, keep_last=2)
-    client = session._agent.client
+    client = session.agent.client
     assert isinstance(client, FakeClient)
     for i in range(1, 6):
         client.responses.append(response(f"reply {i}" + (BULK if i == 3 else ""), usage=SMALL))
@@ -166,7 +166,7 @@ def test_a_subagent_appears_in_the_picker_with_how_its_turn_ended():
 
 
 def test_while_busy_the_input_and_the_rebuilding_settings_are_disabled():
-    # Catches a message or a new chat started under a running turn, which Session would refuse with Busy.
+    # Catches a message or a new chat started under a running turn, which the driver would refuse with Busy.
     release = threading.Event()
 
     @tool
@@ -178,7 +178,7 @@ def test_while_busy_the_input_and_the_rebuilding_settings_are_disabled():
     session, _ = make_session([response(tool_calls=[call("hold")]), response("done")], tools={"hold": hold})
     at = app(session)
     at.chat_input[0].set_value("go").run()
-    eventually(lambda: session.state().agents["main"].running)
+    eventually(lambda: session.view.state().agents["main"].running)
     at.run()
     no_errors(at)
     try:
@@ -205,12 +205,12 @@ def test_stop_ends_the_turn():
     )
     at = app(session)
     at.chat_input[0].set_value("go").run()
-    eventually(lambda: session.state().agents["main"].running)
+    eventually(lambda: session.view.state().agents["main"].running)
     at.run()
     next(b for b in at.button if b.label == "Stop").click().run()
     release.set()
     idle(session)
-    assert session.state().last_job.result == "cancelled"
+    assert session.view.state().last_job.result == "cancelled"
 
 
 def test_compact_that_changes_nothing_says_so():
