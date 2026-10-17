@@ -6,10 +6,9 @@ waits there. The front-end sees the call in `waiting` from its own thread, asks 
 
 import threading
 
+from jean_code.session import denied
 
-def denied(reason: str = "") -> str:
-    """The result the model gets for a call the user refused."""
-    return f"Denied by user. {reason}".strip()
+__all__ = ["Approvals", "denied"]  # denied lives in the session now; re-exported until the UIs move to it
 
 
 class Approvals:

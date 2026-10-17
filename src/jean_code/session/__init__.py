@@ -1,0 +1,77 @@
+"""The one interface clients (`ui/`) drive the agent through: a `Session`, the events it pushes, and the state they
+fold into. Clients import from here only (tests/test_layout.py), so this re-exports what they render too."""
+
+from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN
+from jean_code.core.events import (
+    AgentAdded,
+    Charged,
+    Compaction,
+    Delta,
+    MessageAdded,
+    TurnEnd,
+    TurnEnded,
+    TurnStarted,
+)
+from jean_code.core.llm import AssistantMessage, Message, SystemMessage, ToolCall, ToolMessage, UserMessage
+from jean_code.core.usage import ModelCall, human, usage_line
+from jean_code.session.contract import (
+    AgentDetails,
+    AgentState,
+    Approval,
+    ApprovalRequested,
+    ApprovalResolved,
+    Busy,
+    Item,
+    JobEnded,
+    JobStarted,
+    Reset,
+    SessionEvent,
+    SessionState,
+    Settings,
+    SettingsChanged,
+    UnknownAgent,
+    apply,
+)
+from jean_code.session.session import Session, Subscription, build_agent, denied
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "NOT_RUN",
+    "AgentAdded",
+    "AgentDetails",
+    "AgentState",
+    "Approval",
+    "ApprovalRequested",
+    "ApprovalResolved",
+    "AssistantMessage",
+    "Busy",
+    "Charged",
+    "Compaction",
+    "Delta",
+    "Item",
+    "JobEnded",
+    "JobStarted",
+    "Message",
+    "MessageAdded",
+    "ModelCall",
+    "Reset",
+    "Session",
+    "SessionEvent",
+    "SessionState",
+    "Settings",
+    "SettingsChanged",
+    "Subscription",
+    "SystemMessage",
+    "ToolCall",
+    "ToolMessage",
+    "TurnEnd",
+    "TurnEnded",
+    "TurnStarted",
+    "UnknownAgent",
+    "UserMessage",
+    "apply",
+    "build_agent",
+    "denied",
+    "human",
+    "usage_line",
+]

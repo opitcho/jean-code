@@ -1,4 +1,5 @@
-"""The package's layers: core <- tools <- agents <- ui, each importing only from the layers to its left."""
+"""The package's layers: core <- tools <- agents <- session <- ui, each importing only from the layers to its left.
+Clients (`ui/`) go further: they import only `jean_code.session`, the interface they drive the agent through."""
 
 import ast
 from pathlib import Path
@@ -11,8 +12,11 @@ PACKAGE = Path(jean_code.__file__).parent
 FORBIDDEN = {  # layer -> the layers it must not import
     "core": ("tools", "agents", "ui"),
     "tools": ("agents", "ui"),
-    "agents": ("ui",),
+    "agents": ("session", "ui"),
+    "session": ("ui",),
+    "ui": ("core", "tools", "agents", "config"),
 }
+NOT_YET_ON_SESSION = {"repl.py", "app.py"}  # ui files whose move to `Session` is a plan of its own
 
 
 def imports(path: Path) -> list[ast.Import | ast.ImportFrom]:
@@ -26,7 +30,12 @@ def test_layer_imports_nothing_above_it(layer):
     assert files
     banned = tuple(f"jean_code.{name}" for name in FORBIDDEN[layer])
     for path in files:
+        if layer == "ui" and path.name in NOT_YET_ON_SESSION:
+            continue
         for node in imports(path):  # includes TYPE_CHECKING blocks
             assert getattr(node, "level", 0) == 0, (path.name, "relative import")
-            names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            else:  # the module, and each name as a submodule: `from jean_code import core` is caught too
+                names = [node.module or "", *(f"{node.module}.{a.name}" for a in node.names)]
             assert not [n for n in names if n.startswith(banned)], (path.name, names)
