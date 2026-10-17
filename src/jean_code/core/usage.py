@@ -1,13 +1,11 @@
 """Accounting for model calls: what each call used and cost.
 
-`ModelCall` is one paid model call. `append_log` writes calls to a JSON Lines log, and `usage_line` and
-`breakdown_lines` sum them into lines for the user.
+`ModelCall` is one paid model call, and `usage_line` and `breakdown_lines` sum calls into lines for the user.
 """
 
 import json
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from jean_code.core.llm import Completion, TokenDetails, Usage
 
@@ -96,25 +94,6 @@ class ModelCall:
         # The path keeps its old key, "budget", so old and new lines still sum together.
         line |= {key: value for key, value in (("kind", self.kind), ("budget", self.path)) if value}
         return json.dumps(line)
-
-
-def append_log(path: str | Path, calls: list[ModelCall]) -> None:
-    """Appends model calls to a JSON Lines log, one `ModelCall.log_line` per line.
-
-    The log only grows, so summing its `cost` fields gives the spend across all sessions. The file and its parent
-    folders are created if missing.
-
-    Args:
-        path: The log file.
-        calls: The calls to append; nothing is written if it's empty.
-    """
-    if not calls:
-        return
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        for call in calls:
-            f.write(call.log_line() + "\n")
 
 
 def human(n: int) -> str:

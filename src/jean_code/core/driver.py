@@ -5,7 +5,6 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Callable
-from pathlib import Path
 
 from jean_code.core.agent import NOT_RUN, Agent
 from jean_code.core.events import (
@@ -58,15 +57,16 @@ class Driver:
     Args:
         build: Builds the agent on the node it's given, with the `approve` function it's given.
         max_cost: The most the whole tree may spend, in USD; None for no limit.
-        log_path: The file every model call in the tree is appended to; None for no log.
+        view: The view the tree's events go to; a new one if None. Pass one to subscribe to it before the agent is
+            built, and so get every event.
 
     Attributes:
-        view: The tree's state, for clients to read and subscribe to.
+        view: The tree's state, for clients to read and subscribe to: `view` if given, else a new one.
         agent: The agent the driver runs: the root of the tree.
     """
 
-    def __init__(self, build: Build, max_cost: float | None = None, log_path: str | Path | None = None):
-        self.view = AgentView()
+    def __init__(self, build: Build, max_cost: float | None = None, view: AgentView | None = None):
+        self.view = view or AgentView()
         self._lock = threading.Lock()  # guards the fields below; never held while an agent works
         self._busy = False
         self._job: threading.Thread | None = None
@@ -75,7 +75,7 @@ class Driver:
         self._answered = threading.Event()
         self._refusal: str | None = None
         self._ids = itertools.count(1)
-        root = AgentNode(max_cost, log_path=log_path, listener=self.view.listen)
+        root = AgentNode(max_cost, listener=self.view.listen)
         self.agent = build(root, self._approve)
 
     # ---------------------------------------------------------------- commands

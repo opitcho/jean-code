@@ -4,7 +4,6 @@ the REPL use it.
 Each test names the bug it would catch.
 """
 
-import json
 import threading
 
 import pytest
@@ -353,22 +352,3 @@ def test_remaining_is_the_tightest_limit_on_the_chain():
     root.charge(model_call(root.path, 0.5))  # overspent: never negative
     assert run.remaining == 0.0
     assert AgentNode().child(None, "1").remaining is None
-
-
-def test_every_charge_is_logged_at_the_roots_path(tmp_path):
-    # Catches calls missing from the usage log: a subagent's, or one made between two turns.
-    path = tmp_path / "usage.jsonl"
-    root = AgentNode(log_path=path)
-    root.charge(model_call(root.path, 0.001))
-    root.child(None, "1").child(None, "1").charge(
-        model_call("main/1/1", 0.002)
-    )  # e.g. a background run, while the REPL is idle
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [line["budget"] for line in lines] == ["main", "main/1/1"]
-    assert lines[1]["cost"] == 0.002
-
-
-def test_no_log_without_a_path(tmp_path):
-    root = AgentNode()
-    root.child(None, "1").charge(model_call("main/1"))
-    assert list(tmp_path.iterdir()) == []

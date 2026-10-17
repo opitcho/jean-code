@@ -13,7 +13,10 @@ from jean_code.core.events import JobEnded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
+from jean_code.core.view import AgentView
+from jean_code.logs import Recorder
 from jean_code.ui.repl import Printer, print_cost, repl, run_and_print
+from test_events import wait_for
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -33,7 +36,7 @@ def tool_reply(cost=0.004, **kwargs) -> dict:
     return response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=cost), **kwargs)
 
 
-def make_session(responses, credit_data=None, max_cost: float | None = None, log_path=None, **agent_kwargs):
+def make_session(responses, credit_data=None, max_cost: float | None = None, view=None, **agent_kwargs):
     """A driver whose agent answers from `responses`, and the list it builds that agent into."""
     built: list[Agent] = []
 
@@ -45,7 +48,7 @@ def make_session(responses, credit_data=None, max_cost: float | None = None, log
         built.append(agent)
         return agent
 
-    return Driver(build, max_cost=max_cost, log_path=log_path), built
+    return Driver(build, max_cost=max_cost, view=view), built
 
 
 def run(session: Driver, line: str) -> JobEnded:
@@ -194,13 +197,20 @@ def test_ctrl_d_at_the_approval_prompt_stops_the_turn(monkeypatch, capsys):
     assert ran == [] and out.count(f"result> {NOT_RUN}") == 2 and "[cancelled]" in out
 
 
-def test_repl_logs_every_call(monkeypatch, capsys, tmp_path):
-    # Catches the session not wiring the usage log into the root node.
-    path = tmp_path / "usage.jsonl"
-    session, _ = make_session([tool_reply(), tool_reply(), response("done")], log_path=path)
+def test_repl_logs_every_call_and_says_when_a_log_stops(monkeypatch, capsys, tmp_path):
+    # Catches calls missing from the usage log, or a trace that stopped going unnoticed at the terminal.
+    (tmp_path / "trace").write_text("a file where the tree's folder should be")
+    usage_log = tmp_path / "usage.jsonl"
+    view = AgentView()
+    recorder = Recorder(view, tmp_path / "trace", usage_log)
+    session, _ = make_session([tool_reply(), tool_reply(), response("done")], view=view)
+    wait_for(lambda: recorder.errors)  # the trace fails on the root's first event, before the turn
     monkeypatch.setattr("builtins.input", scripted_input(["go"]))
-    repl(session)
-    assert len(path.read_text().splitlines()) == 3
+    repl(session, recorder)
+    session.close()
+    recorder.close()
+    assert len(usage_log.read_text().splitlines()) == 3
+    assert "[log stopped] trace: " in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------- subagents and compaction

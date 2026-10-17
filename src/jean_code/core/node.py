@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jean_code.core.events import AgentEvent, Charged
-from jean_code.core.usage import ModelCall, append_log
+from jean_code.core.usage import ModelCall
 
 if TYPE_CHECKING:
     from jean_code.core.agent import Agent
@@ -26,7 +25,6 @@ class AgentNode:
         parent: The parent's node; None for the root.
         name: The last part of `path`.
         task: What this node's agent was asked to do.
-        log_path: Root only: the file every model call in the tree is appended to as it's charged. Settable.
         profile: What kind of agent this is; "" for the root.
         listener: Root only: receives every event the tree's agents `emit`. Settable.
 
@@ -42,7 +40,6 @@ class AgentNode:
         parent: AgentNode | None = None,
         name: str = "main",
         task: str = "",
-        log_path: str | Path | None = None,
         profile: str = "",
         listener: Callable[[AgentEvent], None] | None = None,
     ):
@@ -50,7 +47,6 @@ class AgentNode:
         self.parent = parent
         self.name = name
         self.task = task
-        self.log_path = log_path
         self.profile = profile
         self.listener = listener
         self.agent: Agent | None = None
@@ -102,8 +98,7 @@ class AgentNode:
     def charge(self, call: ModelCall) -> None:
         """Records one model call at this node, and emits it as `Charged`.
 
-        The call also goes into the tree's `journal`, and into the root's `log_path` file if one is set. The file
-        is written, and the event emitted, without holding the tree's lock.
+        The call also goes into the tree's `journal`. The event is emitted without holding the tree's lock.
 
         Args:
             call: The call, tagged with this node's path.
@@ -116,8 +111,6 @@ class AgentNode:
         with self._lock:
             self.entries.append(call)
             self._journal.append(call)
-        if path := self.root.log_path:
-            append_log(path, [call])
         self.emit(Charged(path=self.path, call=call))
 
     def emit(self, event: AgentEvent) -> None:

@@ -10,7 +10,7 @@ import jean_code
 
 PACKAGE = Path(jean_code.__file__).parent
 FORBIDDEN = {  # layer -> the layers it must not import
-    "core": ("tools", "agents", "ui"),
+    "core": ("tools", "agents", "ui", "logs"),  # logging is a view subscriber: the core writes no logs
     "tools": ("agents", "ui"),
     "agents": ("ui",),
 }

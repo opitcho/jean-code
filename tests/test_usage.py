@@ -7,7 +7,8 @@ import pytest
 
 from conftest import REAL_META, REAL_USAGE, response, usage
 from jean_code.core.llm import parse_completion
-from jean_code.core.usage import ModelCall, append_log, human, usage_line
+from jean_code.core.usage import ModelCall, human, usage_line
+from jean_code.logs import append_log
 
 
 def model_call(**kwargs) -> ModelCall:

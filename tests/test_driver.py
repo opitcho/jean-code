@@ -17,7 +17,7 @@ from jean_code.core.events import ApprovalRequested, ApprovalResolved, JobEnded,
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
-from jean_code.core.view import apply
+from jean_code.core.view import AgentView, apply
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -69,7 +69,7 @@ class Builder:
 
 def make_driver(*scripts, max_cost: float | None = None, **agent_kwargs) -> tuple[Driver, Builder]:
     build = Builder(*scripts, **agent_kwargs)
-    return Driver(build, max_cost=max_cost, log_path=None), build
+    return Driver(build, max_cost=max_cost), build
 
 
 def next_of(events, kind, timeout: float = TIMEOUT):
@@ -169,7 +169,7 @@ def test_send_while_busy_stops_the_job_and_runs_the_message_next():
 def test_a_second_message_while_one_waits_is_busy_and_compact_always_is():
     # Catches a second redirect overwriting the first message, or a compaction started on a running agent.
     release = threading.Event()
-    driver = Driver(held_builder(release), log_path=None)
+    driver = Driver(held_builder(release))
     with driver.view.subscribe() as (_, events):
         driver.send("go")
         with pytest.raises(Busy):
@@ -427,7 +427,7 @@ def test_pending_counts_background_results_waiting():
 def test_close_stops_a_running_turn_and_its_runs():
     # Catches a process that can't exit because a run is still going.
     release = threading.Event()
-    driver = Driver(held_builder(release), log_path=None)
+    driver = Driver(held_builder(release))
     with driver.view.subscribe() as (_, events):
         driver.send("go")
         eventually(lambda: driver.view.state().agents["main"].running)
@@ -465,15 +465,18 @@ def test_invalid_settings_are_refused_with_nothing_applied(changes):
     assert (build.agent.reasoning, build.agent.compact_at, build.agent.max_cost) == before
 
 
-def test_the_root_carries_the_budget_and_the_log(tmp_path):
-    # Catches a driver whose max_cost or usage log never reaches the root node.
-    log = tmp_path / "usage.jsonl"
-    driver = Driver(Builder([response("hi")]), max_cost=0.5, log_path=log)
+def test_the_root_carries_the_budget():
+    # Catches a driver whose max_cost never reaches the root node.
+    driver = Driver(Builder([response("hi")]), max_cost=0.5)
     assert driver.agent.max_cost == 0.5
-    with driver.view.subscribe() as (_, events):
-        driver.send("go")
-        next_of(events, JobEnded)
-    assert len(log.read_text().splitlines()) == 1
+
+
+def test_the_view_given_is_the_one_that_listens():
+    # Catches a driver that makes its own view, so a recorder subscribed beforehand gets nothing.
+    view = AgentView()
+    driver = Driver(Builder([]), view=view)
+    assert driver.view is view
+    assert list(view.state().agents) == ["main"]
 
 
 def test_close_stops_listening_to_the_tree():

@@ -28,7 +28,8 @@ from jean_code.core.events import Compaction
 from jean_code.core.llm import render_message
 from jean_code.core.node import AgentNode
 from jean_code.core.usage import human, usage_line
-from jean_code.core.view import AgentState, Item, TreeState
+from jean_code.core.view import AgentState, AgentView, Item, TreeState
+from jean_code.logs import Recorder, process_logs
 
 MAIN = "main"  # the main agent's path
 AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
@@ -348,8 +349,17 @@ def build_agent(node: AgentNode, approve: Approve) -> Agent:
 
 
 def new_driver() -> Driver:
+    """Builds a new chat's driver, with a recorder for its trace and the usage log."""
     st.session_state.built = choice()
-    return Driver(build_agent, log_path=USAGE_LOG)
+    view = AgentView()
+    recorder = Recorder(view, process_logs.new_tree(), USAGE_LOG)  # before the agent: it gets every event
+    try:
+        driver = Driver(build_agent, view=view)
+    except BaseException:
+        recorder.close()
+        raise
+    st.session_state.recorder = recorder
+    return driver
 
 
 def apply_settings() -> None:
@@ -365,6 +375,8 @@ def apply_settings() -> None:
 
 def new_chat() -> None:
     driver().close()
+    if recorder := st.session_state.get("recorder"):
+        recorder.close()
     st.session_state.driver = new_driver()
     reset_view()
 
@@ -521,6 +533,10 @@ def render_sidebar(state: TreeState) -> None:
         st.html(chips(skills, on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(main.model, cls="model") + "</div>")
+        if recorder := st.session_state.get("recorder"):
+            st.caption(
+                f"Log stopped: {'; '.join(recorder.errors)}" if recorder.errors else f"Trace: {recorder.trace_dir}"
+            )
         st.segmented_control(
             "Reasoning effort",
             REASONING_LEVELS,

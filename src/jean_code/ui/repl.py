@@ -25,7 +25,8 @@ from jean_code.core.events import (
 from jean_code.core.llm import AssistantMessage, Message, ToolMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.usage import breakdown_lines, human, usage_line
-from jean_code.core.view import Subscription
+from jean_code.core.view import AgentView, Subscription
+from jean_code.logs import Recorder, process_logs
 
 POLL_SECONDS = 0.1  # how often a wait for the next event lets a Ctrl+C through
 
@@ -109,13 +110,17 @@ def drain(events: Subscription) -> None:
             return
 
 
-def repl(driver: Driver) -> None:
+def repl(driver: Driver, recorder: Recorder | None = None) -> None:
     """Chats until the user exits: reads a line, then runs it and prints it live.
 
     Calls that need approval are asked about on the terminal, and Ctrl+C mid-turn stops the turn. `/compact`
-    compacts now, and `/cost` shows the session's spend and the API key's credits.
+    compacts now, and `/cost` shows the session's spend and the API key's credits. With a `recorder`, its trace
+    folder is shown at the start, and a log that stopped is reported once the turn ends.
     """
     print(f"Chatting with {driver.agent.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
+    if recorder and recorder.trace_dir:
+        print(dim(f"trace: {recorder.trace_dir}"))
+    reported = 0
     with driver.view.subscribe() as (_, events):
         while True:
             if pending := driver.agent.subagents.pending if driver.agent.subagents else 0:
@@ -136,6 +141,10 @@ def repl(driver: Driver) -> None:
                 print_cost(driver)
                 continue
             run_and_print(driver, events, user_input)
+            if recorder and len(recorder.errors) > reported:
+                for error in recorder.errors[reported:]:
+                    print(f"[log stopped] {error}")
+                reported = len(recorder.errors)
 
 
 def ask_approval(driver: Driver, approval: Approval) -> None:
@@ -285,17 +294,22 @@ def main() -> None:
             return orchestrator_agent(cli.model, network=not cli.no_network, **common)
         return coding_agent(cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approve, **common)
 
+    view = AgentView()
+    recorder = Recorder(view, process_logs.new_tree(), USAGE_LOG)  # before the agent: it gets every event
     try:
-        driver = Driver(build, max_cost=cli.max_cost, log_path=USAGE_LOG)
-    except ValueError as e:  # a setting the agent refuses, e.g. --compact-at over half the context window
-        parser.error(str(e))
-    try:
-        repl(driver)
+        try:
+            driver = Driver(build, max_cost=cli.max_cost, view=view)
+        except ValueError as e:  # a setting the agent refuses, e.g. --compact-at over half the context window
+            parser.error(str(e))
+        try:
+            repl(driver, recorder)
+        finally:
+            running = driver.agent.subagents.running() if driver.agent.subagents else 0
+            if running:
+                print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))
+            driver.close()
     finally:
-        running = driver.agent.subagents.running() if driver.agent.subagents else 0
-        if running:
-            print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))
-        driver.close()
+        recorder.close()
 
 
 if __name__ == "__main__":
