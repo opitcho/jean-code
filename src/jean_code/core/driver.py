@@ -14,6 +14,7 @@ from jean_code.core.events import (
     ApprovalResolved,
     JobEnded,
     JobStarted,
+    Queued,
     ViewEvent,
 )
 from jean_code.core.node import AgentNode
@@ -26,7 +27,10 @@ REASONING = (None, "low", "medium", "high")
 
 
 class Busy(RuntimeError):
-    """A turn or a compaction is already running."""
+    """The driver can't take this command now.
+
+    A job runs, or for a message, another message already waits for the running job to stop.
+    """
 
 
 class UnknownAgent(LookupError):
@@ -45,8 +49,9 @@ def denied(reason: str = "") -> str:
 class Driver:
     """One agent tree, run off the caller's thread, one job at a time.
 
-    Each job (a turn or a compaction) runs on a thread of its own. The driver makes the tree's root node, with
-    `view` listening to it, and has `build` put the agent on it. Its own events (jobs, approvals) go to `view` as
+    Each job (a turn or a compaction) runs on a thread of its own; a message sent while one runs stops it, and its
+    turn runs next on the same thread. The driver makes the tree's root node, with `view` listening to it, and has
+    `build` put the agent on it. Its own events (jobs, approvals) go to `view` as
     well, so `view` is everything a client reads. Commands are thread-safe and return at once; what they cause
     arrives as events.
 
@@ -65,6 +70,7 @@ class Driver:
         self._lock = threading.Lock()  # guards the fields below; never held while an agent works
         self._busy = False
         self._job: threading.Thread | None = None
+        self._queued: str | None = None
         self._approval: Approval | None = None
         self._answered = threading.Event()
         self._refusal: str | None = None
@@ -75,15 +81,27 @@ class Driver:
     # ---------------------------------------------------------------- commands
 
     def send(self, text: str) -> None:
-        """Starts a turn on `text`.
+        """Starts a turn on `text`, or redirects the running job to it.
+
+        While a job runs, it's stopped as `cancel()` stops the root, and the turn on `text` starts once it has
+        ended.
 
         Args:
             text: The user's message.
 
         Raises:
-            Busy: A job is running.
+            Busy: A job is running, and a message already waits for it to stop.
         """
-        self._start("turn", lambda: self.agent.run_turn(text), text)
+        with self._lock:
+            if self._busy:
+                if self._queued is not None:
+                    raise Busy("a message already waits for the running job to stop")
+                self._queued = text
+                self._emit(Queued(text=text))
+                self._stop_locked()
+                return
+            self._begin_locked("turn", text)
+        self._spawn("turn", text)
 
     def compact(self) -> None:
         """Starts compacting the context, whatever its size.
@@ -91,7 +109,11 @@ class Driver:
         Raises:
             Busy: A job is running.
         """
-        self._start("compact", lambda: self.agent.compact(force=True))
+        with self._lock:
+            if self._busy:
+                raise Busy("a job is running; wait for it to end, or stop it")
+            self._begin_locked("compact", "")
+        self._spawn("compact", "")
 
     def cancel(self, path: str = "main") -> None:
         """Stops the agent at `path`, and every agent below it, before its next model call.
@@ -106,7 +128,8 @@ class Driver:
             UnknownAgent: No node in the tree has `path`.
         """
         if path == self.agent.node.path:
-            self._stop()
+            with self._lock:
+                self._stop_locked()
         else:
             self._node(path).cancel()
 
@@ -120,11 +143,8 @@ class Driver:
             refusal: None to run the call; otherwise the result the model gets instead.
         """
         with self._lock:
-            if self._approval is None or self._approval.id != approval_id:
-                return
-            self._approval, self._refusal = None, refusal
-            self._emit(ApprovalResolved(id=approval_id, refusal=refusal))
-            self._answered.set()
+            if self._approval is not None and self._approval.id == approval_id:
+                self._resolve_locked(self._approval, refusal)
 
     def configure(self, **settings) -> None:
         """Changes settings the agent reads on every request.
@@ -154,9 +174,11 @@ class Driver:
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.
 
-        It can be called at any time.
+        It can be called at any time. A message waiting for the job to stop is dropped.
         """
-        self._stop()
+        with self._lock:
+            self._queued = None
+            self._stop_locked()
         if self._job is not None:
             self._job.join()
         self.agent.close()
@@ -185,26 +207,30 @@ class Driver:
     def _emit(self, event: ViewEvent) -> None:
         self.view.listen(event)
 
-    def _start(self, kind, work: Callable[[], str], text: str = "") -> None:
-        with self._lock:
-            if self._busy:
-                raise Busy("a job is running; wait for it to end, or stop it")
-            self._busy = True
-            # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
-            self.agent.node.reopen()
-            self._emit(JobStarted(kind=kind, text=text))
-        self._job = threading.Thread(target=self._run, args=(kind, work), name=f"driver {kind}", daemon=True)
+    def _begin_locked(self, kind, text: str) -> None:
+        self._busy = True
+        # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
+        self.agent.node.reopen()
+        self._emit(JobStarted(kind=kind, text=text))
+
+    def _spawn(self, kind, text: str) -> None:
+        self._job = threading.Thread(target=self._run, args=(kind, text), name=f"driver {kind}", daemon=True)
         self._job.start()
 
-    def _run(self, kind, work: Callable[[], str]) -> None:
-        result, error = None, None
-        try:
-            result = work()
-        except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
-            error = f"{type(e).__name__}: {e}"
-        with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
-            self._busy = False
-            self._emit(JobEnded(kind=kind, result=result, error=error))
+    def _run(self, kind, text: str) -> None:
+        while True:
+            result, error = None, None
+            try:
+                result = self.agent.run_turn(text) if kind == "turn" else self.agent.compact(force=True)
+            except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
+                error = f"{type(e).__name__}: {e}"
+            with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
+                self._busy = False
+                self._emit(JobEnded(kind=kind, result=result, error=error))
+                if self._queued is None:
+                    return
+                kind, text, self._queued = "turn", self._queued, None
+                self._begin_locked(kind, text)
 
     def _approve(self, name: str, arguments: dict) -> str | None:
         with self._lock:
@@ -218,13 +244,16 @@ class Driver:
         self._answered.wait()
         return self._refusal
 
-    def _stop(self) -> None:
+    def _stop_locked(self) -> None:
+        self.agent.interrupt()
         # A stop alone doesn't wake a turn that waits for the user, so a waiting approval is refused too.
-        with self._lock:
-            self.agent.interrupt()
-            approval = self._approval
-        if approval is not None:
-            self.answer(approval.id, NOT_RUN)
+        if self._approval is not None:
+            self._resolve_locked(self._approval, NOT_RUN)
+
+    def _resolve_locked(self, approval: Approval, refusal: str | None) -> None:
+        self._emit(ApprovalResolved(id=approval.id, refusal=refusal))
+        self._approval, self._refusal = None, refusal
+        self._answered.set()
 
     def _node(self, path: str) -> AgentNode:
         node = next((n for n in self.agent.node.nodes() if n.path == path), None)

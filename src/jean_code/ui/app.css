@@ -135,6 +135,8 @@ header[data-testid="stHeader"] { background: transparent; }
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .k-thinking .tl-prev { color:var(--ink-dim); font-style:italic; }
 .tl-prev.mono { font-family:var(--mono); font-size:.8rem; }
+.tl-card.full .tl-prev { white-space:pre-wrap; overflow:visible; }
+.tl-prev.draft-thinking { color:var(--ink-dim); font-style:italic; }
 
 /* invisible hit-area button stretched over each card */
 [class*="st-key-hit-"] { position:absolute !important; inset:0; z-index:3; margin:0 !important; }

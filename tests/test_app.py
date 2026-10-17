@@ -14,6 +14,7 @@ import jean_code
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
+from jean_code.core.events import Delta
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
@@ -165,9 +166,8 @@ def test_a_subagent_appears_in_the_picker_with_how_its_turn_ended():
     assert any("answer to t" in h for h in htmls(at))
 
 
-def test_while_busy_the_input_and_the_rebuilding_settings_are_disabled():
-    # Catches a message or a new chat started under a running turn, which the driver would refuse with Busy.
-    release = threading.Event()
+def held_session(release: threading.Event, *script) -> Driver:
+    """A driver whose first turn holds in a tool call until `release` is set."""
 
     @tool
     def hold() -> str:
@@ -175,16 +175,65 @@ def test_while_busy_the_input_and_the_rebuilding_settings_are_disabled():
         release.wait(TIMEOUT)
         return "released"
 
-    session, _ = make_session([response(tool_calls=[call("hold")]), response("done")], tools={"hold": hold})
+    script = script or (response(tool_calls=[call("hold")]), response("done"))
+    session, _ = make_session(list(script), tools={"hold": hold})
+    return session
+
+
+def test_while_busy_the_rebuilding_settings_are_disabled_but_the_input_is_not():
+    # Catches a new chat started under a running turn, or no way to redirect the agent while it works.
+    release = threading.Event()
+    session = held_session(release)
     at = app(session)
     at.chat_input[0].set_value("go").run()
     eventually(lambda: session.view.state().agents["main"].running)
     at.run()
     no_errors(at)
     try:
-        assert at.chat_input[0].proto.disabled
+        assert not at.chat_input[0].proto.disabled
+        assert at.chat_input[0].proto.placeholder == "Send to stop and redirect…"
         assert at.selectbox(key="agent_kind").proto.disabled and at.toggle(key="sandbox").proto.disabled
         assert any(b.label == "Stop" for b in at.button)
+    finally:
+        release.set()
+        idle(session)
+
+
+def test_a_message_while_busy_waits_on_a_card_then_runs():
+    # Catches a redirect that never shows, a second message accepted over the first, or the queued turn not run.
+    release = threading.Event()
+    session = held_session(release, response(tool_calls=[call("hold")]), response("redirected"))
+    at = app(session)
+    at.chat_input[0].set_value("go").run()
+    eventually(lambda: session.view.state().agents["main"].running)
+    at.run()
+    at.chat_input[0].set_value("do this instead").run()
+    no_errors(at)
+    try:
+        assert any("stopping… then: do this instead" in h for h in htmls(at))
+        assert at.chat_input[0].proto.disabled and at.chat_input[0].proto.placeholder == "Stopping…"
+    finally:
+        release.set()
+    eventually(lambda: (job := session.view.state().last_job) is not None and job.result == "answered")
+    at.run()
+    assert not any("stopping…" in h for h in htmls(at))
+    assert session.view.state().agents["main"].items[-1].message.content == "redirected"
+
+
+def test_a_reply_streaming_in_shows_in_the_live_card():
+    # Catches streamed text that never reaches the screen until the reply lands.
+    release = threading.Event()
+    session = held_session(release)
+    at = app(session)
+    at.chat_input[0].set_value("go").run()
+    eventually(lambda: session.view.state().agents["main"].running)
+    session.view.listen(Delta(path="main", kind="reasoning", text="weighing it"))
+    session.view.listen(Delta(path="main", kind="content", text="half an answer"))
+    at.run()
+    no_errors(at)
+    try:
+        live = [h for h in htmls(at) if "ghost full" in h]
+        assert len(live) == 1 and "weighing it" in live[0] and "half an answer" in live[0]
     finally:
         release.set()
         idle(session)

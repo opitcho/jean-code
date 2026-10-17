@@ -1,8 +1,7 @@
-"""The web tools: every function here is one a model calls, and nothing else is.
+"""The web tools: `web_search` and `fetch_page`.
 
-`llm.tool_schema` builds each tool's schema from its type hints and Google-style docstring,
-so every tool here is fully typed and documents its arguments. Plain helpers belong elsewhere (e.g. `pages`).
-Tools bound to state live with it, marked `@tool` too: `Shell.bash`, the research `Notebook`'s, the agent's own.
+Every function here is a tool a model calls, and nothing else is: plain helpers go in `pages`. Each is fully typed
+and documents its arguments, since its schema is built from them.
 """
 
 from ddgs import DDGS

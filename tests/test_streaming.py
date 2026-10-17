@@ -191,6 +191,29 @@ def test_a_stream_with_no_chunk_is_malformed(monkeypatch):
         list(client.stream(REQUEST))
 
 
+def test_a_stop_during_keep_alives_ends_the_stream_with_nothing(monkeypatch):
+    # Catches a stop that waits for the first chunk, or an empty cut-off reply yielded as a completion.
+    asked = []
+
+    def stop() -> bool:
+        asked.append(1)
+        return len(asked) > 2  # two keep-alives read, then stop
+
+    client = streaming_client(monkeypatch, sse(*TOOL_CALL_STREAM, keep_alives=4))
+    assert list(client.stream(REQUEST, stop)) == []
+
+
+def test_a_stop_mid_stream_yields_the_reply_so_far(monkeypatch):
+    # Catches a cut-off reply lost, or one that pretends to have finished.
+    items = []
+    for item in streaming_client(monkeypatch, sse(*TOOL_CALL_STREAM)).stream(REQUEST, lambda: len(items) >= 2):
+        items.append(item)
+    deltas, completion = split(items)
+    assert deltas == [TextDelta("reasoning", text) for text in THOUGHTS[:2]]
+    assert completion.message.reasoning == "".join(THOUGHTS[:2]) and completion.message.tool_calls == ()
+    assert completion.finish_reason is None and completion.usage is None
+
+
 def whole(message: dict, finish_reason: str) -> dict:
     """A non-streamed response carrying `message`, with real metadata and usage."""
     choice = {"index": 0, "message": message, "finish_reason": finish_reason}

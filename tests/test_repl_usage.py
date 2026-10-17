@@ -13,7 +13,7 @@ from jean_code.core.events import JobEnded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
-from jean_code.ui.repl import print_cost, repl, run_and_print
+from jean_code.ui.repl import Printer, print_cost, repl, run_and_print
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -67,6 +67,33 @@ def scripted_input(lines):
 
 
 # ---------------------------------------------------------------- how a turn ends
+
+
+def test_a_streamed_reply_prints_each_piece_once_in_order(capsys):
+    # Catches a streamed reply printed again when it lands, or its thinking and answer run together on one line.
+    session, _ = make_session(
+        [response("forty-two", reasoning="let me think", tool_calls=[call("add", a=1, b=2)]), response("done")],
+        stream=True,
+    )
+    run(session, "go")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:4] == [
+        "\x1b[2mthinking> \x1b[0m" + "".join(f"\x1b[2m{p}\x1b[0m" for p in ("let ", "me t", "hink")),
+        "agent> forty-two",
+        'tool> add({"a": 1, "b": 2})',
+        "result> 3",
+    ]
+    assert lines[4] == "agent> done"
+
+
+def test_a_line_printed_mid_stream_starts_on_a_line_of_its_own(capsys):
+    # Catches a subagent's line glued to the end of half a streamed answer.
+    out = Printer()
+    out.delta("content", "half an ")
+    out.line("[main/1 echo: started]")
+    out.delta("content", "answer")
+    out.end_line()
+    assert capsys.readouterr().out == "agent> half an \n[main/1 echo: started]\nagent> answer\n"
 
 
 def test_budget_stop_message(capsys):

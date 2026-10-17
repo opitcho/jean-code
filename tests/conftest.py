@@ -10,7 +10,7 @@ import time
 import httpx
 import pytest
 
-from jean_code.core.llm import ChatRequest, Completion, parse_completion, render_request
+from jean_code.core.llm import ChatRequest, Completion, StreamingClient, parse_completion, render_request
 from jean_code.tools import pages
 
 # A real usage payload and its response metadata, from `.experiments/output/usage_check.txt` (turn 2).
@@ -65,7 +65,8 @@ REAL_ASSISTANT = {
 class FakeClient:
     """Parses scripted wire responses in order, like `ChatClient.complete`; a scripted exception is raised instead.
 
-    `requests` keeps every request as the wire dict it would be sent as. `credits()` returns `credit_data`, or
+    `stream` sends the same responses through a real `StreamingClient`, as the chunks `stream_chunks` cuts them
+    into. `requests` keeps every request as the wire dict it would be sent as. `credits()` returns `credit_data`, or
     raises it if it's an exception.
     """
 
@@ -75,13 +76,22 @@ class FakeClient:
         self.credit_data = credit_data
 
     def complete(self, request: ChatRequest) -> Completion:
+        return parse_completion(self._next(request))
+
+    def stream(self, request: ChatRequest, stop=None):
+        body = "".join(f"data: {json.dumps(c)}\n\n" for c in stream_chunks(self._next(request))) + "data: [DONE]\n\n"
+        client = StreamingClient("https://fake.test", "key")
+        client.http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body)))
+        yield from client.stream(request, stop)
+
+    def _next(self, request: ChatRequest) -> dict:
         self.requests.append(render_request(request))
         if not self.responses:
             raise AssertionError(f"no scripted response left for request {len(self.requests)}")
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
-        return parse_completion(copy.deepcopy(item))
+        return copy.deepcopy(item)
 
     def credits(self) -> dict:
         if isinstance(self.credit_data, Exception):
@@ -111,9 +121,13 @@ default_usage = usage  # `response()` takes a `usage` argument, which hides the 
 _ids = iter(range(1, 1_000_000))
 
 
-def response(content="", tool_calls=None, usage=None, id=None, created=1789748403, no_usage=False) -> dict:
+def response(
+    content="", tool_calls=None, usage=None, id=None, created=1789748403, no_usage=False, reasoning=None
+) -> dict:
     """A whole non-streaming response. `usage` defaults to `usage()`; `no_usage=True` leaves the key out."""
     message = {"role": "assistant", "content": content, "refusal": None}
+    if reasoning:
+        message["reasoning"] = reasoning
     if tool_calls:
         message["tool_calls"] = tool_calls
     r = {
@@ -126,6 +140,39 @@ def response(content="", tool_calls=None, usage=None, id=None, created=178974840
     if not no_usage:
         r["usage"] = usage if usage is not None else default_usage()
     return r
+
+
+def thirds(text: str) -> list[str]:
+    """`text` in three pieces, empty ones left out."""
+    n = -(-len(text) // 3)
+    return [text[i : i + n] for i in range(0, len(text), n)] if text else []
+
+
+def stream_chunks(r: dict) -> list[dict]:
+    """The chunks a streamed `r` arrives as: its reasoning and its content in up to three pieces each, then each tool
+    call with its arguments in two halves, then a last chunk with the finish reason and usage."""
+    meta = {k: r[k] for k in ("id", "provider", "model", "created")}
+    choice = r["choices"][0]
+    message = choice["message"]
+
+    def chunk(delta: dict, finish_reason=None, **extra) -> dict:
+        return {**meta, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+
+    chunks = [chunk({"reasoning": piece}) for piece in thirds(message.get("reasoning") or "")]
+    chunks += [chunk({"content": piece}) for piece in thirds(message.get("content") or "")]
+    for index, c in enumerate(message.get("tool_calls") or []):
+        arguments = c["function"]["arguments"]
+        half = len(arguments) // 2
+        first = {"index": index, "id": c["id"], "type": "function"}
+        chunks.append(
+            chunk(
+                {"tool_calls": [{**first, "function": {"name": c["function"]["name"], "arguments": arguments[:half]}}]}
+            )
+        )
+        chunks.append(chunk({"tool_calls": [{"index": index, "function": {"arguments": arguments[half:]}}]}))
+    extra = {"usage": r["usage"]} if "usage" in r else {}
+    chunks.append(chunk({}, choice["finish_reason"], **extra))
+    return chunks
 
 
 def call(name: str, id: str | None = None, **args) -> dict:

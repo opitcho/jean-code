@@ -146,12 +146,12 @@ def summary_failure(completion: Completion, stopped: bool) -> str | None:
     Returns:
         A "failed: ..." status, or None.
     """
+    if stopped:  # first: a reply cut off by the stop is also empty or half a tool call
+        return "failed: interrupted"
     if completion.message.tool_calls:
         return "failed: the model called a tool instead of summarizing"
     if completion.finish_reason == "length":
         return "failed: the summary was cut off at the length limit"
     if not completion.message.content.strip():
         return "failed: the summary was empty"
-    if stopped:
-        return "failed: interrupted"
     return None

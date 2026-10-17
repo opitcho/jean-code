@@ -1,7 +1,7 @@
-"""What more than one agent module uses: the note every subagent gets, and the shell-plus-web toolset.
+"""Shared by the agent modules: the subagent note, and the shell-plus-web toolset.
 
 Prompts across `agents/` are static text only (no timestamps or other per-call data), so the prompt prefix stays
-cached. Builders append the shell's description, and `Agent` appends the skills and subagents listings.
+cached.
 """
 
 from collections.abc import Callable
@@ -22,18 +22,29 @@ the paths of any files you wrote.
 
 @dataclass(frozen=True)
 class Toolset:
-    """Tools for an `Agent`, with what goes with them: which need approval, what to close, and where they run."""
+    """Tools for an `Agent`, with what goes with them.
+
+    Attributes:
+        tools: The tools, by the name the model calls them.
+        needs_approval: The names of the tools whose calls need approval.
+        cleanup: What to run to release what the tools hold.
+        describe: One line for the system prompt, saying where commands run.
+    """
 
     tools: dict[str, Callable]
     needs_approval: set[str]
     cleanup: list[Callable[[], None]]
-    describe: str  # one line for the system prompt saying where commands run
+    describe: str
 
 
 def shell_tools(sandbox: bool = True, network: bool = True) -> Toolset:
-    """`bash` and `job` on a shell (its own Docker container, or the host), plus `web_search` and `fetch_page`.
+    """Returns `bash` and `job` on a shell, plus `web_search` and `fetch_page`.
 
-    `bash` needs approval only on the host. `network` applies to the container only.
+    `bash` needs approval only on the host.
+
+    Args:
+        sandbox: Run the shell in its own Docker container instead of on the host.
+        network: Whether the container gets a network.
     """
     shell = DockerShell(network=network) if sandbox else LocalShell()
     return Toolset(

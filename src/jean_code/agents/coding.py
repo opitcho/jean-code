@@ -1,4 +1,7 @@
-"""The coding agent, a root agent: a shell plus web tools, and its `searcher`, `general` and `research` subagents."""
+"""The coding agent: a root agent with a shell, web tools and subagents.
+
+`coding_agent` builds it. Its subagents are `searcher`, `general` and `research` (`subagent_profiles`).
+"""
 
 from pathlib import Path
 
@@ -57,12 +60,19 @@ def coding_agent(
     subagents: bool = True,
     **kwargs,
 ) -> Agent:
-    """An agent with a shell (on the host, or in the Docker sandbox), web tools, and the subagents in
-    `subagent_profiles` unless `subagents` is False.
+    """Returns a coding agent, with a shell, web tools and subagents.
 
     Whether `bash` needs approval comes from the shell: yes on the host, no in the sandbox. On the host, pass the
-    `approve` function that asks the user (see `Agent`).
-    `agent.close()` stops its subagents and closes the shell: it kills background jobs, and removes the container.
+    `approve` function that asks the user. `agent.close()` stops its subagents and closes the shell: it kills
+    background jobs, and removes the container.
+
+    Args:
+        model: OpenRouter model id, for it and its subagents.
+        sandbox: Run `bash` in a Docker container instead of on the host.
+        network: Whether containers get a network.
+        skills_dir: Folder of skills the model can load.
+        subagents: Whether it may start the subagents in `subagent_profiles`.
+        **kwargs: Passed on to `Agent`.
     """
     tools = shell_tools(sandbox, network)
     return Agent(
@@ -78,7 +88,12 @@ def coding_agent(
 
 
 def searcher_agent(model: str, node: AgentNode) -> Agent:
-    """The `searcher` subagent: web tools only."""
+    """Returns the `searcher` subagent, which has web tools only.
+
+    Args:
+        model: OpenRouter model id.
+        node: Its node in the parent's tree.
+    """
     return Agent(
         model, system_prompt=SEARCHER_PROMPT, tools={"web_search": web_search, "fetch_page": fetch_page}, node=node
     )
@@ -87,7 +102,16 @@ def searcher_agent(model: str, node: AgentNode) -> Agent:
 def general_agent(
     model: str, node: AgentNode, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
 ) -> Agent:
-    """The `general` subagent: the coding agent's tools, in its own sandbox container, without subagents."""
+    """Returns the `general` subagent: the coding agent's tools in a sandbox container.
+
+    It has no subagents of its own.
+
+    Args:
+        model: OpenRouter model id.
+        node: Its node in the parent's tree.
+        network: Whether its container gets a network.
+        skills_dir: Folder of skills the model can load.
+    """
     # its own container; the sandbox is why its bash needs no approval
     tools = shell_tools(sandbox=True, network=network)
     return Agent(
@@ -103,13 +127,18 @@ def general_agent(
 def subagent_profiles(
     model: str = DEFAULT_MODEL, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
 ) -> dict[str, Profile]:
-    """The coding agent's subagents, on its model:
+    """Returns the coding agent's subagent profiles, on its model.
 
     - `searcher`: web tools only, answers one question with sources. Cheap, and safe anywhere.
     - `general`: a copy of the coding agent without subagents of its own, whose shell always runs in the Docker
       sandbox (its own container, in `workspace/`), so it needs no approval, even when the parent runs on the host.
-    - `research`: a research lead and its researchers (research.py), which write a cited report to a run folder in
-      `workspace/research/`. The research skill scopes the brief before spawning one.
+    - `research`: a research lead and its researchers, which write a cited report to a run folder in
+      `workspace/research/`.
+
+    Args:
+        model: OpenRouter model id.
+        network: Whether the `general` subagent's container gets a network.
+        skills_dir: Folder of skills the `general` subagent can load.
     """
     return {
         "searcher": agent_profile(

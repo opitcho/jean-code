@@ -59,7 +59,8 @@ class MessageAdded(Event):
 class Delta(Event):
     """A piece of a reply as it streams in.
 
-    The whole reply follows as a `MessageAdded`.
+    The whole reply follows as a `MessageAdded`, unless the call fails or is cut off before any text; the turn's
+    `TurnEnded` comes after either way.
 
     Attributes:
         kind: Whether the piece is reply text or reasoning.
@@ -171,6 +172,18 @@ class JobStarted(BaseModel):
     text: str = ""
 
 
+class Queued(BaseModel):
+    """A message came in while a job ran; its turn starts once the job has stopped.
+
+    Attributes:
+        text: The user's message.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["queued"] = "queued"
+    text: str
+
+
 class JobEnded(BaseModel):
     """A driver's job is over, and the driver is idle.
 
@@ -222,6 +235,7 @@ ViewEvent = Annotated[
     | Compaction
     | Charged
     | JobStarted
+    | Queued
     | JobEnded
     | ApprovalRequested
     | ApprovalResolved,

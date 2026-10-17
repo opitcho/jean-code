@@ -1,4 +1,4 @@
-"""Reading web pages: download a page as text (HTML, PDF or plain), and cut that text into windows."""
+"""Reading web pages: a page as text (HTML, PDF or plain), cut into windows."""
 
 import io
 import logging
@@ -15,10 +15,17 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 @lru_cache(maxsize=64)  # fetch_page reads a long page one window per call; download it once
 def read_page(url: str) -> str:
-    """Download a page and return its whole readable text: an HTML page's title and visible text, a PDF's text
-    (by content type, or a body starting with `%PDF`), or any other body as it is. Raises on HTTP errors.
+    """Downloads a page and returns its whole readable text.
 
-    Agents never get this whole text: they read it through `web.fetch_page`, a window at a time."""
+    That's an HTML page's title and visible text, a PDF's text (by content type, or a body starting with `%PDF`),
+    or any other body as it is. The last 64 pages are cached.
+
+    Args:
+        url: The page's URL.
+
+    Raises:
+        httpx.HTTPStatusError: The server returned an error.
+    """
     response = httpx.get(
         url,
         follow_redirects=True,
@@ -36,8 +43,14 @@ def read_page(url: str) -> str:
 
 
 def html_text(html: str) -> str:
-    """An HTML page's title and the text a reader sees, one line per text node. Also dropped: MathML's TeX source
-    (arXiv math would read "333 × \\times"), and screen-reader-only text like "(opens in a new window)"."""
+    r"""Returns an HTML page's title and the text a reader sees, one line per node.
+
+    Also dropped: MathML's TeX source (arXiv math would read "333 × \times"), and screen-reader-only text like
+    "(opens in a new window)".
+
+    Args:
+        html: The page's HTML.
+    """
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(
         [
@@ -64,19 +77,37 @@ def html_text(html: str) -> str:
 
 
 def pdf_text(data: bytes) -> str:
-    """The text of every page of a PDF, pages separated by blank lines."""
+    """Returns the text of every page of a PDF, pages separated by blank lines.
+
+    Args:
+        data: The PDF file's bytes.
+    """
     reader = PdfReader(io.BytesIO(data))
     return "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
 
 
 def window(text: str, start: int, max_chars: int) -> tuple[int, int]:
-    """The (start, end) of the part of `text` that fetch_page returns: at most `max_chars` from `start`."""
+    """Returns `(start, end)` of the window of `text` that begins at `start`.
+
+    The window holds at most `max_chars`, and is clamped to the text.
+
+    Args:
+        text: The whole text.
+        start: Where the window begins.
+        max_chars: The most the window holds.
+    """
     start = min(max(start, 0), len(text))
     return start, min(start + max_chars, len(text))
 
 
 def window_text(text: str, start: int, end: int) -> str:
-    """`text[start:end]`, followed by a line saying where it is unless it's the whole text."""
+    """Returns `text[start:end]`, plus a line saying where it is, unless it's all.
+
+    Args:
+        text: The whole text.
+        start: Where the window begins.
+        end: Where it ends.
+    """
     if start == 0 and end == len(text):
         return text
     if start == end:

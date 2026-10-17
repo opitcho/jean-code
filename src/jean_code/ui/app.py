@@ -23,7 +23,7 @@ from jean_code.config import USAGE_LOG
 from jean_code.core import llm
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
-from jean_code.core.driver import Approve, Driver, denied
+from jean_code.core.driver import Approve, Busy, Driver, denied
 from jean_code.core.events import Compaction
 from jean_code.core.llm import render_message
 from jean_code.core.node import AgentNode
@@ -339,8 +339,8 @@ def choice() -> tuple[bool, bool]:
 
 
 def build_agent(node: AgentNode, approve: Approve) -> Agent:
-    """Builds the agent the sidebar picks, on `node`."""
-    common = {"reasoning": reasoning_effort(), "node": node}
+    """Builds the agent the sidebar picks, on `node`; it streams its replies."""
+    common = {"reasoning": reasoning_effort(), "node": node, "stream": True}
     orchestrator, sandbox = choice()
     if orchestrator:  # nothing it calls needs approval
         return orchestrator_agent(DEFAULT_MODEL, **common)
@@ -420,6 +420,24 @@ def card(kind: str, text: str, *, num: int | None = None, classes: str = "", mon
     return (
         f'<div class="tl-card k-{kind} {classes}"><div class="tl-head"><span>{icon}</span><span>{label}</span>'
         f'{num_html}</div><div class="tl-prev{" mono" if mono else ""}">{html.escape(text)}</div></div>'
+    )
+
+
+def draft_card(draft: dict[str, str]) -> str:
+    """Returns the live card for a reply streaming in, shown in full.
+
+    Its thinking is dimmed, and its answer comes after.
+    """
+    kind = "agent" if draft.get("content") else "thinking"
+    label, icon, _ = KINDS[kind]
+    parts = "".join(
+        f'<div class="tl-prev {cls}">{html.escape(text)}</div>'
+        for cls, text in (("draft-thinking", draft.get("reasoning", "")), ("", draft.get("content", "")))
+        if text
+    )
+    return (
+        f'<div class="tl-card k-{kind} ghost full"><div class="tl-head"><span>{icon}</span><span>{label}</span>'
+        f"</div>{parts}</div>"
     )
 
 
@@ -626,11 +644,14 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
         st.warning(f"Stopped before answering: {status}", icon=":material/warning:")
 
 
-def render_timeline(agent: AgentState, entries: list[Item], selected: Item | None, running: bool, pending) -> None:
+def render_timeline(
+    agent: AgentState, entries: list[Item], selected: Item | None, running: bool, pending, queued: str | None
+) -> None:
     """Draws the agent's timeline: one clickable block per message.
 
-    Compacted messages are dimmed, with a divider where the context starts again. After the last block comes a
-    placeholder while the agent runs, or the call waiting for approval.
+    Compacted messages are dimmed, with a divider where the context starts again. After the last block comes the
+    reply streaming in (or a placeholder) while the agent runs, or the call waiting for approval; then a message
+    waiting for the agent to stop.
     """
     names = call_names(entries)
     with st.container(height=640, autoscroll=True, border=False, key="timeline"):
@@ -658,9 +679,16 @@ def render_timeline(agent: AgentState, entries: list[Item], selected: Item | Non
 
             if running:
                 with st.container(key="blk-thinking-live"):
-                    st.html(card("thinking", "waiting for model…", classes="ghost"))
+                    st.html(
+                        draft_card(agent.draft)
+                        if agent.draft
+                        else card("thinking", "waiting for model…", classes="ghost")
+                    )
             elif pending is not None:
                 render_approval(pending)
+            if queued is not None:
+                with st.container(key="blk-user-queued"):
+                    st.html(card("user", f"stopping… then: {queued}", classes="ghost"))
 
 
 def render_approval(approval) -> None:
@@ -1000,23 +1028,29 @@ def live_view() -> None:
 
     with timeline_col:
         st.html(eyebrow("TIMELINE" if path == MAIN else f"TIMELINE · {agent_label(state, path).strip()}"))
-        render_timeline(agent, entries, selected, running, approval)
+        queued = state.queued if path == MAIN else None
+        render_timeline(agent, entries, selected, running, approval, queued)
         if path != MAIN:
             st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
         elif prompt := st.chat_input(
-            "Agent is working…"
+            "Stopping…"
+            if queued is not None
+            else "Send to stop and redirect…"
             if running
             else "Approve or deny the call, or say why not…"
             if approval
             else "Message the agent…",
-            disabled=running,
+            disabled=queued is not None,
         ):
-            if approval is not None:
-                answer_approval(approval.id, denied(prompt))
-            elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
-                driver().compact()
-            else:
-                driver().send(prompt)
+            try:
+                if approval is not None:
+                    answer_approval(approval.id, denied(prompt))
+                elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
+                    driver().compact()
+                else:
+                    driver().send(prompt)  # while busy: stops the turn, and this message's turn runs next
+            except Busy:
+                st.toast("The agent is busy: stop it, or wait for it to finish.", icon=":material/hourglass_top:")
             select(None)
             st.rerun()
 

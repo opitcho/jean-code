@@ -102,15 +102,16 @@ The whole agent is the `Agent` class in `src/jean_code/core/agent.py`. A turn is
 
 A tool call that needs the user's approval doesn't end the turn. The agent is built with an `approve` function,
 which it calls with the tool's name and arguments and waits for: it returns None to run the call, or the text the
-model gets as the result instead. The front-ends pass `Approvals.ask` (`ui/approval.py`), which hands the question
-to their own thread.
+model gets as the result instead.
 
-A turn ends early when it's interrupted, when the budget is spent or cancelled, when the context is nearly full, or
-when it runs out of tool rounds. Whatever notices raises `TurnStopped`, and `run_turn` catches it and returns
-which: "answered", "interrupted", "budget spent", "cancelled", "context full" or "out of tool rounds".
+A turn ends early when it's stopped, when the budget is spent, when the context is nearly full, or when it runs out
+of tool rounds. Whatever notices raises `TurnStopped`, and `run_turn` catches it and returns which: "answered",
+"cancelled", "budget spent", "context full" or "out of tool rounds". A stop takes effect before the next model call:
+the tool calls of a reply that has arrived still run, while a reply still streaming in is cut off, keeping its text.
 
-The front-ends don't get events from the agent. They run the turn on a thread, read the agent's state as it
-grows (`messages`, `usage` with one entry per model call, and `node` with the spend), and keep what the call returned.
+The front-ends act through a `Driver` (`core/driver.py`), which runs each turn on a thread of its own and holds
+the approval handshake, and draw what its `AgentView` (`core/view.py`) folds from the agent's events. The agent the
+user talks to streams its replies (`stream=True`), and a message sent while it works stops it and runs next.
 
 Everything else is built on that loop:
 

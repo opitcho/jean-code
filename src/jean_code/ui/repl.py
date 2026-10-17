@@ -16,6 +16,7 @@ from jean_code.core.events import (
     Approval,
     ApprovalRequested,
     Compaction,
+    Delta,
     JobEnded,
     MessageAdded,
     TurnEnded,
@@ -33,22 +34,54 @@ def dim(text: str) -> str:
     return f"\033[2m{text}\033[0m"
 
 
-def print_message(msg: Message) -> None:
-    """Prints a message of the main agent's as it lands.
+class Printer:
+    """Prints the main agent's work as it happens.
 
-    Tool results, thinking, answers and the calls it makes are printed; user messages aren't.
+    Its reply is printed as it streams in, and each message as it lands. A streamed line stays open until anything
+    else is printed, which ends it first.
     """
-    match msg:
-        case ToolMessage():
-            print(f"result> {msg.content}")
-        case AssistantMessage():
-            if msg.reasoning:
-                print(dim(f"thinking> {msg.reasoning}"))
-            if msg.content:
-                print(f"agent> {msg.content}")
-            for call in msg.tool_calls:
-                print(f"tool> {call.function.name}({call.function.arguments})")
-    # user messages: the user just typed them; the marker and summaries show as compaction lines
+
+    def __init__(self):
+        self.open: str | None = None  # the kind of the streamed line being printed, if one is open
+        self.streamed = {"reasoning": "", "content": ""}
+
+    def line(self, text: str) -> None:
+        """Prints `text` on a line of its own."""
+        self.end_line()
+        print(text)
+
+    def end_line(self) -> None:
+        """Ends the streamed line, if one is open."""
+        if self.open is not None:
+            print()
+            self.open = None
+
+    def delta(self, kind: str, text: str) -> None:
+        """Prints a piece of the reply, on the line for its kind: thinking or the answer."""
+        if kind != self.open:
+            self.end_line()
+            print(dim("thinking> ") if kind == "reasoning" else "agent> ", end="")
+            self.open = kind
+        print(dim(text) if kind == "reasoning" else text, end="", flush=True)
+        self.streamed[kind] += text
+
+    def message(self, msg: Message) -> None:
+        """Prints a message as it lands.
+
+        For a reply, that's what of it didn't stream in, then its tool calls. User messages aren't printed.
+        """
+        match msg:
+            case ToolMessage():
+                self.line(f"result> {msg.content}")
+            case AssistantMessage():
+                for kind, text in (("reasoning", msg.reasoning or ""), ("content", msg.content)):
+                    if rest := text[len(self.streamed[kind]) :]:  # all of it, for a reply that didn't stream
+                        self.delta(kind, rest)
+                self.end_line()
+                self.streamed = {"reasoning": "", "content": ""}
+                for call in msg.tool_calls:
+                    print(f"tool> {call.function.name}({call.function.arguments})")
+        # user messages: the user just typed them; the marker and summaries show as compaction lines
 
 
 def compaction_line(event: Compaction) -> str:
@@ -134,10 +167,10 @@ def next_event(events: Subscription):
 def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
     """Runs `line` as a job, and prints it as its events arrive.
 
-    `line` is a turn, or `/compact`. Each call that waits for approval is asked about. The main agent's messages
-    are printed in full; any other agent gets a line when its turn starts and one when it ends. Afterwards it
-    prints the error, why the turn stopped if it didn't answer, and a usage line for the calls the whole tree made
-    meanwhile.
+    `line` is a turn, or `/compact`. Each call that waits for approval is asked about. The main agent's reply
+    is printed as it streams in, and its other messages as they land; any other agent gets a line when its turn
+    starts and one when it ends. Afterwards it prints the error, why the turn stopped if it didn't answer, and a
+    usage line for the calls the whole tree made meanwhile.
 
     Returns:
         How the job ended.
@@ -152,30 +185,35 @@ def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
         driver.cancel()
 
     compactions = 0
+    out = Printer()
     previous = signal.signal(signal.SIGINT, on_sigint)
     try:
         while True:
             event = next_event(events)
             match event:
+                case Delta(path="main"):
+                    out.delta(event.kind, event.text)
                 case MessageAdded(path="main"):
-                    print_message(event.message)
+                    out.message(event.message)
                 case ApprovalRequested():
+                    out.end_line()
                     signal.signal(signal.SIGINT, previous)  # at the prompt, Ctrl+C is a KeyboardInterrupt again
                     try:
                         ask_approval(driver, event.approval)
                     finally:
                         signal.signal(signal.SIGINT, on_sigint)
                 case TurnStarted(path=path) if path != "main":
-                    print(dim(f"[{path} {driver.view.state().agents[path].profile}: started]"))
+                    out.line(dim(f"[{path} {driver.view.state().agents[path].profile}: started]"))
                 case TurnEnded(path=path) if path != "main":
-                    print(dim(f"[{path}: {event.end or 'failed'}]"))
+                    out.line(dim(f"[{path}: {event.end or 'failed'}]"))
                 case Compaction(path="main"):
                     compactions += 1
-                    print(dim(compaction_line(event)))
+                    out.line(dim(compaction_line(event)))
                 case JobEnded():
                     break
     finally:
         signal.signal(signal.SIGINT, previous)
+        out.end_line()  # a reply cut off, or a call that failed, mid-stream
 
     if event.error:
         print(f"[error] {event.error}")
@@ -242,7 +280,7 @@ def main() -> None:
         parser.error(f"--max-cost must be positive, got {cli.max_cost}")
 
     def build(node: AgentNode, approve: Approve) -> Agent:
-        common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node}
+        common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node, "stream": True}
         if cli.agent == "orchestrator":  # nothing it calls needs approval
             return orchestrator_agent(cli.model, network=not cli.no_network, **common)
         return coding_agent(cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approve, **common)

@@ -7,7 +7,8 @@
 - **OpenRouter backend.** Every model call goes through one chat-completions client (`core/llm.py`), so any
   OpenRouter model works.
 - **Streaming or plain completions.** `ChatClient.complete` returns the whole reply at once;
-  `StreamingClient.stream` yields it as it's written, then the same parsed `Completion`.
+  `StreamingClient.stream` yields it as it's written, then the same parsed `Completion`. Only the agent the user
+  talks to streams; subagents don't.
 - **Parsing at the boundary.** Responses are parsed into typed messages as they come in (`core/llm.py`), so a
   malformed one raises `MalformedResponse` at once instead of failing later deep in the agent. Malformed tool
   arguments go back to the model as the tool's result, so it can retry.

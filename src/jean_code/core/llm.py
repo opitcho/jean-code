@@ -3,15 +3,16 @@
 The message types (`Message`), `Usage` and `ChatRequest` mirror the OpenAI chat format field for field, and keep
 unknown fields as pydantic extras, so a message renders back to exactly the dict it was parsed from.
 `parse_completion` reads a response; `render_request` and `render_message` write one. `ChatClient` sends
-requests, and `StreamingClient` can also stream the reply.
+requests, and `StreamingClient` can also stream the reply; `ChatBackend` and `StreamingBackend` are what an agent
+needs from each.
 """
 
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
@@ -448,6 +449,26 @@ class ChatBackend(Protocol):
         ...
 
 
+@runtime_checkable
+class StreamingBackend(ChatBackend, Protocol):
+    """A `ChatBackend` that can also stream a reply.
+
+    `StreamingClient` is the real one.
+    """
+
+    def stream(self, request: ChatRequest, stop: Callable[[], bool] | None = None) -> Iterator[TextDelta | Completion]:
+        """Yields the reply to `request` as it arrives, as `StreamingClient.stream` does.
+
+        Args:
+            request: The request to send.
+            stop: Asked as the reply arrives; True cuts it off.
+
+        Yields:
+            The reply's pieces, then its `Completion`, unless `stop` cut it off before its first chunk.
+        """
+        ...
+
+
 class ChatClient:
     """A client for an OpenAI-compatible chat-completions endpoint.
 
@@ -528,25 +549,33 @@ class ChatClient:
 class StreamingClient(ChatClient):
     """A `ChatClient` that can also stream a reply."""
 
-    def stream(self, request: ChatRequest) -> Iterator[TextDelta | Completion]:
+    def stream(self, request: ChatRequest, stop: Callable[[], bool] | None = None) -> Iterator[TextDelta | Completion]:
         """Sends `request` with streaming on, and yields the reply as it arrives.
 
         Nothing is sent until the first item is asked for, and stopping early closes the connection.
 
         Args:
             request: The request to send.
+            stop: Asked before each line that arrives, keep-alives included; once it returns True, the connection is
+                closed and the reply so far is yielded as it stands, without a `finish_reason` or usage. None to
+                read the whole reply.
 
         Yields:
-            Each piece of reasoning or answer as a `TextDelta`, then the parsed `Completion`.
+            Each piece of reasoning or answer as a `TextDelta`, then the parsed `Completion`; no `Completion` if
+            `stop` cut the reply off before its first chunk.
 
         Raises:
             MalformedResponse: A chunk, or the reply joined from them, can't be used.
             RuntimeError: The endpoint returned an HTTP error, or reported a model error mid-stream.
         """
         chunks: list[_Chunk] = []
+        stopped = False
         response = self._send({**self.extra, **render_request(request), "stream": True})
         try:
             for line in response.iter_lines():
+                if stop is not None and stop():
+                    stopped = True
+                    break
                 # Blank separators, ": OPENROUTER PROCESSING" keep-alives and the end marker carry no chunk
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
@@ -559,11 +588,12 @@ class StreamingClient(ChatClient):
                         yield TextDelta("content", choice.delta.content)
         finally:
             response.close()
-        yield _join_chunks(chunks)
+        if chunks or not stopped:  # a stop before the first chunk leaves nothing to yield
+            yield _join_chunks(chunks)
 
 
-def openrouter(api_key: str | None = None) -> ChatClient:
-    """Returns a client for OpenRouter, pinned to DeepSeek's endpoint.
+def openrouter(api_key: str | None = None) -> StreamingClient:
+    """Returns a client for OpenRouter, pinned to DeepSeek's endpoint, that can stream.
 
     Args:
         api_key: The OpenRouter key; `OPENROUTER_API_KEY` by default.
@@ -574,4 +604,4 @@ def openrouter(api_key: str | None = None) -> ChatClient:
     api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set; run with `uv run --env-file .env ...`")
-    return ChatClient(OPENROUTER_URL, api_key, extra=OPENROUTER_ROUTING)
+    return StreamingClient(OPENROUTER_URL, api_key, extra=OPENROUTER_ROUTING)

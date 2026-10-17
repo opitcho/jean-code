@@ -13,13 +13,14 @@ from pathlib import Path
 from pydantic import validate_call
 
 from jean_code.core.compaction import HEAD_MARKER, SUMMARY_MESSAGE, middle, summary_failure, summary_prompt, turn_starts
-from jean_code.core.events import AgentAdded, Compaction, MessageAdded, TurnEnd, TurnEnded, TurnStarted
+from jean_code.core.events import AgentAdded, Compaction, Delta, MessageAdded, TurnEnd, TurnEnded, TurnStarted
 from jean_code.core.llm import (
     AssistantMessage,
     ChatBackend,
     ChatRequest,
     Completion,
     Message,
+    StreamingBackend,
     SystemMessage,
     ToolCall,
     ToolMessage,
@@ -111,6 +112,8 @@ class Agent:
         reasoning: Effort: "low", "medium" or "high". None sends no reasoning setting.
         max_tool_rounds: A turn makes at most 1 + this many model calls.
         client: Where requests are sent. OpenRouter by default.
+        stream: Stream every reply: a turn's reply is emitted piece by piece as `Delta`s, and a stop cuts off the
+            reply in flight. `client` must then be a `StreamingBackend`.
         skills_dir: Folder of skills the model can load.
         max_cost: Limit in USD for this agent and its subagents. Not together with `node`.
         node: This agent's node in an existing agent tree. Subagents get one from their parent.
@@ -134,7 +137,8 @@ class Agent:
 
     Raises:
         ValueError: An argument is out of range; `max_cost` and `node` are both given; some tools need approval
-            but there's no `approve`; or a tool isn't marked `@tool`, or is named like one of the agent's own.
+            but there's no `approve`; `stream` is set but `client` can't stream; or a tool isn't marked `@tool`,
+            or is named like one of the agent's own.
     """
 
     def __init__(
@@ -148,6 +152,7 @@ class Agent:
         reasoning: str | None = "medium",
         max_tool_rounds: int = 10,
         client: ChatBackend | None = None,
+        stream: bool = False,
         skills_dir: str | Path | None = None,
         max_cost: float | None = None,
         node: AgentNode | None = None,
@@ -162,6 +167,9 @@ class Agent:
         self.reasoning = reasoning
         self.max_tool_rounds = max_tool_rounds
         self.client: ChatBackend = client or openrouter()
+        if stream and not isinstance(self.client, StreamingBackend):
+            raise ValueError(f"stream is set, but the client ({type(self.client).__name__}) can't stream")
+        self.stream = stream
         self.tool_map: dict[str, Callable] = dict(tools or {})
         self.needs_approval: set[str] = set(needs_approval or ())
         if self.needs_approval and approve is None:
@@ -252,8 +260,10 @@ class Agent:
     def interrupt(self):
         """Stops this agent and every agent below it before their next model call.
 
-        A reply's tool calls still run to the end, and the turn then ends "cancelled". The agent stays stopped, also
-        for its next turn, until its node is reopened. Safe to call from another thread or a signal handler.
+        A reply that has arrived still has its tool calls run to the end; a streamed reply still arriving is cut
+        off, keeping its text and running none of its tool calls. The turn then ends "cancelled". The agent stays
+        stopped, also for its next turn, until its node is reopened. Safe to call from another thread or a signal
+        handler.
         """
         self.node.cancel()
 
@@ -318,9 +328,14 @@ class Agent:
 
         Raises:
             MalformedResponse: The response couldn't be used.
-            TurnStopped: The turn was stopped between tool calls.
+            TurnStopped: The agent was stopped while the reply streamed in, or `approve` stopped the turn.
         """
         completion = self._call(self._build_request())
+        if completion.finish_reason is None and self.node.cancelled:  # cut off mid-stream: its tool calls never run
+            message = completion.message.model_copy(update={"tool_calls": ()})
+            if message.content or message.reasoning:
+                self._append(message)
+            raise TurnStopped("cancelled")
         usage = completion.usage
         # The prompt plus the reply: measured before the append, so the reply's event carries the measured size.
         if usage is not None and usage.prompt_tokens is not None:
@@ -392,6 +407,9 @@ class Agent:
         booked = len(self.usage)
         try:
             completion = self._call(request, kind="compaction")
+        except TurnStopped:  # stopped before the summary's first chunk
+            record["status"] = "failed: interrupted"
+            return record["status"]
         except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
             record["status"] = f"failed: {type(e).__name__}: {e}"
             return record["status"]
@@ -417,16 +435,37 @@ class Agent:
     def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
         """Calls the model; the only place the agent does.
 
-        Books the call, and logs a warning if the response reported no cost.
+        Books the call, and logs a warning if a reply that arrived whole reported no cost. A streamed reply is cut
+        off once the agent is stopped, and comes back with no `finish_reason` or usage.
 
         Raises:
             MalformedResponse: The response couldn't be used. The call isn't booked.
+            TurnStopped: The agent was stopped before the reply's first chunk. Nothing is booked.
         """
         self.last_request = request
-        completion = self.client.complete(request)
+        if self.stream and isinstance(self.client, StreamingBackend):  # __init__ refuses a stream without one
+            completion = self._stream(self.client, request, show=kind is None)
+        else:
+            completion = self.client.complete(request)
         call = self._book(completion, kind)
-        if call.cost is None:
+        if call.cost is None and completion.finish_reason is not None:  # a cut-off stream never gets its usage
             log.warning("model call %s reported no cost, so spend can't be tracked", call.generation_id)
+        return completion
+
+    def _stream(self, client: StreamingBackend, request: ChatRequest, show: bool) -> Completion:
+        """Streams the reply, emitting its pieces as `Delta`s if `show`.
+
+        Raises:
+            TurnStopped: The agent was stopped before the reply's first chunk.
+        """
+        completion = None
+        for item in client.stream(request, stop=lambda: self.node.cancelled):
+            if isinstance(item, Completion):
+                completion = item
+            elif show:
+                self.node.emit(Delta(path=self.node.path, kind=item.kind, text=item.text))
+        if completion is None:
+            raise TurnStopped("cancelled")
         return completion
 
     def _book(self, completion: Completion, kind: str | None) -> ModelCall:

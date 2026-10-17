@@ -1,15 +1,13 @@
-"""A research run's notebook: the folder researchers record checked facts into, and the report rendered from it.
+"""A research run's notebook: a folder of checked facts, and its rendered report.
 
 Researchers search the web and record *facts*: one claim with a quote, where the quote is checked against the page
 the researcher fetched. The lead writes the report's sections from those facts, citing them as `[F12]`, and
-`render_report` turns the ids into numbered sources. The folder is the run's only state (see `Notebook`), so the
-lead, the renderer and anything grading a run later read the same files.
+`render_report` turns the ids into numbered sources. The folder is the run's only state, so everything that reads a
+run reads the same files.
 
-Who uses what:
-    Notebook             the tools that write to a folder: fetch_page and record_fact (researchers), facts,
-                         write_section and read_draft (the lead)
-    render_report        the folder → report.md, at the end of every run; an eval can call it on any folder
-    read_facts           the facts in a folder, for the renderer, the lead's `facts` and each researcher's result
+`Notebook` holds a folder and the tools that write to it: `fetch_page` and `record_fact` for researchers, `facts`,
+`write_section` and `read_draft` for the lead. `render_report` renders any folder's report, and `read_facts` reads
+its facts.
 """
 
 import json
@@ -45,22 +43,38 @@ REFERENCE_MARK = re.compile(r"\[[\d\s,;]*\]|\([\d\s,;]*\)|\(\s*[A-Z][^()]*?\b(?:
 
 @dataclass(frozen=True)
 class Fact:
-    """One line of facts.jsonl: a claim, the quote that supports it, and whether the quote was found on the page."""
+    """A recorded fact: a claim, its quote, and whether the quote was verified.
+
+    It's one line of facts.jsonl.
+
+    Attributes:
+        id: Its id, e.g. "F12".
+        claim: The fact, in the researcher's words.
+        url: The page it came from.
+        quote: The passage that supports it.
+        verified: Whether the quote was found on the page.
+        by: The path of the researcher that recorded it.
+        problem: Why it isn't verified, if it isn't.
+        date: The page's publication date, as the page gives it.
+        time: When it was recorded.
+    """
 
     id: str
     claim: str
     url: str
     quote: str
     verified: bool
-    by: str  # the path of the researcher that recorded it
-    problem: str | None = None  # why it isn't verified
-    date: str | None = None  # the page's publication date, as the page gives it
-    time: str = ""  # when it was recorded
+    by: str
+    problem: str | None = None
+    date: str | None = None
+    time: str = ""
 
 
 class Notebook:
-    """A research run's folder, and the tools that write to it. The files are the only state: nothing is cached, so a
-    new Notebook on the same folder carries on where the last one stopped.
+    """A research run's folder, and the tools that write to it.
+
+    The files are the only state: nothing is cached, so a new Notebook on the same folder carries on where the last
+    one stopped.
 
         run.json      {"path", "model", "started"}
         brief.md      the task, as given
@@ -71,9 +85,10 @@ class Notebook:
         report.md     rendered from the above at the end of the run
         agents/       one <path>.json per agent (messages and usage), budget.json: written at the end of the run
 
-    Thread-safe: one lock guards ids, facts.jsonl, the page files, index.json and draft.md. It's never held during a
-    download. The page files, index.json and draft.md are replaced whole (temp file, then os.replace), so a reader
-    never sees half a write.
+    Thread-safe. The page files, index.json and draft.md are replaced whole, so a reader never sees half a write.
+
+    Args:
+        dir: The run's folder; kept as `dir`.
     """
 
     def __init__(self, dir: str | Path):
@@ -82,7 +97,19 @@ class Notebook:
 
     @classmethod
     def create(cls, runs_dir: str | Path, brief: str, path: str, model: str) -> "Notebook":
-        """A new folder `<runs_dir>/<YYYYmmdd-HHMMSS>-<6 hex>`, with the brief and the run's metadata."""
+        """Creates a run folder under `runs_dir`, with the brief and the run's metadata.
+
+        The folder is `<runs_dir>/<YYYYmmdd-HHMMSS>-<6 hex>`.
+
+        Args:
+            runs_dir: Where run folders go.
+            brief: The task, as given.
+            path: The lead's node path.
+            model: The lead's model.
+
+        Returns:
+            A notebook on the new folder.
+        """
         dir = Path(runs_dir) / f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
         (dir / "pages").mkdir(parents=True)  # exist_ok=False: two runs never share a folder
         (dir / "brief.md").write_text(brief)
@@ -92,7 +119,11 @@ class Notebook:
     # ---------------------------------------------------------------- researcher tools
 
     def tools_for(self, by: str) -> dict[str, Callable]:
-        """The researcher tools, bound to this folder and to `by`, the researcher's path."""
+        """Returns the researcher tools, bound to this folder and to one researcher.
+
+        Args:
+            by: The researcher's path, recorded on the pages it reads and the facts it records.
+        """
 
         @tool
         def fetch_page(url: str, max_chars: int = 8000, start: int = 0) -> str:
@@ -107,7 +138,7 @@ class Notebook:
 
             Returns:
                 The page's title and visible text (or a PDF's text), from `start`, cut to max_chars.
-            """
+            """  # noqa: D205 - a tool docstring is a prompt: rewording it changes what the model sees
             return self._fetch_page(by, url, max_chars, start)
 
         @tool
@@ -243,7 +274,11 @@ class Notebook:
 
 
 def read_facts(dir: str | Path) -> list[Fact]:
-    """Every fact recorded in the folder, in id order."""
+    """Returns every fact recorded in a run folder, in id order.
+
+    Args:
+        dir: The run's folder.
+    """
     path = Path(dir) / "facts.jsonl"
     if not path.exists():
         return []
@@ -251,7 +286,11 @@ def read_facts(dir: str | Path) -> list[Fact]:
 
 
 def format_facts(facts: list[Fact]) -> str:
-    """Facts as the lead reads them: `F12 ✓ claim`, then the quote, URL and date."""
+    """Formats facts as the lead reads them: `F12 ✓ claim`, then quote, URL and date.
+
+    Args:
+        facts: The facts.
+    """
     entries = []
     for f in facts:
         mark = "✓" if f.verified else "⚠"
@@ -261,11 +300,19 @@ def format_facts(facts: list[Fact]) -> str:
 
 
 def render_report(dir: str | Path) -> str:
-    """The report for a folder: the draft with [F12] replaced by source numbers, the facts no section cites, the
-    sources with each quote listed under its page, and a footer of counts. Works with an empty or partial draft.
+    """Renders the report for a run folder.
+
+    The report is the draft with [F12] replaced by source numbers, the facts no section cites, the sources with
+    each quote listed under its page, and a footer of counts. It works with an empty or partial draft.
 
     Sources are numbered by page, in order of first citation, so two facts from one page share a number. A citation
     of an unverified fact is marked [3⚠], so a reader of the Summary alone sees it. An unknown id stays as [F99?].
+
+    Args:
+        dir: The run's folder.
+
+    Returns:
+        The report, in Markdown.
     """
     dir = Path(dir)
     facts = {f.id: f for f in read_facts(dir)}
@@ -314,8 +361,13 @@ def render_report(dir: str | Path) -> str:
 
 
 def footer(dir: str | Path) -> str:
-    """Counts that show how far to trust a report: facts recorded, verified, cited and unused, then any citation
-    problems in the draft."""
+    """Returns counts that show how far to trust a run's report.
+
+    That's facts recorded, verified, cited and unused, then any citation problems in the draft.
+
+    Args:
+        dir: The run's folder.
+    """
     dir = Path(dir)
     facts = read_facts(dir)
     draft = (dir / "draft.md").read_text() if (dir / "draft.md").exists() else ""
@@ -337,7 +389,13 @@ def footer(dir: str | Path) -> str:
 
 
 def uncited_paragraphs(draft: str) -> int:
-    """Paragraphs and list items with no [F…], outside the Caveats section, where listing gaps needs no source."""
+    """Counts the paragraphs and list items with no [F…], outside the Caveats section.
+
+    Caveats are left out because listing gaps needs no source.
+
+    Args:
+        draft: The draft, in Markdown.
+    """
     count = 0
     for title, body in parse_sections(draft):
         if title.casefold() == "caveats":
@@ -350,7 +408,13 @@ def uncited_paragraphs(draft: str) -> int:
 
 
 def parse_sections(markdown: str) -> list[tuple[str, str]]:
-    """`## Title` blocks as (title, body), in order. Text before the first one is dropped."""
+    """Splits Markdown into its `## Title` blocks, as `(title, body)` pairs in order.
+
+    Text before the first one is dropped.
+
+    Args:
+        markdown: The text to split.
+    """
     sections: list[tuple[str, str]] = []
     for block in re.split(r"^## ", markdown, flags=re.MULTILINE)[1:]:
         title, _, body = block.partition("\n")
@@ -359,15 +423,26 @@ def parse_sections(markdown: str) -> list[tuple[str, str]]:
 
 
 def cited_ids(markdown: str) -> list[str]:
-    """The fact ids cited in `markdown`, in order of first use."""
+    """Returns the fact ids cited in `markdown`, in order of first use.
+
+    Args:
+        markdown: The text to search.
+    """
     ids = (id for match in CITATION.finditer(markdown) for id in re.findall(r"F\d+", match.group(0)))
     return list(dict.fromkeys(ids))
 
 
 def seen_text(text: str, windows: list[list[int]]) -> str:
-    """The parts of a page's `text` that `windows` cover, in page order whatever order they were fetched in, so a
-    quote across a window boundary verifies. Overlapping or touching windows merge into one stretch; stretches with
-    unread text between them are split by "[…]", which `normalize` keeps, so no quote verifies across the gap."""
+    """Returns the parts of a page's `text` that `windows` cover, in page order.
+
+    Page order whatever order they were fetched in, so a quote across a window boundary verifies. Overlapping or
+    touching windows merge into one stretch; stretches with unread text between them are split by "[…]", which
+    `normalize` keeps, so no quote verifies across the gap.
+
+    Args:
+        text: The page's whole text.
+        windows: The `[start, end]` windows a model has seen.
+    """
     stretches: list[list[int]] = []
     for start, end in sorted(windows):
         if stretches and start <= stretches[-1][1]:
@@ -378,21 +453,38 @@ def seen_text(text: str, windows: list[list[int]]) -> str:
 
 
 def page_key(url: str) -> str:
-    """The URL a page is filed under: no #fragment and no trailing /, so both spellings find the same page."""
+    """Returns the URL a page is filed under: no #fragment and no trailing /.
+
+    So both spellings of a URL find the same page.
+
+    Args:
+        url: The URL as given.
+    """
     return url.strip().split("#", 1)[0].rstrip("/")
 
 
 def normalize(text: str) -> str:
-    """Text as quotes are compared: NFKC, straight quotes, case-folded, and without whitespace, hyphens, dashes,
-    invisible format characters (U+2060 word joiners, soft hyphens) or in-text citations. The quote and the page
-    both go through it, so a quote that does include a citation verifies too."""
+    """Returns `text` as quotes are compared.
+
+    That's NFKC, straight quotes, case-folded, and without whitespace, hyphens, dashes, invisible format characters
+    (U+2060 word joiners, soft hyphens) or in-text citations. The quote and the page both go through it, so a quote
+    that does include a citation verifies too.
+
+    Args:
+        text: A quote, or a page's text.
+    """
     text = unicodedata.normalize("NFKC", text).translate(PUNCTUATION)
     text = REFERENCE_MARK.sub("", "".join(c for c in text if unicodedata.category(c) != "Cf"))
     return "".join(text.casefold().split())
 
 
 def check_quote(quote: str, page: str) -> str | None:
-    """None if the quote is on the page, else why it isn't verified."""
+    """Returns why `quote` isn't verified on `page`, or None if it is.
+
+    Args:
+        quote: The quote, as the researcher gave it.
+        page: The text of the page, as read so far.
+    """
     quote = quote.strip().strip("\"'")
     words = len(quote.split())
     if words < MIN_QUOTE_WORDS and len(quote) < MIN_QUOTE_CHARS:
@@ -403,15 +495,24 @@ def check_quote(quote: str, page: str) -> str | None:
 
 
 def now() -> str:
+    """Returns the local time, in ISO 8601 to the second."""
     return datetime.now().isoformat(timespec="seconds")
 
 
 def write_json(path: Path, data) -> None:
+    """Writes `data` to `path` as indented JSON, replacing the file whole."""
     write_text(path, json.dumps(data, indent=2))
 
 
 def write_text(path: Path, text: str) -> None:
-    """Replace the file whole: a reader sees the old content or the new, never half of it."""
+    """Writes `text` to `path`, replacing the file whole.
+
+    A reader sees the old content or the new, never half of it.
+
+    Args:
+        path: The file.
+        text: Its new content.
+    """
     temp = path.with_name(f".{path.name}.tmp")
     temp.write_text(text)
     os.replace(temp, path)

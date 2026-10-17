@@ -3,7 +3,18 @@
 Each test names the bug it would catch.
 """
 
-from jean_code.core.events import AgentAdded, Charged, Compaction, Delta, MessageAdded, TurnEnded, TurnStarted
+from jean_code.core.events import (
+    AgentAdded,
+    Charged,
+    Compaction,
+    Delta,
+    JobEnded,
+    JobStarted,
+    MessageAdded,
+    Queued,
+    TurnEnded,
+    TurnStarted,
+)
 from jean_code.core.llm import AssistantMessage, UserMessage
 from jean_code.core.usage import ModelCall
 from jean_code.core.view import AgentView, TreeState, apply
@@ -54,6 +65,17 @@ def test_the_reducer_drops_a_draft_once_its_reply_lands():
     apply(state, Charged(path="main", call=call_for("main", 0.1)))
     apply(state, TurnEnded(path="main", end="answered", context_tokens=5))
     assert not state.agents["main"].running and state.agents["main"].end == "answered"
+
+
+def test_a_queued_message_shows_until_its_job_starts():
+    # Catches a waiting message that vanishes while the stopped job winds down, or one that's shown forever.
+    state = TreeState()
+    apply(state, JobStarted(kind="turn", text="go"))
+    apply(state, Queued(text="instead"))
+    apply(state, JobEnded(kind="turn", result="cancelled"))
+    assert state.queued == "instead" and not state.busy
+    apply(state, JobStarted(kind="turn", text="instead"))
+    assert state.queued is None and state.busy
 
 
 def test_a_subscriber_sees_each_event_after_its_snapshot_once():

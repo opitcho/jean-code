@@ -1,12 +1,8 @@
-"""Shell backends behind the agent's `bash` and `job` tools: on the host, or in a Docker sandbox.
+"""Shells for the agent's `bash` and `job` tools: on the host, or in Docker.
 
-Both backends share the tool methods and differ only in how a command is started:
-`_exec` runs one to completion and captures its output, `_spawn` starts one detached.
-Commands are non-interactive (no TTY, stdin closed) and stateless: each call is a fresh
-`bash -c` in the working directory, so `cd` and `export` don't carry over but files do.
-
-On the host, commands run in the directory the agent was started from, with no sandboxing.
-In Docker, they run in the `workspace/` folder, mounted into the container.
+Commands are non-interactive (no TTY, stdin closed) and stateless: each call is a fresh `bash -c` in the working
+directory, so `cd` and `export` don't carry over but files do. `LocalShell` runs them on the host, with no
+sandboxing; `DockerShell` runs them in a container, in the mounted `workspace/` folder.
 """
 
 import os
@@ -30,7 +26,15 @@ TIMEOUT_HINT = "For commands that take longer, rerun with background=True and ch
 
 
 def truncate_middle(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
-    """Keep the head and tail of long output: errors are usually at the end."""
+    """Keeps the head and tail of long output: errors are usually at the end.
+
+    Args:
+        text: The output.
+        max_chars: The most to keep.
+
+    Returns:
+        The text, with its middle replaced by a note if it's longer than `max_chars`.
+    """
     if len(text) <= max_chars:
         return text
     half = max_chars // 2
@@ -38,14 +42,28 @@ def truncate_middle(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
 
 
 def format_result(code: int, output: str) -> str:
-    """What the model sees for a finished command: its exit code, then its output."""
+    """Returns what the model sees for a finished command: exit code, then output.
+
+    Args:
+        code: The exit code.
+        output: Its stdout and stderr together.
+    """
     return f"exit code: {code}\n{truncate_middle(output)}".rstrip()
 
 
 class Shell:
-    """The `bash` and `job` tools, over a backend's `_exec` and `_spawn`.
+    """The `bash` and `job` tools, on a backend that runs the commands.
 
-    `requires_approval` says whether the agent should ask the user before each `bash` call.
+    A backend implements `describe`, `_exec` and `_spawn`. The arguments it keeps are attributes of the same name.
+
+    Args:
+        workdir: Where commands run.
+        jobs_dir: Where background jobs' files go, on the host.
+        max_timeout: The most seconds a `bash` call may wait.
+
+    Attributes:
+        requires_approval: Whether the agent should ask the user before each `bash` call.
+        jobs: Each background job's id, and how much of its log was already returned.
     """
 
     requires_approval = True
@@ -55,7 +73,7 @@ class Shell:
         self.jobs_dir = Path(jobs_dir).resolve()
         self._make_jobs_dir()
         self.max_timeout = max_timeout
-        self.jobs: dict[str, int] = {}  # job id -> how much of its log was already returned
+        self.jobs: dict[str, int] = {}
 
     @tool
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
@@ -118,23 +136,29 @@ class Shell:
         return f"job {job_id}: {status}\n{truncate_middle(new_output)}".rstrip()
 
     def describe(self) -> str:
-        """One line for the system prompt saying where commands run."""
+        """Returns one line for the system prompt, saying where commands run."""
         raise NotImplementedError
 
     def close(self) -> None:
-        """Kill background jobs that are still running, and forget them. The shell can be used again afterwards: a
-        subagent's agent is closed after every turn, and may be resumed."""
+        """Kills background jobs that are still running, and forgets them.
+
+        The shell can be used again afterwards.
+        """
         for job_id in self.jobs:
             if self._exit_code(job_id) is None:
                 self._kill_job(job_id)
         self.jobs.clear()  # their files go with the jobs folder, so new jobs count from 1 again
 
     def _exec(self, command: str, timeout: int) -> tuple[int, str, bool]:
-        """Run `command` to completion: (exit code, stdout+stderr, timed out)."""
+        """Runs `command` to completion.
+
+        Returns:
+            The exit code, stdout and stderr together, and whether it timed out.
+        """
         raise NotImplementedError
 
     def _spawn(self, command: str) -> None:
-        """Start `command` detached and return immediately."""
+        """Starts `command` detached, and returns at once."""
         raise NotImplementedError
 
     def _make_jobs_dir(self) -> None:
@@ -148,11 +172,14 @@ class Shell:
         return self.jobs_dir / f"{job_id}.{kind}"
 
     def _jobs_path(self) -> str:
-        """The jobs folder as commands see it."""
+        """Returns the jobs folder as commands see it."""
         return str(self.jobs_dir)
 
     def _job_script(self, job_id: str, command: str) -> str:
-        """Run `command` as the leader of its own process group, recording its pid, output and exit code."""
+        """Returns a script that runs `command` as its own process group's leader.
+
+        The script records the job's pid, output and exit code.
+        """
         base = shlex.quote(f"{self._jobs_path()}/{job_id}")
         # a subshell, so an `exit` in the command still lets the exit code be recorded
         inner = f"echo $$ > {base}.pid; ( {command}\n) > {base}.log 2>&1 < /dev/null; echo $? > {base}.exit"
@@ -163,7 +190,10 @@ class Shell:
         return path.read_text().strip() if path.exists() else None
 
     def _kill_job(self, job_id: str) -> None:
-        """Kill the job's whole process group (from where it runs, so pids match), and record it as killed."""
+        """Kills the job's whole process group, and records the job as killed.
+
+        It kills from where the job runs, so pids match.
+        """
         pid_file = self._job_file(job_id, "pid")
         deadline = time.monotonic() + 2
         while not pid_file.exists() and time.monotonic() < deadline:  # a just-started job may not have written it yet
@@ -176,9 +206,14 @@ class Shell:
 
 
 class LocalShell(Shell):
-    """Runs commands on the host, in the directory the agent was started from. Asks for approval by default.
+    """A shell on the host, in the directory the agent was started from.
 
-    There is no sandboxing: commands can `cd` anywhere, so approval is the only safety net.
+    Asks for approval by default. There is no sandboxing: commands can `cd` anywhere, so approval is the only
+    safety net.
+
+    Args:
+        workdir: Where commands run; the current directory by default.
+        max_timeout: The most seconds a `bash` call may wait.
     """
 
     requires_approval = True
@@ -187,7 +222,7 @@ class LocalShell(Shell):
         super().__init__(workdir or Path.cwd(), tempfile.mkdtemp(prefix="jean-code-jobs-"), max_timeout)
 
     def close(self) -> None:
-        """Kill background jobs that are still running, and remove their files."""
+        """Kills background jobs that are still running, and removes their files."""
         super().close()
         shutil.rmtree(self.jobs_dir, ignore_errors=True)
 
@@ -233,21 +268,30 @@ class LocalShell(Shell):
 
 
 def _remove_container(name: str, process: subprocess.Popen) -> None:
-    """Remove a sandbox container and reap the `docker run` that started it."""
+    """Removes a sandbox container, and reaps the `docker run` that started it."""
     subprocess.run(["docker", "rm", "--force", name], capture_output=True, check=False)
     process.communicate()
 
 
 class DockerShell(Shell):
-    """Runs commands in a long-lived Docker container with only the workspace mounted.
+    """A shell in a long-lived Docker container with only the workspace mounted.
 
-    The container starts on the first command and lives until `close()`, so installed
-    packages persist. It also dies with this object or this process, even on a crash. It runs
-    as the host user, so files it writes to the workspace are yours. Commands run without
-    approval by default: the sandbox is the safety net.
+    The container starts on the first command and lives until `close()`, so installed packages persist. It also
+    dies with this object or this process, even on a crash. It runs as the host user, so files it writes to the
+    workspace are yours. Commands run without approval by default: the sandbox is the safety net.
 
-    Several can share one workspace (an agent and its subagents), each in its own container, so each keeps
-    its jobs in its own folder: job ids count from 1 per shell, and would otherwise overwrite each other's files.
+    Several can share one workspace (an agent and its subagents), each in its own container, so each keeps its jobs
+    in its own folder: job ids count from 1 per shell, and would otherwise overwrite each other's files. The
+    arguments it keeps are attributes of the same name.
+
+    Args:
+        workdir: The workspace folder, mounted at /workspace.
+        image: The container image.
+        network: Whether the container gets a network.
+        max_timeout: The most seconds a `bash` call may wait.
+
+    Attributes:
+        container: The running container's name; None until the first command.
     """
 
     requires_approval = False
@@ -273,7 +317,11 @@ class DockerShell(Shell):
         )
 
     def start(self) -> str:
-        """Start the container, if it isn't running yet, and return its name."""
+        """Starts the container, if it isn't running yet, and returns its name.
+
+        Raises:
+            RuntimeError: Docker isn't running, or the container couldn't start.
+        """
         if self.container:
             return self.container
         info = subprocess.run(
@@ -316,7 +364,9 @@ class DockerShell(Shell):
 
     @staticmethod
     def _proxy_env(info: str) -> list[str]:
-        """`--env` flags passing the daemon's proxy to the container, in both spellings tools look for.
+        """Returns `--env` flags passing the daemon's proxy on to the container.
+
+        Each variable comes in both spellings tools look for.
 
         Docker Desktop sends container traffic through its own proxy: plain HTTP works without
         it, but HTTPS (pip, uv, curl) only works when the container is told to use it.
@@ -334,8 +384,10 @@ class DockerShell(Shell):
         return f"/workspace/{self._jobs_folder}"
 
     def close(self) -> None:
-        """Remove the container, which also ends its background jobs, and their files. The next command starts a
-        new container, with the same workspace."""
+        """Removes the container, which also ends its background jobs, and their files.
+
+        The next command starts a new container, with the same workspace.
+        """
         if self._remove:
             self._remove()
             self.container = self._remove = None

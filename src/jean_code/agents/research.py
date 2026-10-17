@@ -1,11 +1,8 @@
-"""Research runs: researchers record checked facts into a run folder, and a lead writes a cited report from them.
+"""Research runs: researchers record checked facts; a lead writes a cited report.
 
-The lead has no web tools. It writes the report from the facts its researchers record in the run's notebook
-(`tools/notebook.py`), which is the run's only state.
-
-Who uses what:
-    research_profile     the coding agent's `research` subagent: a fresh folder and a lead per run
-    researcher_profile   the lead's `researcher` subagent: researchers writing into the lead's notebook
+The lead has no web tools. It writes the report from the facts its researchers record in the run's `Notebook`,
+which is the run's only state. `research_profile` gives each run a fresh folder and a lead; `researcher_profile`
+gives a lead researchers that write into its notebook.
 """
 
 from dataclasses import asdict
@@ -100,7 +97,14 @@ RESEARCHER_DESCRIPTION = (
 def researcher_agent(
     notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
 ) -> Agent:
-    """A researcher: web search, plus the notebook's `fetch_page` and `record_fact`."""
+    """Returns a researcher: web search, plus the notebook's researcher tools.
+
+    Args:
+        notebook: The run's notebook.
+        node: Its node in the lead's tree.
+        model: OpenRouter model id.
+        client: Where requests are sent; OpenRouter by default.
+    """
     return Agent(
         model,
         system_prompt=RESEARCHER_PROMPT,
@@ -115,7 +119,16 @@ def researcher_agent(
 def research_lead_agent(
     notebook: Notebook, node: AgentNode, model: str = DEFAULT_MODEL, client: ChatBackend | None = None
 ) -> Agent:
-    """The lead: it reads the facts, writes the draft and starts researchers. It has no web tools."""
+    """Returns the lead: it reads the facts, writes the draft and starts researchers.
+
+    It has no web tools.
+
+    Args:
+        notebook: The run's notebook.
+        node: Its node.
+        model: OpenRouter model id, for it and its researchers.
+        client: Where requests are sent; OpenRouter by default.
+    """
     # max_tool_rounds=40: the default 10 runs out on 3 spawns + 3 collects + 4 sections.
     return Agent(
         model,
@@ -130,7 +143,13 @@ def research_lead_agent(
 
 
 def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: ChatBackend | None = None) -> Profile:
-    """The lead's profile: researchers that all write into this lead's notebook."""
+    """Returns the lead's profile for researchers that all write into `notebook`.
+
+    Args:
+        notebook: The lead's notebook.
+        model: OpenRouter model id.
+        client: Where requests are sent; OpenRouter by default.
+    """
 
     def start(task: str, node: AgentNode) -> Run:
         agent = researcher_agent(notebook, node, model, client)
@@ -142,8 +161,15 @@ def researcher_profile(notebook: Notebook, model: str = DEFAULT_MODEL, client: C
 def research_profile(
     model: str = DEFAULT_MODEL, client: ChatBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
 ) -> Profile:
-    """The caller's profile: each run gets a fresh folder under `runs_dir` and a lead bound to it. Outside an agent,
-    e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, AgentNode(…))`."""
+    """Returns the research profile: a fresh folder and a lead for each run.
+
+    Outside an agent, e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, AgentNode(…))`.
+
+    Args:
+        model: OpenRouter model id, for the lead and its researchers.
+        client: Where requests are sent; OpenRouter by default.
+        runs_dir: Where the run folders go.
+    """
 
     def start(task: str, node: AgentNode) -> Run:
         notebook = Notebook.create(runs_dir, brief=task, path=node.path, model=model)
@@ -154,14 +180,28 @@ def research_profile(
 
 
 def researcher_result(agent: Agent, notebook: Notebook) -> str:
-    """What the lead gets back from a researcher: every fact it recorded, in full, then its last reply as the note."""
+    """Returns what the lead gets back from a researcher.
+
+    That's every fact the researcher recorded, in full, then its last reply as the note.
+
+    Args:
+        agent: The researcher.
+        notebook: The run's notebook.
+    """
     mine = [f for f in read_facts(notebook.dir) if f.by == agent.node.path]
     return f"Facts recorded ({len(mine)}):\n{format_facts(mine)}\n\nNote:\n{last_reply(agent) or '(none)'}"
 
 
 def research_result(lead: Agent, notebook: Notebook) -> str:
-    """What the caller gets back: the report's path, its Summary and the counts. The only code that finishes a run
-    folder, so every run, stopped or not, leaves report.md, agents/ and budget.json."""
+    """Finishes a run folder, and returns what the caller gets back.
+
+    The caller gets the report's path, its Summary and the counts. It's the only code that finishes a run folder,
+    so every run, stopped or not, leaves report.md, agents/ and budget.json.
+
+    Args:
+        lead: The run's lead.
+        notebook: The run's notebook.
+    """
     # Cancel and wait: a cancelled researcher still runs its last reply's tool calls, so its last record_facts
     # land before the report counts them.
     if lead.subagents:
@@ -187,7 +227,13 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
 
 
 def summary_of(report: str) -> str:
-    """The rendered report's Summary section, else its first section (with no draft, the uncited facts)."""
+    """Returns the rendered report's Summary section, else its first section.
+
+    With no draft, the first section holds the uncited facts. The section is cut at `SUMMARY_CHARS`.
+
+    Args:
+        report: The rendered report.
+    """
     sections = parse_sections(report.rsplit("\n---\n", 1)[0])  # without the footer
     if not sections:
         return "(the report is empty: no facts and no draft)"

@@ -1,11 +1,11 @@
-"""The orchestrator, a root agent, and its experts: a planner, a product manager, an architect, an engineer and an
-auditor.
+"""The orchestrator, a root agent, and its experts.
 
-The orchestrator has skills and the experts, and no other tools: no shell, so it routes the work and can't do it
-itself. Each expert is a role prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so
-files it writes there are shared with the other experts and with the user. The experts don't know about any
-particular pipeline: the brief names what to read and what to write, and for the auditor which rules to check. A
-skill decides how to put them together (`skills/build` is one way).
+The experts are a planner, a product manager, an architect, an engineer and an auditor. The orchestrator has skills
+and the experts, and no other tools: no shell, so it routes the work and can't do it itself. Each expert is a role
+prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so files it writes there are
+shared with the other experts and with the user. The experts don't know about any particular pipeline: the brief
+names what to read and what to write, and for the auditor which rules to check. A skill decides how to put them
+together (the `build` skill is one way).
 """
 
 from pathlib import Path
@@ -137,13 +137,21 @@ def orchestrator_agent(
     model: str = DEFAULT_MODEL,
     network: bool = True,
     skills_dir: str | Path | None = SKILLS_DIR,
-    max_tool_rounds: int = 40,  # the default 10 runs out halfway through a build: 5 steps, each spawned and audited
+    max_tool_rounds: int = 40,
     **kwargs,
 ) -> Agent:
-    """The orchestrator: skills and the experts (see `expert_profiles`), and no other tools. Nothing it calls needs
-    approval, so it needs no `approve` and no sandbox setting.
+    """Returns the orchestrator: skills and the experts, and no other tools.
 
-    `agent.close()` stops its experts, which removes their containers.
+    Nothing it calls needs approval, so it needs no `approve` and no sandbox setting. `agent.close()` stops its
+    experts, which removes their containers.
+
+    Args:
+        model: OpenRouter model id, for it and its experts.
+        network: Whether the experts' containers get a network.
+        skills_dir: Folder of skills the model can load.
+        max_tool_rounds: As for `Agent`. Agent's default of 10 runs out halfway through a build: 5 steps, each
+            spawned and audited.
+        **kwargs: Passed on to `Agent`.
     """
     return Agent(
         model,
@@ -157,7 +165,16 @@ def orchestrator_agent(
 
 
 def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = True) -> Agent:
-    """An expert: `general_agent`'s tools in its own sandbox container, with `role_prompt` and no skills."""
+    """Returns an expert: `general_agent`'s tools, in its own sandbox container.
+
+    It has `role_prompt` and no skills.
+
+    Args:
+        role_prompt: What the expert does, first in its system prompt.
+        model: OpenRouter model id.
+        node: Its node in the orchestrator's tree.
+        network: Whether its container gets a network.
+    """
     # its own container; the sandbox is why its bash needs no approval
     tools = shell_tools(sandbox=True, network=network)
     # max_tool_rounds=40: the default 10 runs out on an engineer writing a project and running its tests.
@@ -172,7 +189,12 @@ def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = 
 
 
 def expert_profiles(model: str = DEFAULT_MODEL, network: bool = True) -> dict[str, Profile]:
-    """One profile per entry of `EXPERTS`, on `model`."""
+    """Returns one profile per entry of `EXPERTS`, on `model`.
+
+    Args:
+        model: OpenRouter model id.
+        network: Whether the experts' containers get a network.
+    """
     return {
         # prompt=prompt binds each prompt now: a closure would see only the loop's last one
         name: agent_profile(
