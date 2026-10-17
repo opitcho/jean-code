@@ -341,3 +341,6 @@ def test_a_listener_that_fails_on_run_ended_still_completes_the_run():
     agent = Agent(client=FakeClient([response("hi")]), node=AgentNode(listener=listen).child(None, "1"))
     run = Run.start(agent, "task")
     assert run.wait(TIMEOUT) and run.outcome(0) == Outcome("done", "hi")
+    for thread in threading.enumerate():  # the error ends the run's thread: let it, inside this test
+        if thread.name == "subagent main/1":
+            thread.join(TIMEOUT)
