@@ -13,7 +13,7 @@ from jean_code.core.events import (
     TurnStarted,
 )
 from jean_code.core.llm import AssistantMessage, Message, SystemMessage, ToolCall, ToolMessage, UserMessage
-from jean_code.core.usage import ModelCall, human, usage_line
+from jean_code.core.usage import ModelCall, breakdown_lines, human, usage_line
 from jean_code.session.contract import (
     AgentDetails,
     AgentState,
@@ -70,6 +70,7 @@ __all__ = [
     "UnknownAgent",
     "UserMessage",
     "apply",
+    "breakdown_lines",
     "build_agent",
     "denied",
     "human",

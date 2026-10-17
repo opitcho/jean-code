@@ -32,7 +32,6 @@ from jean_code.core.llm import Message, render_message
 from jean_code.core.subagents import Run
 from jean_code.core.usage import human, usage_line
 from jean_code.ui.approval import Approvals, denied
-from jean_code.ui.repl import compaction_line
 
 MODEL = DEFAULT_MODEL
 AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
@@ -275,6 +274,16 @@ def call_of(entries: list[Entry], pos: int) -> Entry | None:
 def call_names(entries: list[Entry]) -> dict[str, str]:
     """Tool name of every call seen, by call id, so a result can be matched to its tool by `tool_call_id`."""
     return {call.id: call.function.name for e in entries for call in mget(e.msg, "tool_calls") or []}
+
+
+def compaction_line(record: dict) -> str:
+    """`[compacted 38 messages · ~210.0k → ~24.0k tokens]`, or why a compaction didn't happen."""
+    if record["status"] == "compacted":
+        return (
+            f"[compacted {record['removed']} messages · ~{human(record['tokens_before'])} → "
+            f"~{human(record['tokens_after'])} tokens]"
+        )
+    return f"[compaction {record['status']}]"
 
 
 def compaction_of(agent, msg) -> dict | None:

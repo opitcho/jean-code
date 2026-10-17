@@ -495,3 +495,33 @@ def test_an_approval_asked_after_a_stop_is_refused_at_once():
     asking.start()
     asking.join(1)
     assert answers == [NOT_RUN] and session.state().approval is None
+
+
+def test_credits_come_from_the_client_and_are_none_without_one():
+    # Catches /cost failing on a client that can't report credits (any non-OpenRouter backend).
+    session = Session(Settings(), build=lambda s, node, a: Agent(client=FakeClient([], {"usage": 1.0}), node=node))
+    assert session.credits() == {"usage": 1.0}
+
+    class Bare:
+        def complete(self, request): ...
+
+    bare = Session(Settings(), build=lambda s, node, a: Agent(client=Bare(), node=node))  # type: ignore[arg-type]
+    assert bare.credits() is None
+
+
+def test_breakdown_rows_come_from_the_state():
+    # Catches the /cost breakdown drifting from the node's own (the rows the REPL has always printed).
+    profile = agent_profile(
+        "answers",
+        lambda task, node: Agent(client=FakeClient([response("a", usage=usage(prompt=40, cost=0.25))]), node=node),
+        1.0,
+    )
+    session, build = make_session(
+        [response(tool_calls=[call("spawn", profile="echo", task="t")], usage=usage(cost=0.5)), response("done")],
+        subagent_profiles={"echo": profile},
+    )
+    with session.subscribe() as (_, events):
+        session.send("go")
+        next_of(events, JobEnded)
+    by_path = lambda rows: sorted(rows, key=lambda r: r["path"])  # noqa: E731 - nodes list depth first, the state in order added
+    assert by_path(session.breakdown()) == by_path(build.agent.node.breakdown())

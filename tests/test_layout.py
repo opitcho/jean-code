@@ -16,7 +16,7 @@ FORBIDDEN = {  # layer -> the layers it must not import
     "session": ("ui",),
     "ui": ("core", "tools", "agents", "config"),
 }
-NOT_YET_ON_SESSION = {"repl.py", "app.py"}  # ui files whose move to `Session` is a plan of its own
+NOT_YET_ON_SESSION = {"app.py"}  # ui files whose move to `Session` is a plan of its own
 
 
 def imports(path: Path) -> list[ast.Import | ast.ImportFrom]:

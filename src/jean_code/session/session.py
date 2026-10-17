@@ -188,6 +188,34 @@ class Session:
         subagents = self._agent.subagents
         return subagents.pending if subagents else 0
 
+    def credits(self) -> dict | None:
+        """The API key's usage and limit, if the agent's client reports them (OpenRouter does); None if it can't.
+        Raises what the client raises."""
+        credits = getattr(self._agent.client, "credits", None)
+        return credits() if credits else None
+
+    def breakdown(self) -> list[dict]:
+        """One row per agent, from its own calls: the cost drivers `AgentNode.breakdown` reports, from the state."""
+        rows = []
+        for agent in self.state().agents.values():
+            calls = agent.calls
+            known = [c.cost for c in calls if c.cost is not None]
+            rows.append(
+                {
+                    "path": agent.path,
+                    "task": agent.task,
+                    "calls": len(calls),
+                    "prompt_tokens": sum(c.prompt_tokens for c in calls),
+                    "cached_tokens": sum(c.cached_tokens for c in calls),
+                    "peak_prompt_tokens": max((c.prompt_tokens for c in calls), default=0),
+                    "completion_tokens": sum(c.completion_tokens for c in calls),
+                    "reasoning_tokens": sum(c.reasoning_tokens for c in calls),
+                    "cost": sum(known),
+                    "unknown_costs": len(calls) - len(known),
+                }
+            )
+        return rows
+
     def inspect(self, path: str) -> AgentDetails:
         """What an inspector shows about the agent at `path` beyond its state. Raises `UnknownAgent`."""
         agent = self._agent_at(path)
