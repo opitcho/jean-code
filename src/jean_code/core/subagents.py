@@ -294,7 +294,7 @@ class Subagents:
             )
         id = next(self._ids)  # taken before start: a start that fails skips its id
         limit = min(spec.max_cost if max_cost is None else max_cost, spec.cap)
-        child = self.node.child(limit, name=str(id), task=task)
+        child = self.node.child(limit, name=str(id), task=task, profile=profile)
         run = spec.start(task, child)
         if run.agent.node is not child:  # otherwise its spend would escape this tree, its limit and the log
             run.cancel()
@@ -451,6 +451,6 @@ class Subagents:
         """Cancel every run, then wait for all of them before returning: each stops after the model call it is making."""
         runs = [run for _, _, run in self.snapshot()]
         for run in runs:
-            run.cancel() 
+            run.cancel()
         for run in runs:
             run.wait()

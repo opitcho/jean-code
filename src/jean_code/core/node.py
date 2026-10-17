@@ -1,9 +1,17 @@
 """The agent tree: one `AgentNode` per agent, with its path, its task, its spend and limit, and its cancel."""
 
-import threading
-from pathlib import Path
+from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from jean_code.core.events import AgentEvent, Charged
 from jean_code.core.usage import ModelCall, append_log
+
+if TYPE_CHECKING:
+    from jean_code.core.agent import Agent
 
 
 class AgentNode:
@@ -17,6 +25,8 @@ class AgentNode:
     - whether it may go on: `cancel()` stops the subtree until `reopen()`
     - where its calls are logged: with `log_path` set on the root, each call is appended to that file as it's
       charged, whichever agent made it and whenever
+    - who hears about it: with `listener` set on the root, every agent in the tree emits its events (events.py) to
+      it through `emit`. It's the tree's one hook: the listener records events and returns, nothing more
 
     Thread-safe: one lock per tree, shared by all its nodes.
     """
@@ -24,16 +34,21 @@ class AgentNode:
     def __init__(
         self,
         limit: float | None = None,
-        parent: "AgentNode | None" = None,
+        parent: AgentNode | None = None,
         name: str = "main",
         task: str = "",
         log_path: str | Path | None = None,
+        profile: str = "",
+        listener: Callable[[AgentEvent], None] | None = None,
     ):
         self.limit = limit  # settable: the REPL and tests raise it mid-session
         self.parent = parent
         self.name = name
         self.task = task  # what this node's agent was asked to do, for breakdowns
         self.log_path = log_path  # read at the root only; settable, e.g. by a UI once it has built the agent
+        self.profile = profile  # what kind of agent this is, for clients; "" for the root
+        self.listener = listener  # read at the root only, like log_path
+        self.agent: Agent | None = None  # set by Agent.__init__, so a client can find any agent by its path
         self.children: list[AgentNode] = []
         self.entries: list[ModelCall] = []  # this node's own calls: its agent's usage
         self._cancelled = False  # set by cancel(), cleared only by reopen()
@@ -46,7 +61,7 @@ class AgentNode:
         return f"{self.parent.path}/{self.name}" if self.parent else self.name
 
     @property
-    def root(self) -> "AgentNode":
+    def root(self) -> AgentNode:
         """The root of this node's agent tree."""
         return self._chain()[-1]
 
@@ -56,16 +71,16 @@ class AgentNode:
         `journal[start:]` is every call made in the tree since `len(journal)` was `start`."""
         return self._journal
 
-    def child(self, limit: float | None, name: str, task: str = "") -> "AgentNode":
+    def child(self, limit: float | None, name: str, task: str = "", profile: str = "") -> AgentNode:
         """A new node under this one, for a subagent: its spend counts against this node and every ancestor."""
         with self._lock:
-            node = AgentNode(limit, parent=self, name=name, task=task)
+            node = AgentNode(limit, parent=self, name=name, task=task, profile=profile)
             self.children.append(node)
         return node
 
     def charge(self, call: ModelCall) -> None:
-        """Record one model call at this node and in the tree's journal, and append it to the root's `log_path`, if
-        set. The file is written outside the lock.
+        """Record one model call at this node and in the tree's journal, append it to the root's `log_path`, if
+        set, and emit it as `Charged`. The file is written and the event emitted outside the lock.
 
         Raises:
             ValueError: The call is tagged with another node's path, so its spend would land in the wrong subtree.
@@ -77,6 +92,13 @@ class AgentNode:
             self._journal.append(call)
         if path := self.root.log_path:
             append_log(path, [call])
+        self.emit(Charged(path=self.path, call=call))
+
+    def emit(self, event: AgentEvent) -> None:
+        """Hand `event` to the root's listener, if any. Called on the thread doing the work, never under the tree's
+        lock. The listener must not block and must not touch any agent: it records the event and returns."""
+        if (listener := self.root.listener) is not None:
+            listener(event)
 
     def cancel(self) -> None:
         """No more model calls in this subtree, until `reopen()`. Stops work from outside it: a parent dropping a
@@ -112,7 +134,7 @@ class AgentNode:
         left = [node.limit - node.spent for node in self._chain() if node.limit is not None]
         return max(0.0, min(left)) if left else None
 
-    def nodes(self) -> list["AgentNode"]:
+    def nodes(self) -> list[AgentNode]:
         """This node and its descendants, depth first."""
         with self._lock:
             return self._subtree()
@@ -140,14 +162,14 @@ class AgentNode:
             )
         return rows
 
-    def _chain(self) -> list["AgentNode"]:
+    def _chain(self) -> list[AgentNode]:
         """This node and its ancestors, ending at the root."""
         chain: list[AgentNode] = [self]
         while chain[-1].parent is not None:
             chain.append(chain[-1].parent)
         return chain
 
-    def _subtree(self) -> list["AgentNode"]:
+    def _subtree(self) -> list[AgentNode]:
         """This node and its descendants, depth first. The caller holds the lock."""
         nodes: list[AgentNode] = [self]
         for child in self.children:

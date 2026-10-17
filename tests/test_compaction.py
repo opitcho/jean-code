@@ -9,6 +9,8 @@ turn 3 is the middle, turns 4-5 are the tail. Turn 3's reply carries BULK (~4700
 middle is most of the context and compacting it helps.
 """
 
+from collections.abc import Sequence
+
 import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
@@ -79,7 +81,7 @@ def is_summary_request(request: dict) -> bool:
     return request["messages"][-1]["content"].startswith(COMPACTION_PROMPT[:40])
 
 
-def assert_valid(messages: list[Message]) -> None:
+def assert_valid(messages: Sequence[Message]) -> None:
     """Every tool result follows the assistant message holding its call, past only sibling results, and every
     call before the last assistant message has a result."""
     for i, m in enumerate(messages):
@@ -237,7 +239,12 @@ def test_interrupt_during_the_summary_call_cancels_it():
     agent.client = InterruptingSummary([response("reply 5", usage=BIG), summary()])
     before = agent.messages
     agent.run_turn("turn 5")
-    assert agent.messages is before and agent.compactions[-1]["status"] == "failed: interrupted"
+    # the turn's own two messages, and no summary in place of the middle
+    assert agent.messages[: len(before)] == before and [m.content for m in agent.messages[len(before) :]] == [
+        "turn 5",
+        "reply 5",
+    ]
+    assert agent.compactions[-1]["status"] == "failed: interrupted"
 
 
 @pytest.mark.parametrize("turns", [2, 3, 4])

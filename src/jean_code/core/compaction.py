@@ -6,6 +6,8 @@ so the prompt prefix stays cached. The marker and the summary are user messages 
 tags tell them apart from the user's own messages.
 """
 
+from collections.abc import Sequence
+
 from jean_code.core.llm import Completion, Message, UserMessage
 
 HEAD_MARKER_TAG = "<head-end/>"
@@ -61,12 +63,12 @@ def ordinal(n: int) -> str:
     return "last" if n == 1 else f"{n}{ {2: 'nd', 3: 'rd'}.get(n, 'th') }-to-last"
 
 
-def turn_starts(messages: list[Message]) -> list[int]:
+def turn_starts(messages: Sequence[Message]) -> list[int]:
     """Indices of the user's own messages, each of which starts a turn."""
     return [i for i, m in enumerate(messages) if isinstance(m, UserMessage) and not is_synthetic(m)]
 
 
-def middle(messages: list[Message], head_end: int | None, keep_last: int) -> tuple[int, int] | None:
+def middle(messages: Sequence[Message], head_end: int | None, keep_last: int) -> tuple[int, int] | None:
     """(start, end) of the messages a compaction would replace, or None if they hold no turn of the user's."""
     starts = turn_starts(messages)
     if head_end is None or len(starts) < keep_last:
@@ -77,7 +79,7 @@ def middle(messages: list[Message], head_end: int | None, keep_last: int) -> tup
     return head_end, end
 
 
-def summary_prompt(replaced: list[Message], tail: list[Message], keep_last: int) -> str:
+def summary_prompt(replaced: Sequence[Message], tail: Sequence[Message], keep_last: int) -> str:
     """The prompt asking the model to summarize `replaced`, naming where the kept tail begins."""
     first = tail[0]
     if not isinstance(first, UserMessage):  # `middle()` cuts at a turn start, so this can't happen

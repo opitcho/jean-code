@@ -308,7 +308,7 @@ def test_the_listing_and_tools_come_only_with_profiles():
     assert "- echo: answers at once" in agent.messages[0].content
     assert set(agent._tools) == {"spawn", "subagent", "resume"}
     plain = Agent(client=FakeClient([]))
-    assert plain.subagents is None and plain._tools == {} and plain.messages == []
+    assert plain.subagents is None and plain._tools == {} and plain.messages == ()
 
 
 def test_agent_tree_follows_the_budget_paths():

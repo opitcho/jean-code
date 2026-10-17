@@ -45,7 +45,7 @@ def test_tool_results_after_the_call_are_estimated(flat):
     agent = make_agent(
         [response(tool_calls=[call("add", a=1, b=2), call("add", a=3, b=4)], usage=usage(prompt=1000, completion=50))]
     )
-    agent.messages.append(UserMessage(content="add twice"))
+    agent._append(UserMessage(content="add twice"))
     agent.step()
     assert [m.role for m in agent.messages[-2:]] == ["tool", "tool"]
     assert agent.context_tokens == 1050 + 20

@@ -4,11 +4,11 @@ import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
 
 from pydantic import validate_call
 
 from jean_code.core.compaction import HEAD_MARKER, SUMMARY_MESSAGE, middle, summary_failure, summary_prompt, turn_starts
+from jean_code.core.events import AgentAdded, Compaction, MessageAdded, TurnEnd, TurnEnded, TurnStarted
 from jean_code.core.llm import (
     AssistantMessage,
     ChatBackend,
@@ -33,8 +33,6 @@ log = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
 HARD_LIMIT = 0.9  # a turn stops before its context passes this share of the window
-# How a turn ended. The values are the text shown for it, and keys once stored: don't reword them.
-TurnEnd = Literal["answered", "interrupted", "budget spent", "cancelled", "context full", "out of tool rounds"]
 NOT_RUN = "Not run: the turn was stopped."  # the result of a call the turn ended before running
 
 
@@ -73,9 +71,10 @@ class Agent:
     Drive it with `run_turn(text)`. It returns how the turn ended (a `TurnEnd`): "answered", or why it stopped
     early. Call `close()` at the end.
 
-    Callers read its state directly. `messages` is the transcript as typed `Message`s (llm.py), with each reply as
-    the provider sent it. `usage` has one `ModelCall` per paid model call, and `node`, its place in the agent tree,
-    holds the spend.
+    Callers read its state directly, or receive its events (events.py) through the root node's listener.
+    `messages` is the transcript as typed `Message`s (llm.py), with each reply as the provider sent it: a tuple,
+    grown only by `_append`, which emits each message. `usage` has one `ModelCall` per paid model call, and `node`,
+    its place in the agent tree, holds the spend.
 
     Args:
         model: OpenRouter model id.
@@ -138,11 +137,8 @@ class Agent:
         # Currently only skills included, optional second argument is never used.
         self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
 
-        self.messages: list[Message] = []
         listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
         system = "\n\n".join(part for part in listings if part).strip()
-        if system:
-            self.messages.append(SystemMessage(content=system))
 
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
@@ -172,6 +168,13 @@ class Agent:
         self._tools: dict[str, tuple[Callable, dict]] = {
             name: (validate_call(fn), tool_schema(name, fn)) for name, fn in self._all_tools().items()
         }
+
+        # Last: the system message's event carries the context size, which needs the tool schemas above.
+        self.node.agent = self
+        self.node.emit(AgentAdded(path=self.node.path, profile=self.node.profile, task=self.node.task, model=model))
+        self.messages: tuple[Message, ...] = ()
+        if system:
+            self._append(SystemMessage(content=system))
 
     @property
     def total_cost(self) -> float:
@@ -203,7 +206,7 @@ class Agent:
         return tokens + sum(message_tokens(m) for m in messages[count:])
 
     @property
-    def context_history(self) -> list[list[Message]]:
+    def context_history(self) -> list[tuple[Message, ...]]:
         """Every context the session has had: the one before each compaction, then the current one."""
         return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
@@ -225,7 +228,22 @@ class Agent:
 
     def run_turn(self, user_input: str) -> TurnEnd:
         """Add the user's message (with a command's output, if it starts with one, and any background subagent
-        results nobody has read), then call the model until it answers. Returns how the turn ended."""
+        results nobody has read), then call the model until it answers. Returns how the turn ended.
+
+        Emits `TurnStarted`, then exactly one `TurnEnded`, also when the turn raises."""
+        self.node.emit(TurnStarted(path=self.node.path, text=user_input))
+        end: TurnEnd | None = None
+        error: str | None = None
+        try:
+            end = self._turn(user_input)
+            return end
+        except BaseException as e:  # like Run._finish: whatever stopped the turn, its end is reported
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            self.node.emit(TurnEnded(path=self.node.path, end=end, error=error, context_tokens=self.context_tokens))
+
+    def _turn(self, user_input: str) -> TurnEnd:
         content = self._run_command(user_input)
         claimed = self.subagents.claim() if self.subagents else []  # each result is taken, so delivered, once
         if claimed:
@@ -233,9 +251,9 @@ class Agent:
             content = f"{content}\n\n{blocks}" if content else blocks
         self._interrupt.clear()
         if self.head_end is None and len(turn_starts(self.messages)) == self.keep_first:
-            self.messages.append(UserMessage(content=HEAD_MARKER))
+            self._append(UserMessage(content=HEAD_MARKER))
             self.head_end = len(self.messages)
-        self.messages.append(UserMessage(content=content))
+        self._append(UserMessage(content=content))
         try:
             self._loop()
         except TurnStopped as stop:
@@ -245,10 +263,11 @@ class Agent:
     def step(self) -> None:
         """One model call on the current context: append its reply, then run its tool calls."""
         completion = self._call(self._build_request())
-        self.messages.append(completion.message)
         usage = completion.usage
-        if usage is not None and usage.prompt_tokens is not None:  # the prompt plus the reply just appended
-            self._measured = (len(self.messages), usage.prompt_tokens + (usage.completion_tokens or 0))
+        # The prompt plus the reply: measured before the append, so the reply's event carries the measured size.
+        if usage is not None and usage.prompt_tokens is not None:
+            self._measured = (len(self.messages) + 1, usage.prompt_tokens + (usage.completion_tokens or 0))
+        self._append(completion.message)
         self._run_tool_calls(completion.message.tool_calls)
 
     def compact(self, force: bool = False) -> str:
@@ -269,9 +288,30 @@ class Agent:
         if region is None:
             return "nothing to compact"
         start, end = region
-        head, replaced, tail = messages[:start], messages[start:end], messages[end:]
-        record = {"status": None, "removed": len(replaced), "tokens_before": tokens_before}
+        record = {"status": None, "removed": end - start, "tokens_before": tokens_before}
         self.compactions.append(record)
+        try:
+            return self._compact(record, messages, region, force)
+        finally:
+            if record["status"]:  # a raise past the summary call leaves no status, and no event
+                self.node.emit(
+                    Compaction(
+                        path=self.node.path,
+                        status=record["status"],
+                        start=start,
+                        removed=record["removed"],
+                        summary=record.get("summary"),
+                        tokens_before=tokens_before,
+                        tokens_after=record.get("tokens_after"),
+                        context_tokens=self.context_tokens,
+                    )
+                )
+
+    def _compact(self, record: dict, messages: tuple[Message, ...], region: tuple[int, int], force: bool) -> str:
+        """`compact` from the point its attempt is recorded: sets `record["status"]` and returns it."""
+        start, end = region
+        head, replaced, tail = messages[:start], messages[start:end], messages[end:]
+        tokens_before = record["tokens_before"]
 
         # Check that compacting can bring the context under compact_at.
         schemas = estimate_tokens(self._tool_schemas())
@@ -300,8 +340,8 @@ class Agent:
 
         summary = completion.message.content.strip()
         record["summary"] = UserMessage(content=SUMMARY_MESSAGE.format(summary=summary))
-        record["before"] = messages  # the old list itself: it's replaced, never modified
-        self.messages = [*head, record["summary"], *tail]
+        record["before"] = messages  # the old tuple itself: it's replaced, never modified
+        self.messages = (*head, record["summary"], *tail)
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
         new_estimate = kept_estimate + message_tokens(record["summary"])
@@ -408,7 +448,12 @@ class Agent:
                 self._add_result(call, NOT_RUN)
 
     def _add_result(self, call: ToolCall, content: str) -> None:
-        self.messages.append(ToolMessage(tool_call_id=call.id, content=content))
+        self._append(ToolMessage(tool_call_id=call.id, content=content))
+
+    def _append(self, message: Message) -> None:
+        """The only way `messages` grows, so a client can rebuild the transcript from the events."""
+        self.messages = (*self.messages, message)
+        self.node.emit(MessageAdded(path=self.node.path, message=message, context_tokens=self.context_tokens))
 
     def _run_tool(self, call: ToolCall) -> str:
         """A call's result: the tool's output, or what `approve` gave instead if the tool needs approval. Errors
