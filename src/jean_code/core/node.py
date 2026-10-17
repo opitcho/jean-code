@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import threading
+import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from jean_code.core.events import AgentEvent, Charged, LimitSet
+from jean_code.core.events import AgentEvent, Charged, ErrorCaught, LimitSet, error_line
 from jean_code.core.usage import ModelCall, breakdown_row
 
 if TYPE_CHECKING:
@@ -135,6 +136,26 @@ class AgentNode:
         """
         if (listener := self.root.listener) is not None:
             listener(event)
+
+    def record_error(self, error: BaseException, tool_call_id: str | None = None) -> str:
+        """Emits `error` as `ErrorCaught`, with its traceback, and returns it as one line.
+
+        Only an `Exception` is emitted: `KeyboardInterrupt` and `SystemExit` are the process stopping. Never raises,
+        unless the listener does.
+
+        Args:
+            error: The exception caught.
+            tool_call_id: The tool call that raised it, if one did.
+
+        Returns:
+            The exception as one line, as `error_line` gives it.
+        """
+        line = error_line(error)
+        # Nothing here may raise: agents call it inside the handlers that must still end their turn.
+        if isinstance(error, Exception):
+            trace = "".join(traceback.format_exception(error))
+            self.emit(ErrorCaught(path=self.path, error=line, traceback=trace, tool_call_id=tool_call_id))
+        return line
 
     def cancel(self) -> None:
         """Stops model calls in this subtree.

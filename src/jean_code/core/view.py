@@ -21,6 +21,7 @@ from jean_code.core.events import (
     Configured,
     Delivered,
     Delta,
+    ErrorCaught,
     JobEnded,
     JobStarted,
     LimitSet,
@@ -78,6 +79,8 @@ class AgentState:
         calls: Its own model calls.
         spent: USD spent by it and every agent below it.
         compactions: Its compaction attempts.
+        caught: Every exception its code caught, with its traceback, in order; tools' included. Not `error`,
+            which is only what its last turn raised.
         context_tokens: Its context size, as of its last event.
     """
 
@@ -99,6 +102,7 @@ class AgentState:
     calls: list[ModelCall] = field(default_factory=list)
     spent: float = 0.0
     compactions: list[Compaction] = field(default_factory=list)
+    caught: list[ErrorCaught] = field(default_factory=list)
     context_tokens: int = 0
     outcome: RunEnded | None = None
     delivered: bool = False
@@ -194,6 +198,8 @@ def apply(state: TreeState, event: ViewEvent) -> None:
             agent = state.agents[event.path]
             agent.running, agent.end, agent.error, agent.draft = False, event.end, event.error, {}
             agent.context_tokens = event.context_tokens
+        case ErrorCaught():
+            state.agents[event.path].caught.append(event)
         case Compaction():
             agent = state.agents[event.path]
             agent.compactions.append(event)
@@ -255,6 +261,7 @@ def snapshot(state: TreeState) -> TreeState:
             loaded_skills=list(a.loaded_skills),
             calls=list(a.calls),
             compactions=list(a.compactions),
+            caught=list(a.caught),
         )
         for path, a in state.agents.items()
     }

@@ -21,6 +21,9 @@
   malformed one raises `MalformedResponse` at once instead of failing later deep in the agent. Malformed tool
   arguments go back to the model as the tool's result, so it can retry.
 - **Error Tracebacks** - Tool calls or subagents, errors fed back into context for model driving to be able to adapt.
+  The model gets the error as one line; the full stack goes in the trace. Each agent records every exception its
+  code catches as an `ErrorCaught` event in its own `events.jsonl`: where it swallows one (a tool's error result, a
+  failed summary), or where one leaves it (`run_turn`, `compact`, `close`). Its callers record nothing.
 
 
 - **Two Approaches**:

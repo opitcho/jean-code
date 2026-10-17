@@ -185,6 +185,31 @@ class Compaction(Event):
     context_tokens: int
 
 
+def error_line(error: BaseException) -> str:
+    """Returns `error` as one line, "<type>: <message>"."""
+    return f"{type(error).__name__}: {error}"
+
+
+class ErrorCaught(Event):
+    """An exception an agent's code caught, with its traceback.
+
+    It's emitted once per exception, where the agent swallowed it or where it left the agent. Not every one is a
+    bug: the model's malformed tool arguments, and refusals a tool raises on purpose, are recorded too. The model
+    doesn't see it: a tool's result still holds only `error`.
+
+    Attributes:
+        error: The exception as one line, as `error_line` gives it.
+        traceback: The whole traceback, chained causes included, from where the agent caught it down to where it
+            was raised.
+        tool_call_id: The tool call that raised it, if one did; its result follows.
+    """
+
+    type: Literal["error"] = "error"
+    error: str
+    traceback: str
+    tool_call_id: str | None = None
+
+
 class RunEnded(Event):
     """The subagent at `path` finished a task; its parent can now receive the result.
 
@@ -225,6 +250,7 @@ AgentEvent = Annotated[
     | TurnStarted
     | TurnEnded
     | Compaction
+    | ErrorCaught
     | RunEnded
     | Delivered
     | Charged,
@@ -327,6 +353,7 @@ ViewEvent = Annotated[
     | TurnStarted
     | TurnEnded
     | Compaction
+    | ErrorCaught
     | RunEnded
     | Delivered
     | Charged

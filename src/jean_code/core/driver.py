@@ -15,6 +15,7 @@ from jean_code.core.events import (
     JobStarted,
     Queued,
     ViewEvent,
+    error_line,
 )
 from jean_code.core.node import AgentNode
 from jean_code.core.view import AgentView
@@ -198,7 +199,7 @@ class Driver:
             try:
                 result = self._agent.run_turn(text) if kind == "turn" else self._agent.compact(force=True)
             except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
-                error = f"{type(e).__name__}: {e}"
+                error = error_line(e)  # the agent recorded its stack as it left
             with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
                 self._busy = False
                 self._emit(JobEnded(kind=kind, result=result, error=error))

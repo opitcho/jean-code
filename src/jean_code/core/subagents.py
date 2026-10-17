@@ -16,7 +16,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
-from jean_code.core.events import Delivered, RunEnded
+from jean_code.core.events import Delivered, RunEnded, error_line
 from jean_code.core.llm import AssistantMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
@@ -171,12 +171,12 @@ class Run:
         try:
             outcome = self._finish()
         except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
-            outcome = Outcome("failed", f"{type(e).__name__}: {e}")
+            outcome = Outcome("failed", error_line(e))
         try:
             self.agent.close()  # before publishing: a finished run leaves nothing running below it
         except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
             if outcome.status != "failed":  # keep the first error if there are two
-                outcome = Outcome("failed", f"{type(e).__name__}: {e}")
+                outcome = Outcome("failed", error_line(e))
         # Before the future: a result is delivered only once the run is done, so RunEnded comes before its Delivered.
         try:
             self.agent.node.emit(RunEnded(path=self.path, status=outcome.status, reason=outcome.reason))
@@ -195,11 +195,11 @@ class Run:
             if report is None:
                 raise
             # A report hands back what the agent left elsewhere (a notebook), which an error doesn't undo.
-            error = f"{type(e).__name__}: {e}"
+            error = error_line(e)
             try:
                 return Outcome("failed", f"{error}\n\n{report()}")
             except BaseException as r:  # noqa: BLE001 - the outcome reports both errors
-                return Outcome("failed", f"{error}\n\nThe report failed too: {type(r).__name__}: {r}")
+                return Outcome("failed", f"{error}\n\nThe report failed too: {error_line(r)}")
         text = report() if report else last_reply(self.agent)
         if end == "answered":
             return Outcome("done", text or "(the subagent's final reply was empty)")

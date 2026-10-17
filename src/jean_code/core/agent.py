@@ -326,19 +326,24 @@ class Agent:
     def close(self) -> None:
         """Stops every subagent run and waits for them, then runs `cleanup`.
 
-        `cleanup` releases what the tools hold, such as background jobs and containers.
+        `cleanup` releases what the tools hold, such as background jobs and containers. What it raises is emitted as
+        `ErrorCaught` first.
         """
-        if self.subagents:  # first: no run outlives its parent
-            self.subagents.close()
-        for fn in self.cleanup:
-            fn()
+        try:
+            if self.subagents:  # first: no run outlives its parent
+                self.subagents.close()
+            for fn in self.cleanup:
+                fn()
+        except BaseException as e:
+            self.node.record_error(e)  # leaving the agent: its caller gets the exception, the trace its stack
+            raise
 
     def run_turn(self, user_input: str) -> TurnEnd:
         """Runs one turn on `user_input`, until the model answers or the turn stops.
 
         Adds the user's message, with a command's output if it starts with `/name` and any background subagent
         results not yet delivered, then calls the model until it answers. Emits `TurnStarted`, then exactly one
-        `TurnEnded`, also when the turn raises.
+        `TurnEnded`, also when the turn raises; then an `ErrorCaught` comes just before it.
 
         Args:
             user_input: The user's message.
@@ -356,7 +361,7 @@ class Agent:
             end = self._turn(user_input)
             return end
         except BaseException as e:  # like Run._finish: whatever stopped the turn, its end is reported
-            error = f"{type(e).__name__}: {e}"
+            error = self.node.record_error(e)  # leaving the agent: its caller gets the exception, the trace its stack
             raise
         finally:
             self.node.emit(TurnEnded(path=self.node.path, end=end, error=error, context_tokens=self.context_tokens))
@@ -402,7 +407,7 @@ class Agent:
         """Replaces the middle of the transcript with a summary the model writes.
 
         The first `keep_first` and last `keep_last` turns are kept as they are. Call it between turns;
-        `interrupt()` stops it.
+        `interrupt()` stops it. What it raises is emitted as `ErrorCaught` first.
 
         Args:
             force: Compact even if the context is under `compact_at`, or if compacting couldn't bring it under.
@@ -410,6 +415,14 @@ class Agent:
         Returns:
             "compacted", or why the transcript was left unchanged.
         """
+        try:
+            return self._maybe_compact(force)
+        except BaseException as e:
+            self.node.record_error(e)  # leaving the agent: its caller gets the exception, the trace its stack
+            raise
+
+    def _maybe_compact(self, force: bool = False) -> str:
+        """Does what `compact` does, but leaves what it raises for its caller to record."""
         if self.over_budget:
             return "refused: the budget is spent"
         tokens_before = self.context_tokens
@@ -468,7 +481,7 @@ class Agent:
             record["status"] = "failed: interrupted"
             return record["status"]
         except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
-            record["status"] = f"failed: {type(e).__name__}: {e}"
+            record["status"] = f"failed: {self.node.record_error(e)}"
             return record["status"]
         finally:
             record["call"] = self.usage[-1] if len(self.usage) > booked else None  # booked even when it failed
@@ -595,7 +608,7 @@ class Agent:
             last = self.messages[-1]
             if isinstance(last, AssistantMessage) and not last.tool_calls:  # an answer, even if cut off or empty
                 if not self.node.cancelled:  # no paid summary after a stop
-                    self.compact()
+                    self._maybe_compact()  # not compact(): what it raises leaves the agent through run_turn, once
                 return
 
     def _run_tool_calls(self, calls: tuple[ToolCall, ...]) -> None:
@@ -644,7 +657,7 @@ class Agent:
         try:
             arguments = parse_arguments(call.function.arguments)
         except ValueError as e:
-            return f"Error: {type(e).__name__}: {e}"
+            return f"Error: {self.node.record_error(e, call.id)}"
         if name in self.needs_approval:
             if self.approve is None:  # needs_approval was changed after the agent was built
                 raise RuntimeError(f"tool '{name}' needs approval, but the agent has no `approve` function")
@@ -653,4 +666,4 @@ class Agent:
         try:
             return str(fn(**arguments))
         except Exception as e:  # noqa: BLE001 - any tool failure goes back to the model as its result
-            return f"Error: {type(e).__name__}: {e}"
+            return f"Error: {self.node.record_error(e, call.id)}"

@@ -20,6 +20,7 @@ from jean_code.core.events import (
     ApprovalRequested,
     Configured,
     Delivered,
+    ErrorCaught,
     JobEnded,
     LimitSet,
     MessageAdded,
@@ -174,6 +175,7 @@ def test_replay_matches_the_view(tmp_path):
         response("started"),
         response(tool_calls=[call("rm", path="x")]),
         response("removed"),
+        response(tool_calls=[call("add", a=1)]),  # no b: the tool raises, and the agent records its stack
         response("three"),
         response("four"),
         response("the summary"),
@@ -198,7 +200,7 @@ def test_replay_matches_the_view(tmp_path):
         assert next_of(events, JobEnded).result == "compacted"
     finish(driver, recorder)
     kinds = {type(event) for event in read_trace(tmp_path / "trace")}
-    assert {Configured, LimitSet, SkillLoaded, RunEnded, Delivered} <= kinds
+    assert {Configured, LimitSet, SkillLoaded, RunEnded, Delivered, ErrorCaught} <= kinds
     assert replay(tmp_path / "trace") == driver.view.state()
 
 
