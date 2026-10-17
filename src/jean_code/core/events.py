@@ -26,6 +26,29 @@ class Event(BaseModel):
     path: str
 
 
+class Settings(BaseModel):
+    """What an agent reads on every request.
+
+    Attributes:
+        model: Its model id.
+        reasoning: Its reasoning effort: "low", "medium" or "high"; None sends no setting.
+        compact_at: The context size in tokens at which it compacts after a turn; None for never on its own.
+        max_tool_rounds: A turn makes at most 1 + this many model calls.
+        keep_first: Turns at the start that a compaction keeps verbatim.
+        keep_last: Turns at the end that a compaction keeps verbatim.
+        context_window: The model's context window, in tokens.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    model: str
+    reasoning: str | None
+    compact_at: int | None
+    max_tool_rounds: int
+    keep_first: int
+    keep_last: int
+    context_window: int
+
+
 class AgentAdded(Event):
     """An agent was built on the node at `path`.
 
@@ -34,15 +57,22 @@ class AgentAdded(Event):
     Attributes:
         profile: What kind of agent it is; "" for the root.
         task: What its node was created for; "" for the root.
-        model: Its model id.
+        settings: Its settings.
         tools: The tool schemas it sends with every request.
     """
 
     type: Literal["agent_added"] = "agent_added"
     profile: str
     task: str
-    model: str
+    settings: Settings
     tools: list[dict]
+
+
+class Configured(Event):
+    """The agent's settings changed; `settings` is all of them now."""
+
+    type: Literal["configured"] = "configured"
+    settings: Settings
 
 
 class MessageAdded(Event):
@@ -139,7 +169,8 @@ class Charged(Event):
 
 
 AgentEvent = Annotated[
-    AgentAdded | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged, Field(discriminator="type")
+    AgentAdded | Configured | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged,
+    Field(discriminator="type"),
 ]
 
 
@@ -230,6 +261,7 @@ class ApprovalResolved(BaseModel):
 
 ViewEvent = Annotated[
     AgentAdded
+    | Configured
     | MessageAdded
     | Delta
     | TurnStarted

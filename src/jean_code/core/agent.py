@@ -21,7 +21,17 @@ from jean_code.core.compaction import (
     summary_prompt,
     turn_starts,
 )
-from jean_code.core.events import AgentAdded, Compaction, Delta, MessageAdded, TurnEnd, TurnEnded, TurnStarted
+from jean_code.core.events import (
+    AgentAdded,
+    Compaction,
+    Configured,
+    Delta,
+    MessageAdded,
+    Settings,
+    TurnEnd,
+    TurnEnded,
+    TurnStarted,
+)
 from jean_code.core.llm import (
     AssistantMessage,
     ChatBackend,
@@ -48,6 +58,8 @@ DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
 HARD_LIMIT = 0.9  # a turn stops before its context passes this share of the window
 NOT_RUN = "Not run: the turn was stopped."  # the result of a call the turn ended before running
+LIVE_SETTINGS = ("model", "reasoning", "compact_at")  # what `configure` may change; the rest is fixed at construction
+REASONING = (None, "low", "medium", "high")
 
 
 class TurnStopped(Exception):
@@ -106,7 +118,8 @@ class Agent:
 
     Drive it with `run_turn(text)`, which returns how the turn ended: "answered", or why it stopped early. Call
     `close()` at the end. Everything the agent does is also emitted as an `AgentEvent` through its node. The
-    arguments it keeps are attributes of the same name.
+    arguments it keeps are attributes of the same name, except the settings it reads on every request, which are
+    `settings`.
 
     Args:
         model: OpenRouter model id.
@@ -132,6 +145,8 @@ class Agent:
         context_window: The model's context window, in tokens.
 
     Attributes:
+        settings: `model`, `reasoning`, `compact_at`, `max_tool_rounds`, `keep_first`, `keep_last` and
+            `context_window`, as given or as `configure` last changed them.
         tool_map: The `tools` argument.
         skills: The skills the model can load, from `skills_dir`.
         commands: What the user runs by starting a message with `/name`: name → a function of the rest of the line.
@@ -169,10 +184,7 @@ class Agent:
         keep_last: int = 2,
         context_window: int = CONTEXT_WINDOW,
     ):
-        self.model = model
         self.system_prompt = system_prompt
-        self.reasoning = reasoning
-        self.max_tool_rounds = max_tool_rounds
         self.client: ChatBackend = client or openrouter()
         if stream and not isinstance(self.client, StreamingBackend):
             raise ValueError(f"stream is set, but the client ({type(self.client).__name__}) can't stream")
@@ -204,10 +216,15 @@ class Agent:
             raise ValueError(f"compact_at must leave room for the summary call: at most {context_window // 2}")
         if keep_first < 0 or keep_last < 1:
             raise ValueError("keep_first must be >= 0 and keep_last >= 1")
-        self.compact_at = compact_at
-        self.keep_first = keep_first
-        self.keep_last = keep_last
-        self.context_window = context_window
+        self._settings = Settings(
+            model=model,
+            reasoning=reasoning,
+            compact_at=compact_at,
+            max_tool_rounds=max_tool_rounds,
+            keep_first=keep_first,
+            keep_last=keep_last,
+            context_window=context_window,
+        )
         self.compactions: list[dict] = []
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
@@ -227,13 +244,41 @@ class Agent:
                 path=self.node.path,
                 profile=self.node.profile,
                 task=self.node.task,
-                model=model,
+                settings=self._settings,
                 tools=self._tool_schemas(),
             )
         )
         self.messages: tuple[Message, ...] = ()
         if system:
             self._append(SystemMessage(content=system))
+
+    @property
+    def settings(self) -> Settings:
+        """What the agent reads on every request."""
+        return self._settings
+
+    def configure(self, **settings) -> None:
+        """Changes settings the agent reads on every request, and emits `Configured`.
+
+        All are checked before any applies. A change to `model` or `reasoning` invalidates the whole prompt cache, so
+        the next request pays the uncached price for every token of the prompt.
+
+        Args:
+            **settings: Any of `model`, `reasoning` ("low", "medium", "high" or None) and `compact_at` (tokens, at
+                most half the context window, or None).
+
+        Raises:
+            ValueError: A setting is unknown, or its value is one the agent would refuse.
+        """
+        if unknown := settings.keys() - set(LIVE_SETTINGS):
+            raise ValueError(f"not a live setting: {', '.join(sorted(unknown))}")
+        if settings.get("reasoning") not in REASONING:
+            raise ValueError(f"reasoning must be one of {REASONING}, got {settings['reasoning']!r}")
+        window = self._settings.context_window
+        if (at := settings.get("compact_at")) is not None and at > window // 2:
+            raise ValueError(f"compact_at must leave room for the summary call: at most {window // 2}")
+        self._settings = self._settings.model_copy(update=settings)
+        self.node.emit(Configured(path=self.node.path, settings=self._settings))
 
     @property
     def total_cost(self) -> float:
@@ -325,7 +370,7 @@ class Agent:
         if claimed:
             blocks = "\n\n".join(result_block(id, profile, run.outcome()) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
-        if head_end(self.messages) is None and len(turn_starts(self.messages)) == self.keep_first:
+        if head_end(self.messages) is None and len(turn_starts(self.messages)) == self.settings.keep_first:
             self._append(UserMessage(content=HEAD_MARKER))
         self._append(UserMessage(content=content))
         try:
@@ -371,10 +416,11 @@ class Agent:
         if self.over_budget:
             return "refused: the budget is spent"
         tokens_before = self.context_tokens
-        if not force and (self.compact_at is None or tokens_before < self.compact_at):
+        compact_at = self.settings.compact_at
+        if not force and (compact_at is None or tokens_before < compact_at):
             return "below threshold"
         messages = self.messages
-        region = middle(messages, head_end(messages), self.keep_last)
+        region = middle(messages, head_end(messages), self.settings.keep_last)
         if region is None:
             return "nothing to compact"
         start, end = region
@@ -408,11 +454,12 @@ class Agent:
         schemas = estimate_tokens(self._tool_schemas())
         kept_estimate = schemas + sum(message_tokens(m) for m in head + tail)
         kept = round(tokens_before * kept_estimate / (kept_estimate + sum(message_tokens(m) for m in replaced)))
-        if not force and self.compact_at is not None and kept >= self.compact_at:
+        compact_at = self.settings.compact_at
+        if not force and compact_at is not None and kept >= compact_at:
             record["status"] = f"skipped: the kept turns alone take ~{kept} tokens, over compact_at"
             return record["status"]
 
-        request = self._build_request(UserMessage(content=summary_prompt(replaced, tail, self.keep_last)))
+        request = self._build_request(UserMessage(content=summary_prompt(replaced, tail, self.settings.keep_last)))
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
@@ -514,7 +561,8 @@ class Agent:
 
     def _build_request(self, *extra: Message) -> ChatRequest:
         """Builds the request for the transcript, plus `extra` for this call only."""
-        return ChatRequest(self.model, (*self.messages, *extra), tuple(self._tool_schemas()), self.reasoning)
+        settings = self.settings
+        return ChatRequest(settings.model, (*self.messages, *extra), tuple(self._tool_schemas()), settings.reasoning)
 
     def _tool_schemas(self) -> list[dict]:
         return [schema for _, schema in self._tools.values()]
@@ -543,9 +591,9 @@ class Agent:
                 raise TurnStopped("cancelled")
             if self.over_budget:
                 raise TurnStopped("budget spent")
-            if self.context_tokens >= HARD_LIMIT * self.context_window:
+            if self.context_tokens >= HARD_LIMIT * self.settings.context_window:
                 raise TurnStopped("context full")
-            if calls > self.max_tool_rounds:
+            if calls > self.settings.max_tool_rounds:
                 raise TurnStopped("out of tool rounds")
             self.step()
             last = self.messages[-1]

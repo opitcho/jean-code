@@ -110,7 +110,7 @@ def test_a_plain_answer_rebuilds_and_announces_the_agent_first():
     assert agent.run_turn("hello") == "answered"
     check_replay(agent, events)
     added = events[0]
-    assert isinstance(added, AgentAdded) and added.path == "main" and added.model == agent.model
+    assert isinstance(added, AgentAdded) and added.path == "main" and added.settings == agent.settings
     assert [type(e).__name__ for e in events] == [
         "AgentAdded",
         "MessageAdded",  # the system message
@@ -278,7 +278,7 @@ def test_a_foreground_subagent_rebuilds_under_its_path_with_its_profile():
     added = events.of("main/1")[0]
     child = agent.node.children[0].agent
     tools = list(child.last_request.tools)
-    assert added == AgentAdded(path="main/1", profile="echo", task="t1", model=agent.model, tools=tools)
+    assert added == AgentAdded(path="main/1", profile="echo", task="t1", settings=agent.settings, tools=tools)
 
 
 def test_a_background_subagent_delivered_by_claim_rebuilds():
@@ -322,7 +322,7 @@ def test_an_agent_built_on_any_child_node_is_seen():
     agent.run_turn("plan it")
     added = events[0]
     tools = list(agent.last_request.tools)
-    assert added == AgentAdded(path="main/wf1/plan", profile="planner", task="", model=agent.model, tools=tools)
+    assert added == AgentAdded(path="main/wf1/plan", profile="planner", task="", settings=agent.settings, tools=tools)
     assert tuple(rebuild(events)["main/wf1/plan"]) == agent.messages
     assert agent.node.agent is agent
 

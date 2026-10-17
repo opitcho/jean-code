@@ -61,7 +61,7 @@ STATUSES = {
 ERROR_PREFIXES = ("Error", "Denied by user", "Not run")  # results the agent writes when a call didn't succeed
 EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash result, see shell.format_result
 LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
-STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
+STATE_CONFIG = ("model", "reasoning", "max_tool_rounds")
 CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window")
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
@@ -476,7 +476,7 @@ def render_sidebar(state: TreeState) -> None:
         st.html(eyebrow(f"SKILLS · {len(skills)}"))
         st.html(chips(skills, on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
-        st.html('<div class="row">' + pill(main.model, cls="model") + "</div>")
+        st.html('<div class="row">' + pill(main.settings.model, cls="model") + "</div>")
         if recorder := st.session_state.get("recorder"):
             st.caption(
                 f"Log stopped: {'; '.join(recorder.errors)}" if recorder.errors else f"Trace: {recorder.trace_dir}"
@@ -563,7 +563,7 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
     status, detail = status_of(state, path)
     _, dot, cls = style(status)
     pills = [pill(path, bold=f"#{path.rsplit('/', 1)[-1]} {agent.profile}", cls="on")] if path != MAIN else []
-    pills += [pill(agent.model, cls="model"), pill(status, dot=dot, cls=cls)]
+    pills += [pill(agent.settings.model, cls="model"), pill(status, dot=dot, cls=cls)]
     pills += [
         pill(label, bold=n)
         for n, label in (
@@ -574,7 +574,7 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
         )
         if n
     ]
-    pills.append(pill("context", bold=context_size(agent, driver().agent_at(path).compact_at), cls="mono"))
+    pills.append(pill("context", bold=context_size(agent, agent.settings.compact_at), cls="mono"))
     if agent.calls:
         pills.append(pill(usage_line(agent.calls), cls="mono"))
 
@@ -864,16 +864,15 @@ def render_context(path: str, agent: AgentState) -> None:
 
     The size is shown against the compaction threshold.
     """
-    details = driver().agent_at(path)
-    if details.compact_at:
+    compact_at = agent.settings.compact_at
+    if compact_at:
         st.progress(
-            min(agent.context_tokens / details.compact_at, 1.0),
-            text=f"context {context_size(agent, details.compact_at)} tokens "
-            "(compacts after a turn ending over the threshold)",
+            min(agent.context_tokens / compact_at, 1.0),
+            text=f"context {context_size(agent, compact_at)} tokens (compacts after a turn ending over the threshold)",
         )
     else:
         st.html(pill("context", bold=context_size(agent, None), cls="mono") + pill("automatic compaction off"))
-    settings = {k: getattr(details, k) for k in CONTEXT_CONFIG} | {"head_end": head_end(agent.messages())}
+    settings = {k: getattr(agent.settings, k) for k in CONTEXT_CONFIG} | {"head_end": head_end(agent.messages())}
     st.html(eyebrow("SETTINGS") + kv_grid(settings))
 
     st.html(eyebrow(f"COMPACTIONS · {len(agent.compactions)}"))
@@ -901,7 +900,8 @@ def render_context(path: str, agent: AgentState) -> None:
 def render_state(path: str, agent: AgentState) -> None:
     """Draws the agent's config, the tools needing approval, its skills and its state."""
     details = driver().agent_at(path)
-    st.html(eyebrow("CONFIG") + kv_grid({k: getattr(details, k) for k in STATE_CONFIG}))
+    config = {k: getattr(agent.settings, k) for k in STATE_CONFIG} | {"max_cost": details.max_cost}
+    st.html(eyebrow("CONFIG") + kv_grid(config))
     st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(details.needs_approval)))
     st.html(eyebrow("LOADED SKILLS") + chips(details.skills.loaded))
     summary = {

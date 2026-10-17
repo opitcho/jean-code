@@ -97,7 +97,7 @@ def test_experts_have_room_for_a_whole_step():
     # Catches the default 10 rounds: an engineer writing a project and running its tests stops halfway.
     agent = expert_agent(EXPERTS["engineer"][1], "m", AgentNode(1.0), network=False)
     try:
-        assert agent.max_tool_rounds == 40
+        assert agent.settings.max_tool_rounds == 40
     finally:
         agent.close()
 
@@ -106,6 +106,6 @@ def test_the_orchestrator_has_room_for_a_whole_build():
     # Catches the default 10 rounds: a build (5 steps, each spawned and audited) stops halfway.
     agent = orchestrator_agent("m", skills_dir=None)
     try:
-        assert agent.max_tool_rounds == 40
+        assert agent.settings.max_tool_rounds == 40
     finally:
         agent.close()

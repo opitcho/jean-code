@@ -10,6 +10,7 @@ import time
 import httpx
 import pytest
 
+from jean_code.core.events import AgentAdded, Settings
 from jean_code.core.llm import ChatRequest, Completion, StreamingClient, parse_completion, render_request
 from jean_code.tools import pages
 
@@ -96,6 +97,14 @@ class FakeClient:
         if self.credit_data is None:
             raise AssertionError("no credit data scripted")
         return self.credit_data
+
+
+def agent_added(path: str = "main", profile: str = "", task: str = "", **fields) -> AgentAdded:
+    """An `AgentAdded` for a view test, with plain settings unless `fields` say otherwise."""
+    settings = Settings(
+        model="m", reasoning=None, compact_at=None, max_tool_rounds=10, keep_first=1, keep_last=2, context_window=1000
+    )
+    return AgentAdded(path=path, profile=profile, task=task, **({"settings": settings, "tools": []} | fields))
 
 
 def scripted(agent) -> FakeClient:

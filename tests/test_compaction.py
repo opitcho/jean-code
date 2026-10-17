@@ -311,7 +311,7 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
     new = tools + sum(message_tokens(m) for m in agent.messages)
     old = tools + sum(message_tokens(m) for m in record["before"])
     assert agent.context_tokens == record["tokens_after"] == round(record["tokens_before"] * new / old)
-    assert agent.compact_at is not None and agent.context_tokens < agent.compact_at
+    assert agent.settings.compact_at is not None and agent.context_tokens < agent.settings.compact_at
 
 
 # ---------------------------------------------------------------- failures leave the transcript alone

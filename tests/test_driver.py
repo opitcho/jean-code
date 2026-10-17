@@ -13,7 +13,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent
 from jean_code.core.driver import Busy, Driver, UnknownAgent
-from jean_code.core.events import ApprovalRequested, ApprovalResolved, JobEnded, JobStarted, Queued
+from jean_code.core.events import ApprovalRequested, ApprovalResolved, Configured, JobEnded, JobStarted, Queued
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
@@ -448,21 +448,45 @@ def test_an_approval_asked_after_a_stop_is_refused_at_once():
     assert answers == [NOT_RUN] and driver.view.state().approval is None
 
 
-def test_live_settings_apply_to_the_agent():
-    # Catches a reasoning change that needs a new chat, or one that the agent never reads.
+def test_live_settings_apply_to_the_agent_and_reach_the_view():
+    # Catches a reasoning change that needs a new chat, one the agent never reads, or a view left on the old model.
     driver, build = make_driver([])
-    driver.configure(reasoning="high", compact_at=10_000, max_cost=2.0)
-    assert (build.agent.reasoning, build.agent.compact_at, build.agent.max_cost) == ("high", 10_000, 2.0)
+    driver.configure(model="other", reasoning="high", compact_at=10_000, max_cost=2.0)
+    settings = build.agent.settings
+    assert (settings.model, settings.reasoning, settings.compact_at, build.agent.max_cost) == (
+        "other",
+        "high",
+        10_000,
+        2.0,
+    )
+    assert driver.view.state().agents["main"].settings == settings
 
 
-@pytest.mark.parametrize("changes", [{"compact_at": 10_000_000}, {"max_cost": 0}, {"reasoning": "extreme"}, {"x": 1}])
+def test_configure_emits_one_configured_with_every_setting():
+    # Catches a change the view never hears about, or one announced as a partial update.
+    driver, build = make_driver([])
+    with driver.view.subscribe() as (_, events):
+        driver.configure(reasoning="high")
+        assert events.get(timeout=TIMEOUT) == Configured(path="main", settings=build.agent.settings)
+        with pytest.raises(queue.Empty):
+            events.get(timeout=0)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"compact_at": 10_000_000}, {"max_cost": 0}, {"reasoning": "extreme"}, {"x": 1}, {"keep_first": 0}],
+)
 def test_invalid_settings_are_refused_with_nothing_applied(changes):
-    # Catches half-applied settings, or a value Agent.__init__ would refuse accepted live.
+    # Catches half-applied settings, a value Agent.__init__ would refuse accepted live, or a setting fixed at
+    # construction changed mid-run.
     driver, build = make_driver([])
-    before = (build.agent.reasoning, build.agent.compact_at, build.agent.max_cost)
-    with pytest.raises(ValueError):
-        driver.configure(**({"reasoning": "low"} | changes))  # the good change must not apply either
-    assert (build.agent.reasoning, build.agent.compact_at, build.agent.max_cost) == before
+    before = (build.agent.settings, build.agent.max_cost)
+    with driver.view.subscribe() as (_, events):
+        with pytest.raises(ValueError):
+            driver.configure(**({"reasoning": "low"} | changes))  # the good change must not apply either
+        with pytest.raises(queue.Empty):
+            events.get(timeout=0)
+    assert (build.agent.settings, build.agent.max_cost) == before
 
 
 def test_the_root_carries_the_budget():

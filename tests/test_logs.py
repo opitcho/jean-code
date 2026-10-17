@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeClient, call, response
+from conftest import FakeClient, agent_added, call, response
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
-from jean_code.core.events import AgentAdded, ApprovalRequested, JobEnded, MessageAdded
+from jean_code.core.events import ApprovalRequested, JobEnded, MessageAdded
 from jean_code.core.llm import UserMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
@@ -143,8 +143,8 @@ def test_a_node_without_an_agent_gets_a_plain_folder(tmp_path):
     # Catches an agent under a grouping node (the engine's, later) with no folder for the group, or a crash.
     view = AgentView()
     recorder = Recorder(view, tmp_path / "trace")
-    view.listen(AgentAdded(path="main", profile="", task="", model="m", tools=[]))
-    view.listen(AgentAdded(path="main/wf1/plan", profile="planner", task="", model="m", tools=[]))
+    view.listen(agent_added("main"))
+    view.listen(agent_added("main/wf1/plan", profile="planner"))
     recorder.close()
     assert (tmp_path / "trace" / "wf1" / "plan-planner" / "events.jsonl").is_file()
     assert recorder.errors == []
@@ -231,7 +231,7 @@ def test_close_writes_what_is_queued(tmp_path):
     # Catches close() returning, or the process going on, before everything already emitted is on disk.
     view = AgentView()
     recorder = Recorder(view, tmp_path / "trace")
-    view.listen(AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+    view.listen(agent_added("main"))
     for i in range(500):
         view.listen(MessageAdded(path="main", message=UserMessage(content=str(i)), context_tokens=0))
     recorder.close()
@@ -286,6 +286,7 @@ def test_unfinished_last_line_is_skipped(tmp_path):
 
 def test_unclosed_recorder_is_drained_at_exit(tmp_path):
     # Catches a process that exits without closing its recorder losing the events still queued.
+    added = agent_added("main").model_dump_json()
     code = f"""
 from pathlib import Path
 from jean_code.core.events import AgentAdded, MessageAdded
@@ -295,7 +296,7 @@ from jean_code.logs import Recorder
 
 view = AgentView()
 Recorder(view, Path({str(tmp_path / "trace")!r}))
-view.listen(AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+view.listen(AgentAdded.model_validate_json({added!r}))
 for i in range(3000):
     view.listen(MessageAdded(path="main", message=UserMessage(content=str(i)), context_tokens=0))
 """  # exits right after emitting, without closing the recorder

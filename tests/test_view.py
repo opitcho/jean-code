@@ -3,8 +3,8 @@
 Each test names the bug it would catch.
 """
 
+from conftest import agent_added
 from jean_code.core.events import (
-    AgentAdded,
     Charged,
     Compaction,
     Delta,
@@ -29,7 +29,7 @@ def call_for(path: str, cost: float) -> ModelCall:
 def test_the_reducer_splices_a_compaction_and_keeps_the_replaced_items():
     # Catches compacted messages dropped from the timeline, or the summary shown after the turns that followed it.
     state = TreeState()
-    apply(state, AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+    apply(state, agent_added("main"))
     for text in ("t1", "t2", "t3", "t4"):
         apply(state, MessageAdded(path="main", message=UserMessage(content=text), context_tokens=10))
     summary = UserMessage(content="SUMMARY")
@@ -54,7 +54,7 @@ def test_the_reducer_splices_a_compaction_and_keeps_the_replaced_items():
 def test_the_reducer_drops_a_draft_once_its_reply_lands():
     # Catches streamed text shown twice: as the draft and as the reply it became.
     state = TreeState()
-    apply(state, AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+    apply(state, agent_added("main"))
     apply(state, TurnStarted(path="main", text="go"))
     apply(state, Delta(path="main", kind="reasoning", text="hm"))
     apply(state, Delta(path="main", kind="content", text="he"))
@@ -81,7 +81,7 @@ def test_a_queued_message_shows_until_its_job_starts():
 def test_a_subscriber_sees_each_event_after_its_snapshot_once():
     # Catches an event the snapshot already holds delivered again, or one between them lost.
     view = AgentView()
-    view.listen(AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+    view.listen(agent_added("main"))
     with view.subscribe() as (snapshot, events):
         view.listen(MessageAdded(path="main", message=UserMessage(content="hi"), context_tokens=1))
         assert list(snapshot.agents) == ["main"] and snapshot.agents["main"].items == []

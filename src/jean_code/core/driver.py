@@ -21,8 +21,6 @@ from jean_code.core.view import AgentView
 
 Approve = Callable[[str, dict], str | None]
 Build = Callable[[AgentNode, Approve], Agent]
-LIVE_SETTINGS = ("model", "reasoning", "max_cost", "compact_at")
-REASONING = (None, "low", "medium", "high")
 
 
 class Busy(RuntimeError):
@@ -159,18 +157,13 @@ class Driver:
         Raises:
             ValueError: A setting is unknown, or its value is one the agent would refuse.
         """
-        if unknown := settings.keys() - set(LIVE_SETTINGS):
-            raise ValueError(f"not a live setting: {', '.join(sorted(unknown))}")
-        if settings.get("reasoning") not in REASONING:
-            raise ValueError(f"reasoning must be one of {REASONING}, got {settings['reasoning']!r}")
         if (cost := settings.get("max_cost")) is not None and cost <= 0:
             raise ValueError(f"max_cost must be positive, got {cost}")
-        if (at := settings.get("compact_at")) is not None and at > self.agent.context_window // 2:
-            raise ValueError(
-                f"compact_at must leave room for the summary call: at most {self.agent.context_window // 2}"
-            )
-        for name, value in settings.items():
-            setattr(self.agent, name, value)
+        rest = {name: value for name, value in settings.items() if name != "max_cost"}
+        if rest:
+            self.agent.configure(**rest)
+        if "max_cost" in settings:  # after configure: a setting it refuses leaves the limit as it was
+            self.agent.max_cost = settings["max_cost"]
 
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.

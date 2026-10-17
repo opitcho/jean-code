@@ -18,11 +18,13 @@ from jean_code.core.events import (
     ApprovalResolved,
     Charged,
     Compaction,
+    Configured,
     Delta,
     JobEnded,
     JobStarted,
     MessageAdded,
     Queued,
+    Settings,
     TurnEnd,
     TurnEnded,
     TurnStarted,
@@ -55,7 +57,7 @@ class AgentState:
         path: The agent's node, e.g. "main/1".
         profile: What kind of agent it is; "" for the root.
         task: What its node was created for.
-        model: Its model id.
+        settings: Its settings, as of its last `Configured`.
         items: Every message it has had, in timeline order.
         context: The uids of its messages now, in order.
         draft: A reply streaming in: "content" and "reasoning" so far.
@@ -71,7 +73,7 @@ class AgentState:
     path: str
     profile: str
     task: str
-    model: str
+    settings: Settings
     items: list[Item] = field(default_factory=list)
     context: list[int] = field(default_factory=list)
     draft: dict[str, str] = field(default_factory=dict)
@@ -123,7 +125,9 @@ def apply(state: TreeState, event: ViewEvent) -> None:
     """
     match event:
         case AgentAdded():
-            state.agents[event.path] = AgentState(event.path, event.profile, event.task, event.model)
+            state.agents[event.path] = AgentState(event.path, event.profile, event.task, event.settings)
+        case Configured():
+            state.agents[event.path].settings = event.settings
         case MessageAdded():
             agent = state.agents[event.path]
             uid = max((i.uid for i in agent.items), default=0) + 1

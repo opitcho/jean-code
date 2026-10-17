@@ -117,7 +117,7 @@ def repl(driver: Driver, recorder: Recorder | None = None) -> None:
     compacts now, and `/cost` shows the session's spend and the API key's credits. With a `recorder`, its trace
     folder is shown at the start, and a log that stopped is reported once the turn ends.
     """
-    print(f"Chatting with {driver.agent.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
+    print(f"Chatting with {driver.agent.settings.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
     if recorder and recorder.trace_dir:
         print(dim(f"trace: {recorder.trace_dir}"))
     reported = 0
