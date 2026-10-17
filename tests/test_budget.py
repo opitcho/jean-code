@@ -16,6 +16,7 @@ from jean_code.core.llm import parse_completion
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
 from jean_code.core.usage import ModelCall, breakdown_lines
+from jean_code.core.view import breakdown
 from jean_code.ui.repl import print_cost
 from test_compaction import compacted_session
 
@@ -267,18 +268,32 @@ def test_compaction_calls_are_charged():
 # ---------------------------------------------------------------- the REPL
 
 
+def tree_with_spend() -> tuple[Driver, AgentNode]:
+    """A driver whose root and two nested subagents have each made calls."""
+    built: list[Agent] = []
+    session = Driver(lambda node, approve: built.append(a := Agent(client=FakeClient([]), node=node)) or a)
+    root = built[0].node
+    root.charge(model_call(root.path, 0.001))
+    child = Agent(client=FakeClient([]), node=root.child(None, "1", task="look something up")).node
+    child.charge(model_call("main/1", 0.004, prompt=900, cached=300))
+    Agent(client=FakeClient([]), node=child.child(None, "1", task="deeper")).node.charge(model_call("main/1/1", None))
+    return session, root
+
+
 def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
     # Catches /cost hiding where the money went once subagents exist.
-    credits = {"usage": 0, "limit": None, "limit_remaining": None}
-    session = Driver(lambda node, approve: Agent(client=FakeClient([], credits), node=node))
-    root = session.agent.node
-    root.charge(model_call(root.path, 0.001))
-    child = Agent(client=FakeClient([]), node=root.child(None, "1", task="look something up"))
-    child.node.charge(model_call("main/1", 0.004))
-    print_cost(session)
+    session, _ = tree_with_spend()
+    print_cost(session, credits=None)
     out = capsys.readouterr().out
-    assert "session: $0.0050 over 2 model calls" in out
+    assert "session: $0.0050 over 3 model calls" in out
     assert "main/1" in out and "look something up" in out
+
+
+def test_the_breakdown_from_the_view_is_the_trees_own():
+    # Catches /cost's table, built from the view, disagreeing with the tree it describes.
+    session, root = tree_with_spend()
+    by_path = lambda rows: sorted(rows, key=lambda r: r["path"])  # noqa: E731 - a one-line sort key
+    assert by_path(breakdown(session.view.state())) == by_path(root.breakdown())
 
 
 # ---------------------------------------------------------------- cancel, limits along the chain, logging

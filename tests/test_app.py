@@ -138,10 +138,25 @@ def test_a_pending_approval_is_answered_from_its_card(approve):
     assert built[-1].messages[-2].content == expected
 
 
+def test_the_inspector_draws_the_next_request_and_the_settings_from_the_view():
+    # Catches an inspector that crashes without the live agent, or shows a setting the view never received.
+    session, _ = make_session([response("hi")], needs_approval={"add"})
+    session.send("hello")
+    idle(session)
+    session.configure(reasoning="high", max_cost=3.0)
+    at = app(session)
+    at.toggle(key="inspector").set_value(True).run()
+    no_errors(at)
+    assert [t.label for t in at.tabs] == ["Next request", "Context", "Agent state"]
+    page = "".join(htmls(at))
+    assert "high" in page and "3.0" in page and ">add<" in page
+    assert any(j.value and '"hello"' in j.value for j in at.json)  # the transcript is the payload
+
+
 def test_compacted_messages_are_dimmed_under_a_divider():
     # Catches compacted messages dropped from the timeline, or shown as if still in context.
-    session, _ = make_session([], system_prompt="sys", compact_at=1000, keep_first=2, keep_last=2)
-    client = session.agent.client
+    session, built = make_session([], system_prompt="sys", compact_at=1000, keep_first=2, keep_last=2)
+    client = built[-1].client
     assert isinstance(client, FakeClient)
     for i in range(1, 6):
         client.responses.append(response(f"reply {i}" + (BULK if i == 3 else ""), usage=SMALL))

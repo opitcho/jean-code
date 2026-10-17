@@ -6,6 +6,7 @@ Run with: uv run --env-file .env jean-code [--sandbox] [--agent orchestrator]
 import argparse
 import queue
 import signal
+from collections.abc import Callable
 
 from jean_code.agents.coding import coding_agent
 from jean_code.agents.experts import orchestrator_agent
@@ -22,10 +23,10 @@ from jean_code.core.events import (
     TurnEnded,
     TurnStarted,
 )
-from jean_code.core.llm import AssistantMessage, Message, ToolMessage
+from jean_code.core.llm import AssistantMessage, Message, ToolMessage, openrouter
 from jean_code.core.node import AgentNode
 from jean_code.core.usage import breakdown_lines, human, usage_line
-from jean_code.core.view import AgentView, Subscription
+from jean_code.core.view import AgentView, Subscription, breakdown
 from jean_code.logs import Recorder, process_logs
 
 POLL_SECONDS = 0.1  # how often a wait for the next event lets a Ctrl+C through
@@ -110,14 +111,15 @@ def drain(events: Subscription) -> None:
             return
 
 
-def repl(driver: Driver, recorder: Recorder | None = None) -> None:
+def repl(driver: Driver, recorder: Recorder | None = None, credits: Callable[[], dict] | None = None) -> None:
     """Chats until the user exits: reads a line, then runs it and prints it live.
 
     Calls that need approval are asked about on the terminal, and Ctrl+C mid-turn stops the turn. `/compact`
-    compacts now, and `/cost` shows the session's spend and the API key's credits. With a `recorder`, its trace
-    folder is shown at the start, and a log that stopped is reported once the turn ends.
+    compacts now, and `/cost` shows the session's spend and, with `credits`, the API key's. With a `recorder`, its
+    trace folder is shown at the start, and a log that stopped is reported once the turn ends.
     """
-    print(f"Chatting with {driver.agent.settings.model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
+    model = driver.view.state().agents["main"].settings.model
+    print(f"Chatting with {model}. Type 'exit' or 'quit' to stop, '/cost' for spend.")
     if recorder and recorder.trace_dir:
         print(dim(f"trace: {recorder.trace_dir}"))
     reported = 0
@@ -138,7 +140,7 @@ def repl(driver: Driver, recorder: Recorder | None = None) -> None:
             if user_input.lower() in {"exit", "quit"}:
                 break
             if user_input == "/cost":
-                print_cost(driver)
+                print_cost(driver, credits)
                 continue
             run_and_print(driver, events, user_input)
             if recorder and len(recorder.errors) > reported:
@@ -236,18 +238,18 @@ def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
     return event
 
 
-def print_cost(driver: Driver) -> None:
+def print_cost(driver: Driver, credits: Callable[[], dict] | None) -> None:
     """Prints the session's spend, where it went, and the API key's credits.
 
     The spend covers the agent and any subagents; where it went is shown once there are several agents.
+    `credits` returns the API key's spend and limit, as OpenRouter's /key endpoint does; None prints no credits.
     """
     state = driver.view.state()
     print(f"session: ${state.agents['main'].spent:.4f} over {len(state.calls)} model calls")
     if len(state.agents) > 1:
-        for line in breakdown_lines(driver.agent.node.breakdown()):
+        for line in breakdown_lines(breakdown(state)):
             print(dim(line))
-    credits = getattr(driver.agent.client, "credits", None)
-    if credits is None:  # only OpenRouter reports credits
+    if credits is None:
         return
     try:
         key = credits()
@@ -302,9 +304,10 @@ def main() -> None:
         except ValueError as e:  # a setting the agent refuses, e.g. --compact-at over half the context window
             parser.error(str(e))
         try:
-            repl(driver, recorder)
+            repl(driver, recorder, openrouter().credits)  # both agent kinds run on OpenRouter
         finally:
-            running = driver.agent.subagents.running() if driver.agent.subagents else 0
+            agents = driver.view.state().agents
+            running = sum(a.running for path, a in agents.items() if path != "main")
             if running:
                 print(dim(f"[stopping {running} subagent{'s' if running > 1 else ''}…]"))
             driver.close()

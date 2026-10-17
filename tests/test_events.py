@@ -277,7 +277,7 @@ def test_a_foreground_subagent_rebuilds_under_its_path_with_its_profile():
     check_replay(agent, events)
     added = events.of("main/1")[0]
     child = agent.node.children[0].agent
-    tools = list(child.last_request.tools)
+    tools = scripted(child).requests[-1].get("tools", [])
     assert added == AgentAdded(
         path="main/1",
         profile="echo",
@@ -330,7 +330,7 @@ def test_an_agent_built_on_any_child_node_is_seen():
     agent = Agent(client=FakeClient([response("planned")]), node=group.child(None, name="plan", profile="planner"))
     agent.run_turn("plan it")
     added = events[0]
-    tools = list(agent.last_request.tools)
+    tools = scripted(agent).requests[-1].get("tools", [])
     assert added == AgentAdded(
         path="main/wf1/plan",
         profile="planner",
@@ -352,7 +352,7 @@ def test_agent_added_carries_the_tools_it_sends():
     agent.run_turn("go")
     names = [schema["function"]["name"] for schema in events[0].tools]
     assert {"add", "rm"} <= set(names)
-    assert events[0].tools == list(agent.last_request.tools)
+    assert events[0].tools == scripted(agent).requests[-1]["tools"]
 
 
 def test_no_listener_no_events_and_nothing_breaks():

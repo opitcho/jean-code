@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from jean_code.core.events import AgentEvent, Charged, LimitSet
-from jean_code.core.usage import ModelCall
+from jean_code.core.usage import ModelCall, breakdown_row
 
 if TYPE_CHECKING:
     from jean_code.core.agent import Agent
@@ -188,31 +188,13 @@ class AgentNode:
             return self._subtree()
 
     def breakdown(self) -> list[dict]:
-        """Returns one row per node of the subtree, to see where spend went.
+        """Returns one `breakdown_row` per node of the subtree, to see where spend went.
 
-        Each row has the node's `path` and `task`, and from its own calls: their count, token totals, peak
-        prompt, known cost, and how many had no cost.
+        Each row sums the node's own calls.
         """
         with self._lock:
             snapshot = [(node.path, node.task, list(node.entries)) for node in self._subtree()]
-        rows = []
-        for path, task, calls in snapshot:
-            known = [c.cost for c in calls if c.cost is not None]
-            rows.append(
-                {
-                    "path": path,
-                    "task": task,
-                    "calls": len(calls),
-                    "prompt_tokens": sum(c.prompt_tokens for c in calls),
-                    "cached_tokens": sum(c.cached_tokens for c in calls),
-                    "peak_prompt_tokens": max((c.prompt_tokens for c in calls), default=0),
-                    "completion_tokens": sum(c.completion_tokens for c in calls),
-                    "reasoning_tokens": sum(c.reasoning_tokens for c in calls),
-                    "cost": sum(known),
-                    "unknown_costs": len(calls) - len(known),
-                }
-            )
-        return rows
+        return [breakdown_row(path, task, calls) for path, task, calls in snapshot]
 
     def _chain(self) -> list[AgentNode]:
         """Returns this node and its ancestors, ending at the root."""

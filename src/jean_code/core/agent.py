@@ -155,7 +155,6 @@ class Agent:
         messages: The transcript, oldest first, with each reply as the provider sent it.
         usage: One `ModelCall` per paid model call, in call order.
         compactions: One record per compaction attempt that got past the checks.
-        last_request: The last request sent to the model; None before the first.
 
     Raises:
         ValueError: An argument is out of range; `max_cost` and `node` are both given; some tools need approval
@@ -228,7 +227,6 @@ class Agent:
         self.compactions: list[dict] = []
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
-        self.last_request: ChatRequest | None = None
         # Runs exist only once the model calls spawn.
         self.subagents = Subagents(subagent_profiles, self.node) if subagent_profiles else None
         # Every tool the model can call, as (validating wrapper, schema) by name. Should never be changed: the schemas
@@ -501,7 +499,6 @@ class Agent:
             MalformedResponse: The response couldn't be used. The call isn't booked.
             TurnStopped: The agent was stopped before the reply's first chunk. Nothing is booked.
         """
-        self.last_request = request
         if self.stream and isinstance(self.client, StreamingBackend):  # __init__ refuses a stream without one
             completion = self._stream(self.client, request, show=kind is None)
         else:

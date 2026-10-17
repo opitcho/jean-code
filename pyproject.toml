@@ -56,6 +56,7 @@ select = [
     "T20",     # print outside the front-ends
     "PLE", "PLW",  # pylint errors and warnings
     "D",       # docstrings, Google style (CLAUDE.md)
+    "SLF001",  # private access, in ui/ only (see per-file-ignores): a client reads the view, not the driver's agent
 ]
 ignore = [
     "RUF001", "RUF002", "RUF003",  # ambiguous unicode: curly quotes, dashes and ✓/⚠ are deliberate (agents/research.py)
@@ -69,6 +70,7 @@ convention = "google"
 "tests/**" = ["S101", "D"]  # assert is how pytest checks; TEMPORARY D: docstring rework in progress
 "tests/test_research.py" = ["E501"]  # verbatim quotes from real pages, split across literals
 "src/jean_code/ui/repl.py" = ["T20"]  # the terminal front-end prints
+"!src/jean_code/ui/**" = ["SLF001"]  # only clients are held to the driver's public surface
 "src/jean_code/tools/shell.py" = ["S603", "S607"]  # running commands is the point; `docker` is found on PATH
 "tests/test_shell.py" = ["S603"]  # asks docker whether the sandbox image exists, with a fixed command
 

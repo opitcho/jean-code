@@ -31,7 +31,7 @@ class Busy(RuntimeError):
 
 
 class UnknownAgent(LookupError):
-    """No agent, or for a cancel no node, has this path."""
+    """No node in the tree has this path."""
 
 
 def denied(reason: str = "") -> str:
@@ -60,7 +60,6 @@ class Driver:
 
     Attributes:
         view: The tree's state, for clients to read and subscribe to: `view` if given, else a new one.
-        agent: The agent the driver runs: the root of the tree.
     """
 
     def __init__(self, build: Build, max_cost: float | None = None, view: AgentView | None = None):
@@ -74,7 +73,7 @@ class Driver:
         self._refusal: str | None = None
         self._ids = itertools.count(1)
         root = AgentNode(max_cost, listener=self.view.listen)
-        self.agent = build(root, self._approve)
+        self._agent = build(root, self._approve)
 
     # ---------------------------------------------------------------- commands
 
@@ -125,7 +124,7 @@ class Driver:
         Raises:
             UnknownAgent: No node in the tree has `path`.
         """
-        if path == self.agent.node.path:
+        if path == self._agent.node.path:
             with self._lock:
                 self._stop_locked()
         else:
@@ -161,9 +160,9 @@ class Driver:
             raise ValueError(f"max_cost must be positive, got {cost}")
         rest = {name: value for name, value in settings.items() if name != "max_cost"}
         if rest:
-            self.agent.configure(**rest)
+            self._agent.configure(**rest)
         if "max_cost" in settings:  # after configure: a setting it refuses leaves the limit as it was
-            self.agent.node.limit = settings["max_cost"]
+            self._agent.node.limit = settings["max_cost"]
 
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.
@@ -175,26 +174,8 @@ class Driver:
             self._stop_locked()
         if self._job is not None:
             self._job.join()
-        self.agent.close()
-        self.agent.node.listener = None  # a run that winds down later can't reach the view
-
-    # ---------------------------------------------------------------- reads
-
-    def agent_at(self, path: str) -> Agent:
-        """Returns the agent at `path`, for an inspector to read.
-
-        Drive it only through this driver.
-
-        Args:
-            path: The agent's path, e.g. "main/1".
-
-        Raises:
-            UnknownAgent: No agent in the tree has `path`.
-        """
-        agent = self._node(path).agent
-        if agent is None:
-            raise UnknownAgent(f"{path} has no agent")
-        return agent
+        self._agent.close()
+        self._agent.node.listener = None  # a run that winds down later can't reach the view
 
     # ---------------------------------------------------------------- internals
 
@@ -204,7 +185,7 @@ class Driver:
     def _begin_locked(self, kind, text: str) -> None:
         self._busy = True
         # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
-        self.agent.node.reopen()
+        self._agent.node.reopen()
         self._emit(JobStarted(kind=kind, text=text))
 
     def _spawn(self, kind, text: str) -> None:
@@ -215,7 +196,7 @@ class Driver:
         while True:
             result, error = None, None
             try:
-                result = self.agent.run_turn(text) if kind == "turn" else self.agent.compact(force=True)
+                result = self._agent.run_turn(text) if kind == "turn" else self._agent.compact(force=True)
             except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
                 error = f"{type(e).__name__}: {e}"
             with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
@@ -229,17 +210,17 @@ class Driver:
     def _approve(self, name: str, arguments: dict) -> str | None:
         with self._lock:
             # A stop that came before this question can't answer it, so it's answered here.
-            if self.agent.node.cancelled:
+            if self._agent.node.cancelled:
                 return NOT_RUN
             self._answered.clear()
             self._refusal = None
-            self._approval = Approval(id=next(self._ids), path=self.agent.node.path, tool=name, arguments=arguments)
+            self._approval = Approval(id=next(self._ids), path=self._agent.node.path, tool=name, arguments=arguments)
             self._emit(ApprovalRequested(approval=self._approval))
         self._answered.wait()
         return self._refusal
 
     def _stop_locked(self) -> None:
-        self.agent.interrupt()
+        self._agent.interrupt()
         # A stop alone doesn't wake a turn that waits for the user, so a waiting approval is refused too.
         if self._approval is not None:
             self._resolve_locked(self._approval, NOT_RUN)
@@ -250,7 +231,7 @@ class Driver:
         self._answered.set()
 
     def _node(self, path: str) -> AgentNode:
-        node = next((n for n in self.agent.node.nodes() if n.path == path), None)
+        node = next((n for n in self._agent.node.nodes() if n.path == path), None)
         if node is None:
             raise UnknownAgent(path)
         return node

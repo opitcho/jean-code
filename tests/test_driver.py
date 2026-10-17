@@ -329,19 +329,23 @@ def test_cancel_a_subagent_path_stops_only_that_run():
     assert driver.view.state().agents["main"].end == "answered"
 
 
-def test_any_node_in_the_tree_can_be_cancelled_and_inspected_by_path():
-    # Catches agents built outside spawn (the engine, later) that clients see but can't stop or inspect.
+def test_any_node_in_the_tree_can_be_cancelled_by_path():
+    # Catches agents built outside spawn (the engine, later) that clients see but can't stop.
     driver, build = make_driver([])
     group = build.agent.node.child(None, name="wf1")
     planner = Agent(client=FakeClient([]), node=group.child(None, name="plan", profile="planner"))
     assert driver.view.state().agents["main/wf1/plan"].profile == "planner"
-    assert driver.agent_at("main/wf1/plan") is planner
     driver.cancel("main/wf1")
     assert planner.node.cancelled and not build.agent.node.cancelled
     with pytest.raises(UnknownAgent):
         driver.cancel("main/nope")
-    with pytest.raises(UnknownAgent):
-        driver.agent_at("main/wf1")  # a node with no agent
+
+
+def test_a_client_gets_only_the_view_and_the_commands():
+    # Catches a driver that hands out its agent again, so a client could read state the events never carried.
+    driver, _ = make_driver([])
+    public = {name for name in dir(driver) if not name.startswith("_")}
+    assert public == {"view", "send", "compact", "cancel", "answer", "configure", "close"}
 
 
 # ---------------------------------------------------------------- the state and subscriptions
@@ -493,8 +497,9 @@ def test_invalid_settings_are_refused_with_nothing_applied(changes):
 
 def test_the_root_carries_the_budget():
     # Catches a driver whose max_cost never reaches the root node, or the view.
-    driver = Driver(Builder([response("hi")]), max_cost=0.5)
-    assert driver.agent.max_cost == driver.view.state().agents["main"].limit == 0.5
+    build = Builder([response("hi")])
+    driver = Driver(build, max_cost=0.5)
+    assert build.agent.max_cost == driver.view.state().agents["main"].limit == 0.5
 
 
 def test_the_view_given_is_the_one_that_listens():

@@ -1,7 +1,7 @@
 """The state of an agent tree, built from its events, and its `AgentView`.
 
 `apply` folds one event into a `TreeState`, so a subscriber that applies every event after its snapshot holds the
-same state as `AgentView.state()`.
+same state as `AgentView.state()`. `breakdown` sums a state's spend per agent.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from jean_code.core.events import (
     ViewEvent,
 )
 from jean_code.core.llm import Message
-from jean_code.core.usage import ModelCall
+from jean_code.core.usage import ModelCall, breakdown_row
 
 
 @dataclass(frozen=True)
@@ -227,6 +227,17 @@ def _splice(agent: AgentState, start: int, removed: int, summary: Message) -> No
     last = max(n for n, i in enumerate(agent.items) if i.uid in gone)
     agent.items.insert(last + 1, Item(uid, summary))
     agent.context[start : start + removed] = [uid]
+
+
+def breakdown(state: TreeState) -> list[dict]:
+    """Returns one `breakdown_row` per agent, to see where spend went.
+
+    Each row sums the agent's own calls.
+
+    Args:
+        state: The tree's state.
+    """
+    return [breakdown_row(a.path, a.task, a.calls) for a in state.agents.values()]
 
 
 def snapshot(state: TreeState) -> TreeState:

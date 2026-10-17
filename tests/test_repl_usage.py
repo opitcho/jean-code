@@ -36,15 +36,13 @@ def tool_reply(cost=0.004, **kwargs) -> dict:
     return response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=cost), **kwargs)
 
 
-def make_session(responses, credit_data=None, max_cost: float | None = None, view=None, **agent_kwargs):
+def make_session(responses, max_cost: float | None = None, view=None, **agent_kwargs):
     """A driver whose agent answers from `responses`, and the list it builds that agent into."""
     built: list[Agent] = []
 
     def build(node: AgentNode, approve) -> Agent:
         tools = agent_kwargs.pop("tools", {"add": add})
-        agent = Agent(
-            client=FakeClient(responses, credit_data), tools=tools, node=node, approve=approve, **agent_kwargs
-        )
+        agent = Agent(client=FakeClient(responses), tools=tools, node=node, approve=approve, **agent_kwargs)
         built.append(agent)
         return agent
 
@@ -263,7 +261,7 @@ def test_background_events_while_the_prompt_waits_are_not_printed_at_the_next_tu
         if line == "next":  # the run finishes while this prompt waits
             release.set()
             for _ in range(TIMEOUT * 100):
-                if session.agent.subagents.pending:
+                if session.view.state().waiting("main"):
                     break
                 threading.Event().wait(0.01)
         return line
@@ -283,7 +281,7 @@ def test_waiting_results_line_before_the_prompt(monkeypatch, capsys):
     )
     run(session, "go")
     for _ in range(TIMEOUT * 100):
-        if session.agent.subagents.pending:
+        if session.view.state().waiting("main"):
             break
         threading.Event().wait(0.01)
     capsys.readouterr()
@@ -306,12 +304,10 @@ def test_compact_on_a_fresh_chat_says_nothing_to_compact(monkeypatch, capsys):
 
 
 def test_print_cost_with_a_limit(capsys):
-    session, _ = make_session(
-        [response("hi", usage=usage(cost=0.0021))], credit_data={"usage": 1.5, "limit": 10.0, "limit_remaining": 8.5}
-    )
+    session, _ = make_session([response("hi", usage=usage(cost=0.0021))])
     run(session, "hello")
     capsys.readouterr()
-    print_cost(session)
+    print_cost(session, credits=lambda: {"usage": 1.5, "limit": 10.0, "limit_remaining": 8.5})
     assert capsys.readouterr().out.splitlines() == [
         "session: $0.0021 over 1 model calls",
         "API key: $1.50 used of $10.00 ($8.50 left)",
@@ -320,27 +316,36 @@ def test_print_cost_with_a_limit(capsys):
 
 def test_print_cost_without_a_limit(capsys):
     # Catches formatting a None limit.
-    session, _ = make_session([], credit_data={"usage": None, "limit": None, "limit_remaining": None})
-    print_cost(session)
+    session, _ = make_session([])
+    print_cost(session, credits=lambda: {"usage": None, "limit": None, "limit_remaining": None})
     assert capsys.readouterr().out.splitlines() == ["session: $0.0000 over 0 model calls", "API key: $0.00 used"]
 
 
 def test_print_cost_when_credits_fail(capsys):
     # Catches /cost crashing when OpenRouter is down.
-    session, _ = make_session([], credit_data=RuntimeError("HTTP 503"))
-    print_cost(session)
+    def down() -> dict:
+        raise RuntimeError("HTTP 503")
+
+    session, _ = make_session([])
+    print_cost(session, credits=down)
     assert capsys.readouterr().out.splitlines()[-1] == "credits unavailable: RuntimeError: HTTP 503"
+
+
+def test_print_cost_without_credits_prints_no_credits_line(capsys):
+    # Catches an OpenRouter balance printed for a client that has none, or a crash looking for one.
+    session, _ = make_session([])
+    print_cost(session, credits=None)
+    assert capsys.readouterr().out.splitlines() == ["session: $0.0000 over 0 model calls"]
 
 
 def test_print_cost_breaks_down_a_tree(capsys):
     # Catches the breakdown missing once there are subagents, which is when it matters.
     session, _ = make_session(
         [response(tool_calls=[call("spawn", profile="echo", task="t")]), response("done")],
-        credit_data=RuntimeError("no key"),
         subagent_profiles={"echo": echo_profile()},
     )
     run(session, "go")
     capsys.readouterr()
-    print_cost(session)
+    print_cost(session, credits=None)
     out = capsys.readouterr().out
     assert "main/1" in out and "path" in out.splitlines()[1]

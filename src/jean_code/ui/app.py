@@ -573,7 +573,7 @@ def render_header(state: TreeState, path: str, entries: list[Item], ctx: list[It
 
     with st.container(horizontal=True, vertical_alignment="center", wrap=False):
         st.html(f'<div class="hdr"><span class="hdr-title">jean-code</span>{"".join(pills)}</div>')
-        st.toggle("Inspector", key="inspector", help="The agent's last request, its context and its state.")
+        st.toggle("Inspector", key="inspector", help="The agent's next request, its context and its state.")
         if path == MAIN:
             if state.busy:  # also while a call waits for approval: Stop answers it
                 st.button("Stop", icon=":material/stop_circle:", on_click=driver().cancel, type="primary")
@@ -803,12 +803,9 @@ def render_output(result: Item) -> None:
 
 
 def render_request(path: str, agent: AgentState) -> None:
-    """Draws the agent's last request: model, tools, last call, usage and payload."""
-    request = driver().agent_at(path).last_request
-    req = llm.render_request(request) if request else None
-    if not req:
-        empty("⇅", "No request sent yet.")
-        return
+    """Draws the agent's next request, then its last call and its usage."""
+    settings = agent.settings
+    req = llm.render_request(llm.ChatRequest(settings.model, agent.messages(), tuple(agent.tools), settings.reasoning))
     tools = [(t.get("function") or {}).get("name", "?") for t in req.get("tools", [])]
     reasoning = req.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, dict) else reasoning
@@ -1003,7 +1000,7 @@ def live_view() -> None:
 
     if inspector_col is not None:
         with inspector_col:
-            request_tab, context_tab, state_tab = st.tabs(["Request", "Context", "Agent state"])
+            request_tab, context_tab, state_tab = st.tabs(["Next request", "Context", "Agent state"])
             with request_tab:
                 render_request(path, agent)
             with context_tab:

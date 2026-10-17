@@ -1,6 +1,7 @@
 """Accounting for model calls: what each call used and cost.
 
-`ModelCall` is one paid model call, and `usage_line` and `breakdown_lines` sum calls into lines for the user.
+`ModelCall` is one paid model call. `usage_line` sums calls into a line for the user; `breakdown_row` sums one
+agent's calls into a row of a breakdown, and `breakdown_lines` formats those rows as a table.
 """
 
 import json
@@ -129,8 +130,34 @@ def usage_line(calls: list[ModelCall]) -> str:
     return f"{cost} · {human(prompt)} in{share} · {human(out)} out"
 
 
+def breakdown_row(path: str, task: str, calls: list[ModelCall]) -> dict:
+    """Returns one agent's row of a spend breakdown.
+
+    The row has `path` and `task`, and from `calls`: their count, token totals, peak prompt, known cost, and how
+    many had no cost.
+
+    Args:
+        path: The agent's path.
+        task: What it was asked to do.
+        calls: Its own model calls.
+    """
+    known = [c.cost for c in calls if c.cost is not None]
+    return {
+        "path": path,
+        "task": task,
+        "calls": len(calls),
+        "prompt_tokens": sum(c.prompt_tokens for c in calls),
+        "cached_tokens": sum(c.cached_tokens for c in calls),
+        "peak_prompt_tokens": max((c.prompt_tokens for c in calls), default=0),
+        "completion_tokens": sum(c.completion_tokens for c in calls),
+        "reasoning_tokens": sum(c.reasoning_tokens for c in calls),
+        "cost": sum(known),
+        "unknown_costs": len(calls) - len(known),
+    }
+
+
 def breakdown_lines(rows: list[dict]) -> list[str]:
-    """Formats `AgentNode.breakdown` rows as a table, most expensive first.
+    """Formats `breakdown_row` rows as a table, most expensive first.
 
     The table shows which agent took the money, and why.
 
