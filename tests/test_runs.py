@@ -186,7 +186,7 @@ def test_a_failing_cleanup_still_completes_the_run():
 
 
 def test_a_cancel_before_the_turn_starts_is_not_lost():
-    # Catches cancel() relying on the interrupt flag, which `run_turn` clears when it starts.
+    # Catches a stop cleared when the turn starts, so a cancel sent just before it is lost.
     agent = make_agent([response("never")])
     gate = gated(agent)
     run = Run.start(agent, "/gate go")  # held just before run_turn clears the flag
@@ -194,16 +194,6 @@ def test_a_cancel_before_the_turn_starts_is_not_lost():
     gate.set()
     assert run.outcome(TIMEOUT) == Outcome("stopped", "(no reply)", "cancelled")
     assert scripted(agent).requests == []
-
-
-def test_the_gate_reaches_the_window_an_interrupt_would_lose():
-    # The control for the test above: an interrupt sent at the same moment is cleared, and the run answers.
-    agent = make_agent([response("answered anyway")])
-    gate = gated(agent)
-    run = Run.start(agent, "/gate go")
-    agent.interrupt()
-    gate.set()
-    assert run.outcome(TIMEOUT) == done("answered anyway")
 
 
 def test_a_cancel_after_the_run_finished_changes_nothing():

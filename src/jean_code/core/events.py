@@ -12,7 +12,7 @@ from jean_code.core.llm import Message, UserMessage
 from jean_code.core.usage import ModelCall
 
 # How a turn ended. The values are the text shown for it, and keys once stored: don't reword them.
-TurnEnd = Literal["answered", "interrupted", "budget spent", "cancelled", "context full", "out of tool rounds"]
+TurnEnd = Literal["answered", "budget spent", "cancelled", "context full", "out of tool rounds"]
 
 
 class Event(BaseModel):

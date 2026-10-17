@@ -7,7 +7,6 @@ ends a turn early. `estimate_tokens` and `message_tokens` estimate prompt sizes.
 import itertools
 import json
 import logging
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -199,9 +198,8 @@ class Agent:
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
         self.last_request: ChatRequest | None = None
-        self._interrupt = threading.Event()
-        # Runs exist only once the model calls spawn. Waits watch _interrupt.
-        self.subagents = Subagents(subagent_profiles, self.node, self._interrupt) if subagent_profiles else None
+        # Runs exist only once the model calls spawn.
+        self.subagents = Subagents(subagent_profiles, self.node) if subagent_profiles else None
         # Every tool the model can call, as (validating wrapper, schema) by name. Should never be changed: the schemas
         # sit near the top of the prompt, so any change would invalidate the cache.
         self._tools: dict[str, tuple[Callable, dict]] = {
@@ -252,12 +250,12 @@ class Agent:
         return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
     def interrupt(self):
-        """Stops the turn once the model call or tool call in flight returns.
+        """Stops this agent and every agent below it before their next model call.
 
-        The reply's tool calls that haven't started are not run. Safe to call from another thread or a signal
-        handler.
+        A reply's tool calls still run to the end, and the turn then ends "cancelled". The agent stays stopped, also
+        for its next turn, until its node is reopened. Safe to call from another thread or a signal handler.
         """
-        self._interrupt.set()
+        self.node.cancel()
 
     def close(self) -> None:
         """Stops every subagent run and waits for them, then runs `cleanup`.
@@ -303,7 +301,6 @@ class Agent:
         if claimed:
             blocks = "\n\n".join(result_block(id, profile, run.outcome()) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
-        self._interrupt.clear()
         if self.head_end is None and len(turn_starts(self.messages)) == self.keep_first:
             self._append(UserMessage(content=HEAD_MARKER))
             self.head_end = len(self.messages)
@@ -321,7 +318,7 @@ class Agent:
 
         Raises:
             MalformedResponse: The response couldn't be used.
-            TurnStopped: The turn was interrupted between tool calls.
+            TurnStopped: The turn was stopped between tool calls.
         """
         completion = self._call(self._build_request())
         usage = completion.usage
@@ -335,7 +332,7 @@ class Agent:
         """Replaces the middle of the transcript with a summary the model writes.
 
         The first `keep_first` and last `keep_last` turns are kept as they are. Call it between turns;
-        `interrupt()` cancels it.
+        `interrupt()` stops it.
 
         Args:
             force: Compact even if the context is under `compact_at`, or if compacting couldn't bring it under.
@@ -343,7 +340,6 @@ class Agent:
         Returns:
             "compacted", or why the transcript was left unchanged.
         """
-        self._interrupt.clear()
         if self.over_budget:
             return "refused: the budget is spent"
         tokens_before = self.context_tokens
@@ -401,7 +397,7 @@ class Agent:
             return record["status"]
         finally:
             record["call"] = self.usage[-1] if len(self.usage) > booked else None  # booked even when it failed
-        if failure := summary_failure(completion, self._interrupt.is_set()):
+        if failure := summary_failure(completion, self.node.cancelled):
             record["status"] = failure
             return failure
 
@@ -502,25 +498,22 @@ class Agent:
             self.step()
             last = self.messages[-1]
             if isinstance(last, AssistantMessage) and not last.tool_calls:  # an answer, even if cut off or empty
-                if not self._interrupt.is_set():  # compact() clears the flag, and the user said stop
+                if not self.node.cancelled:  # no paid summary after a stop
                     self.compact()
                 return
-            if self._interrupt.is_set():
-                raise TurnStopped("interrupted")
 
     def _run_tool_calls(self, calls: tuple[ToolCall, ...]) -> None:
         """Appends one result per call, in call order.
 
-        If the turn is stopped part-way, the calls left get `NOT_RUN`: a request can't hold a call without a result.
+        If a call raises, the calls left get `NOT_RUN`: a request can't hold a call without a result.
 
         Raises:
-            TurnStopped: The turn was interrupted between calls.
+            TurnStopped: `approve` stopped the turn.
         """
         done = 0
         try:
+            # No stop check here: a stop lets the reply's calls finish (a researcher's last record_fact lands).
             for call in calls:
-                if self._interrupt.is_set():
-                    raise TurnStopped("interrupted")
                 self._add_result(call, self._run_tool(call))
                 done += 1
         finally:

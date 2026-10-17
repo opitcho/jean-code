@@ -77,9 +77,7 @@ class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: Annotated[str, _null_as("")] = ""
     reasoning: str | None = None
-    tool_calls: Annotated[tuple[ToolCall, ...], _null_as(())] = Field(
-        default=(), exclude_if=lambda calls: not calls
-    )
+    tool_calls: Annotated[tuple[ToolCall, ...], _null_as(())] = Field(default=(), exclude_if=lambda calls: not calls)
 
 
 class UserMessage(BaseModel):

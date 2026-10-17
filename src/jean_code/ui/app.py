@@ -547,7 +547,7 @@ def render_header(state: SessionState, path: str, entries: list[Item], ctx: list
         st.error(detail, icon=":material/error:")
     elif path == MAIN and state.last_job and state.last_job.error and not state.busy:
         st.error(state.last_job.error, icon=":material/error:")
-    elif status not in ("running", "awaiting approval", "idle", "answered", "interrupted"):
+    elif status not in ("running", "awaiting approval", "idle", "answered", *(("cancelled",) if path == MAIN else ())):
         st.warning(f"Stopped before answering: {status}", icon=":material/warning:")
 
 

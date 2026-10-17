@@ -116,7 +116,6 @@ class Session:
         self._ids = itertools.count(1)
         self._answered = threading.Event()
         self._refusal: str | None = None
-        self._stopped = False  # main was stopped during this job: an approval it asks for now is refused at once
         self._agent = self._new_agent()
 
     # ---------------------------------------------------------------- commands
@@ -131,7 +130,7 @@ class Session:
 
     def cancel(self, path: str = "main") -> None:
         """Stop the agent at `path` after the call it's making, and everything below it. The main agent's job ends
-        "interrupted"; any other path is cancelled until it's resumed. Raises `UnknownAgent` for a path not in the
+        "cancelled"; any other path is cancelled until it's resumed. Raises `UnknownAgent` for a path not in the
         tree."""
         if path == self._agent.node.path:
             self._stop_main()
@@ -261,7 +260,8 @@ class Session:
         with self._lock:
             if self._state.busy:
                 raise Busy("a job is running; wait for it to end, or stop it")
-            self._stopped = False
+            # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
+            self._agent.node.reopen()
             self._publish_locked(JobStarted(kind=kind, text=text))
         self._job = threading.Thread(target=self._run_job, args=(kind, work), name=f"session {kind}", daemon=True)
         self._job.start()
@@ -280,7 +280,7 @@ class Session:
         """The agent's `approve`, on the job thread: wait until a client answers, or the main agent is stopped."""
         with self._lock:
             # A stop that came before this question can't answer it, so it's answered here.
-            if self._stopped:
+            if self._agent.node.cancelled:
                 return NOT_RUN
             self._answered.clear()
             self._refusal = None
@@ -290,12 +290,11 @@ class Session:
         return self._refusal
 
     def _stop_main(self) -> None:
-        """Interrupt the main agent and answer a waiting approval with NOT_RUN: an interrupt alone doesn't wake a turn
-        that waits for the user."""
+        """Stop the main agent and everything below it, and answer a waiting approval with NOT_RUN: a stop alone
+        doesn't wake a turn that waits for the user."""
         with self._lock:
-            self._stopped = True
+            self._agent.interrupt()
             approval = self._state.approval
-        self._agent.interrupt()
         if approval is not None:
             self.answer(approval.id, NOT_RUN)
 

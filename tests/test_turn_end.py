@@ -8,7 +8,7 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
-from conftest import FakeClient, call, response, usage
+from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core.agent import NOT_RUN, Agent, TurnEnd, TurnStopped
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
@@ -83,7 +83,6 @@ def cancelled_agent() -> Agent:
 # What each scenario's turn must return. The keys are checked against `TurnEnd` below.
 ENDINGS = {
     "answered": lambda: make_agent([response("hi")]),
-    "interrupted": lambda: make_agent([tool_reply("stop"), response("never")]),
     "budget spent": lambda: make_agent([tool_reply() for _ in range(11)], max_cost=0.01),
     "cancelled": cancelled_agent,
     "context full": lambda: make_agent([tool_reply(prompt=1900)], compact_at=None, context_window=2000),
@@ -124,10 +123,10 @@ def test_a_full_context_comes_before_the_round_limit():
     assert agent.run_turn("go") == "context full"
 
 
-def test_an_interrupt_comes_before_the_budget():
-    # Catches the user's stop reported as a budget stop when the interrupted call also spent the budget.
+def test_a_stop_comes_before_the_budget():
+    # Catches the user's stop reported as a budget stop when the stopped call also spent the budget.
     agent = make_agent([tool_reply("stop", cost=0.02), response("never")], max_cost=0.01)
-    assert agent.run_turn("go") == "interrupted"
+    assert agent.run_turn("go") == "cancelled"
 
 
 def test_an_interrupt_during_the_answer_is_answered():
@@ -141,25 +140,42 @@ def test_an_interrupt_during_the_answer_is_answered():
     assert agent.run_turn("go") == "answered"
 
 
-def test_no_call_runs_after_an_interrupt():
-    # Catches a call run, or the approval prompt shown, after the user said stop: the reply's first call interrupts,
-    # and the calls after it are not run, each with a result so the next request is valid.
+def test_a_stop_lets_the_replys_calls_finish_then_ends_the_turn():
+    # Catches a stop that cuts a reply's calls short (a researcher's last fact lost), or one that lets the model
+    # be called again. Whether a call that needs approval runs is up to `approve`, which a session refuses.
     reply = response(tool_calls=[call("stop"), call("add", a=1, b=2), call("rm", path="x")])
     agent = make_agent([reply, response("never")], needs_approval={"rm"})
-    assert agent.run_turn("go") == "interrupted"
-    assert agent.asked == [] and results(agent) == ["stopped", NOT_RUN, NOT_RUN]
+    assert agent.run_turn("go") == "cancelled"
+    assert results(agent) == ["stopped", "3", "removed x"] and len(scripted(agent).requests) == 1
 
 
-def test_an_interrupt_during_the_model_call_runs_none_of_its_tool_calls():
-    # Catches the reply's calls run although the stop came before any of them started.
+def test_a_stop_during_the_model_call_ends_the_turn_after_its_calls():
+    # Catches a stop that arrived during the model call being lost, so the model is called again.
     class Interrupting(FakeClient):
         def complete(self, request):
             agent.interrupt()
             return super().complete(request)
 
     agent = make_agent([tool_reply(), response("never")], client_class=Interrupting)
-    assert agent.run_turn("go") == "interrupted"
-    assert results(agent) == [NOT_RUN]
+    assert agent.run_turn("go") == "cancelled"
+    assert results(agent) == ["3"] and len(scripted(agent).requests) == 1
+
+
+def test_a_stopped_agent_stays_stopped_until_its_node_is_reopened():
+    # Catches a turn start that clears the stop, so a stop sent just before the next turn is lost.
+    agent = make_agent([response("hi")])
+    agent.interrupt()
+    assert agent.run_turn("go") == "cancelled" and scripted(agent).requests == []
+    agent.node.reopen()
+    assert agent.run_turn("go again") == "answered"
+
+
+def test_a_stop_reaches_every_agent_below():
+    # Catches a stop that ends only the agent's own turn and leaves its subagents running.
+    agent = make_agent([response("hi")])
+    run_node = agent.node.child(1.0, "1")
+    agent.interrupt()
+    assert run_node.cancelled
 
 
 # ---------------------------------------------------------------- calls that need approval
@@ -185,8 +201,8 @@ def test_a_refusal_is_the_calls_result_and_the_tool_does_not_run():
 def test_approve_can_stop_the_turn():
     # Catches a stop raised from inside `approve` lost, or leaving calls without results (a 400 on the next request).
     reply = response(tool_calls=[call("add", a=1, b=2), call("rm", path="x"), call("rm", path="y")])
-    agent = make_agent([reply, response("never")], needs_approval={"rm"}, answers=[TurnStopped("interrupted")])
-    assert agent.run_turn("go") == "interrupted"
+    agent = make_agent([reply, response("never")], needs_approval={"rm"}, answers=[TurnStopped("cancelled")])
+    assert agent.run_turn("go") == "cancelled"
     assert agent.asked == [("rm", {"path": "x"})] and results(agent) == ["3", NOT_RUN, NOT_RUN]
 
 

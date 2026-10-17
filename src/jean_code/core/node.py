@@ -95,6 +95,7 @@ class AgentNode:
         """
         with self._lock:
             node = AgentNode(limit, parent=self, name=name, task=task, profile=profile)
+            node._cancelled = self._cancelled  # a child made after a cancel is part of the stopped subtree
             self.children.append(node)
         return node
 
@@ -132,18 +133,20 @@ class AgentNode:
             listener(event)
 
     def cancel(self) -> None:
-        """Stops model calls in this subtree until `reopen()`.
+        """Stops model calls in this subtree.
 
-        Unlike an agent's interrupt, which every turn clears, nothing clears it during a turn, so a cancel sent
-        before a turn starts still holds.
+        Every node in the subtree stays cancelled until it's reopened itself: reopening this node later doesn't
+        reopen the ones below it. Thread-safe.
         """
-        self._cancelled = True
+        with self._lock:
+            for node in self._subtree():
+                node._cancelled = True
 
     def reopen(self) -> None:
-        """Clears this node's cancel, so a resumed run can call the model again.
+        """Lets this node's agent call the model again.
 
-        Only this node's: a cancelled ancestor still stops it. Call it only between turns, so a cancel sent to a
-        turn holds for that turn.
+        Only this node: its descendants stay cancelled, and a cancelled ancestor still stops it. The caller that
+        starts the agent's next turn reopens it, before that turn starts, so a cancel sent to a turn holds for it.
         """
         self._cancelled = False
 

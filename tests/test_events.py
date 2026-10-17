@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
-from jean_code.core.agent import NOT_RUN, Agent
+from jean_code.core.agent import Agent
 from jean_code.core.events import AgentAdded, Charged, Compaction, MessageAdded, TurnEnded, TurnStarted
 from jean_code.core.llm import UserMessage
 from jean_code.core.node import AgentNode
@@ -151,8 +151,8 @@ def test_a_denied_call_rebuilds():
     check_replay(agent, events)
 
 
-def test_an_interrupt_mid_tool_calls_rebuilds_with_the_calls_not_run():
-    # Catches the NOT_RUN results (written in a finally) missing from the events, and a TurnEnded without its end.
+def test_a_stop_mid_reply_rebuilds_and_ends_cancelled():
+    # Catches a result appended without its event when a stop lands mid-reply, and a TurnEnded without its end.
     events = Recorder()
 
     @tool
@@ -166,10 +166,10 @@ def test_an_interrupt_mid_tool_calls_rebuilds_with_the_calls_not_run():
         tools={"stop": stop, "add": add},
         node=root(events),
     )
-    assert agent.run_turn("go") == "interrupted"
+    assert agent.run_turn("go") == "cancelled"
     check_replay(agent, events)
-    assert agent.messages[-1].content == NOT_RUN
-    assert events[-1] == TurnEnded(path="main", end="interrupted", context_tokens=agent.context_tokens)
+    assert agent.messages[-1].content == "3"  # the reply's calls finish; the stop holds before the next model call
+    assert events[-1] == TurnEnded(path="main", end="cancelled", context_tokens=agent.context_tokens)
 
 
 def test_a_turn_that_raises_still_ends_once_with_the_error():

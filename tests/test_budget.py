@@ -311,6 +311,27 @@ def test_reopen_clears_only_this_nodes_cancel():
     assert not parent.cancelled and not child.cancelled and not child.exhausted
 
 
+def test_reopening_a_parent_leaves_its_cancelled_children_cancelled():
+    # Catches the next turn of the root reviving the subagents a stop cancelled, background runs included.
+    root = AgentNode()
+    run = root.child(1.0, "1")
+    below = run.child(None, "1")
+    root.cancel()
+    root.reopen()
+    assert not root.cancelled and run.cancelled and below.cancelled
+    run.reopen()  # a resume reopens only the run it resumes
+    assert not run.cancelled and below.cancelled
+
+
+def test_a_child_created_after_a_cancel_is_cancelled():
+    # Catches a subagent spawned in the moment after a stop slipping through it, once its parent is reopened.
+    root = AgentNode()
+    root.cancel()
+    late = root.child(1.0, "1")
+    root.reopen()
+    assert late.cancelled
+
+
 def test_a_cancel_after_reopen_still_holds():
     # Catches reopen leaving the node unable to be cancelled again.
     node = AgentNode().child(1.0, "1")

@@ -74,7 +74,7 @@ def test_budget_stop_message(capsys):
     run(session, "go")
     out = capsys.readouterr().out
     assert "[budget spent]" in out
-    assert "[interrupted]" not in out
+    assert "[cancelled]" not in out
 
 
 def test_round_limit_stop_message(capsys):
@@ -105,7 +105,7 @@ def test_unknown_cost_message(capsys):
     assert run(session, "go").result == "answered"
     out = capsys.readouterr().out
     assert "$?" in out and "[error]" not in out
-    assert "budget of" not in out and "[interrupted]" not in out
+    assert "budget of" not in out and "[cancelled]" not in out
 
 
 def test_the_usage_line_sums_the_turns_calls(capsys):
@@ -163,7 +163,7 @@ def test_ctrl_d_at_the_approval_prompt_stops_the_turn(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", scripted_input(["delete x and y"]))
     repl(session)
     out = capsys.readouterr().out
-    assert ran == [] and out.count(f"result> {NOT_RUN}") == 2 and "[interrupted]" in out
+    assert ran == [] and out.count(f"result> {NOT_RUN}") == 2 and "[cancelled]" in out
 
 
 def test_repl_logs_every_call(monkeypatch, capsys, tmp_path):

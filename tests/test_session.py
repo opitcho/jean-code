@@ -234,8 +234,34 @@ def test_cancel_while_an_approval_waits_ends_the_job():
         session.send("delete x")
         next_of(events, ApprovalRequested)
         session.cancel()
-        assert next_of(events, JobEnded, timeout=1).result == "interrupted"
+        assert next_of(events, JobEnded, timeout=1).result == "cancelled"
     assert build.agent.messages[-1].content == NOT_RUN and session.state().approval is None
+
+
+def test_a_stop_right_after_send_holds_for_that_job():
+    # Catches the job's turn clearing a stop that arrived before its thread got going.
+    gate = threading.Event()
+    session, build = make_session([response("never")])
+
+    def hold(rest: str) -> None:  # holds the turn before its first model call
+        gate.wait(TIMEOUT)
+
+    build.agent.commands["gate"] = hold
+    with session.subscribe() as (_, events):
+        session.send("/gate go")
+        session.cancel()
+        gate.set()
+        assert next_of(events, JobEnded).result == "cancelled"
+    assert build.agent.client.requests == []  # type: ignore[attr-defined]
+
+
+def test_a_stop_between_jobs_does_not_reach_the_next_one():
+    # Catches a Stop pressed while idle cancelling the user's next message.
+    session, _ = make_session([response("hi")])
+    session.cancel()
+    with session.subscribe() as (_, events):
+        session.send("go")
+        assert next_of(events, JobEnded).result == "answered"
 
 
 def test_cancel_a_subagent_path_stops_only_that_run():
@@ -470,7 +496,7 @@ def test_close_stops_a_running_turn_and_its_runs():
         eventually(lambda: session.state().agents["main"].running)
         release.set()
         session.close()
-        assert next_of(events, JobEnded).result in ("answered", "interrupted")
+        assert next_of(events, JobEnded).result in ("answered", "cancelled")
 
 
 def test_inspect_and_last_request():

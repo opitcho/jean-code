@@ -70,7 +70,7 @@ def scripted_profile(responses):
 
 
 def make_subagents(node=None, **profiles) -> Subagents:
-    return Subagents(profiles or {"echo": echo_profile()}, node or AgentNode(), threading.Event())
+    return Subagents(profiles or {"echo": echo_profile()}, node or AgentNode())
 
 
 def run_of(subagents: Subagents, run_id: int):
@@ -329,11 +329,12 @@ def test_agent_tree_follows_the_budget_paths():
     assert [row["path"] for row in parent.node.breakdown()] == ["main", "main/1", "main/1/1"]
 
 
-# ---------------------------------------------------------------- interrupts and close
+# ---------------------------------------------------------------- stops and close
 
 
-def test_an_interrupt_ends_a_wait_and_leaves_the_run_going():
-    # Catches Ctrl+C doing nothing while the parent waits up to 10 minutes on subagent(id, wait=600).
+def test_a_stop_ends_a_wait_and_stops_a_background_run():
+    # Catches Ctrl+C doing nothing while the parent waits up to 10 minutes on subagent(id, wait=600), and a
+    # background run that keeps working and spending after the user said stop.
     release = threading.Event()
     sub = make_subagents(held=held_profile(release))
     sub.spawn("held", "x", background=True)
@@ -341,22 +342,23 @@ def test_an_interrupt_ends_a_wait_and_leaves_the_run_going():
     waiter = threading.Thread(target=lambda: answers.append(sub.subagent(1, wait=MAX_WAIT)))
     waiter.start()
     time.sleep(0.1)
-    sub._interrupted.set()
+    sub.node.cancel()
     waiter.join(1)
     assert not waiter.is_alive() and answers[0].startswith("run 1 is still running")
-    assert not run_of(sub, 1).agent.node.cancelled  # background runs keep going, like shell jobs
-    release.set()
+    assert run_of(sub, 1).agent.node.cancelled
+    release.set()  # the call in flight ends; the run makes no further call
+    assert run_of(sub, 1).outcome(TIMEOUT).reason == "cancelled"
 
 
-def test_an_interrupt_stops_a_foreground_run():
+def test_a_stop_stops_a_foreground_run():
     release = threading.Event()
     sub = make_subagents(held=held_profile(release))
     answers = []
     spawner = threading.Thread(target=lambda: answers.append(sub.spawn("held", "x")))
     spawner.start()
     eventually(lambda: 1 in sub.runs)
-    sub._interrupted.set()
-    eventually(lambda: run_of(sub, 1).agent.node.cancelled)  # spawn noticed within a poll, and cancelled its run
+    sub.node.cancel()
+    eventually(lambda: run_of(sub, 1).agent.node.cancelled)
     release.set()  # the call in flight (the hold) ends; the run makes no further call
     spawner.join(TIMEOUT)
     assert answers == [
@@ -528,14 +530,14 @@ def test_an_interrupt_stops_a_foreground_resume():
     resumer = threading.Thread(target=lambda: answers.append(sub.resume(1, "more")))
     resumer.start()
     eventually(lambda: run_of(sub, 1) is not first)
-    sub._interrupted.set()
+    sub.node.cancel()
     eventually(lambda: run_of(sub, 1).agent.node.cancelled)
     release.set()
     resumer.join(TIMEOUT)
     assert answers == [
         '<subagent-result run="1" profile="held" status="stopped" reason="cancelled">\n(no reply)\n</subagent-result>'
     ]
-    sub._interrupted.clear()
+    sub.node.reopen()  # the parent's next turn; resume reopens the run itself
     assert 'status="done">\npicked up\n' in sub.resume(1, "carry on")
 
 

@@ -136,12 +136,12 @@ def summary_prompt(replaced: Sequence[Message], tail: Sequence[Message], keep_la
     )
 
 
-def summary_failure(completion: Completion, interrupted: bool) -> str | None:
+def summary_failure(completion: Completion, stopped: bool) -> str | None:
     """Returns why the summary reply can't replace the middle, or None if it can.
 
     Args:
         completion: The summary call's reply.
-        interrupted: Whether the agent was interrupted during the call.
+        stopped: Whether the agent was stopped during the call.
 
     Returns:
         A "failed: ..." status, or None.
@@ -152,6 +152,6 @@ def summary_failure(completion: Completion, interrupted: bool) -> str | None:
         return "failed: the summary was cut off at the length limit"
     if not completion.message.content.strip():
         return "failed: the summary was empty"
-    if interrupted:
+    if stopped:
         return "failed: interrupted"
     return None

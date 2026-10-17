@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 MAX_RUNNING = 8  # runs per parent at once: bounds the overshoot past a limit, and parallel requests to the provider
 MAX_WAIT = 600  # seconds `subagent(wait=…)` may block, like `job`
-POLL_SECONDS = 0.2  # how often a wait checks whether the parent was interrupted
+POLL_SECONDS = 0.2  # how often a wait checks whether the parent was stopped
 FOLLOW_UP = "Follow-up from the agent that started you:\n\n"  # starts a resumed run's message: its note says one task
 
 
@@ -316,8 +316,8 @@ class Subagents:
         subagent  check on a run, wait for it, or cancel it
         resume    send a stopped run's agent a follow-up: its next turn, under the same id
 
-    Only here do runs have ids and results become text. Waits end early when the agent is interrupted; background
-    runs keep going.
+    Only here do runs have ids and results become text. Waits end early when the parent agent is stopped, and a stop
+    of the parent stops its runs too, background ones included.
 
     A background result is delivered once: a finished background run is pending until `claim` or `subagent`
     marks it delivered. Delivery is tracked per `Run`, not per id, because a resumed id gets a new run. The
@@ -326,16 +326,14 @@ class Subagents:
     Args:
         profiles: The kinds of subagent the model may start, by name.
         node: The parent agent's node; each run gets a child of it.
-        interrupted: The parent agent's interrupt flag: waits end when it's set.
 
     Attributes:
         runs: Each id's profile name and latest run; spawn adds ids, and resume replaces an id's run.
     """
 
-    def __init__(self, profiles: dict[str, Profile], node: AgentNode, interrupted: threading.Event):
+    def __init__(self, profiles: dict[str, Profile], node: AgentNode):
         self.profiles = profiles
         self.node = node
-        self._interrupted = interrupted  # the parent agent's interrupt flag: waits end when it's set
         self.runs: dict[int, tuple[str, Run]] = {}
         self._ids = itertools.count(1)  # only spawn uses it, on the parent's thread
         self._background: set[Run] = set()  # runs started in the background; never removed
@@ -356,10 +354,10 @@ class Subagents:
                 none of this conversation, none of your tool results and none of the files you read. Put in every
                 fact, file path and constraint it needs, and say what its answer should contain, because its final
                 reply is what you get back.
-            background: False (the default): this call blocks until the subagent finishes and returns its result;
-                if the user interrupts you, the subagent is stopped too. True: this call returns at once with the
-                run's id while the subagent keeps working; get its result with subagent(run_id), or it is appended
-                to the next user message after it finishes. To run several subagents in parallel, make several
+            background: False (the default): this call blocks until the subagent finishes and returns its result.
+                True: this call returns at once with the run's id while the subagent keeps working; get its result
+                with subagent(run_id), or it is appended to the next user message after it finishes. Either way, if
+                the user stops you, the subagent is stopped too. To run several subagents in parallel, make several
                 background spawn calls in one reply. At most 8 of your subagents can run at once; past that, spawn
                 returns an error.
             max_cost: The most, in USD, this subagent may spend, including any subagents it starts itself. Must be
@@ -395,7 +393,7 @@ class Subagents:
                 self._background.add(run)
         if background:
             return f"started run {id} with ${child.remaining:.2f}"
-        if not self._wait(run, None):  # interrupted: stop the run; it ends after the call it's making
+        if not self._wait(run, None):  # stopped: the run ends after the call it's making
             run.cancel()
         return result_block(id, profile, run.outcome())
 
@@ -487,12 +485,12 @@ class Subagents:
                 self._background.add(new)
         if background:
             return f"resumed run {run_id} with ${node.remaining:.2f}"
-        if not self._wait(new, None):  # interrupted: stop the run; it ends after the call it's making
+        if not self._wait(new, None):  # stopped: the run ends after the call it's making
             new.cancel()
         return result_block(run_id, profile, new.outcome())
 
     def _wait(self, run: Run, timeout: float | None) -> bool:
-        """Waits until the run is done, the parent is interrupted, or `timeout` passes.
+        """Waits until the run is done, the parent is stopped, or `timeout` passes.
 
         Args:
             run: The run to wait for.
@@ -502,7 +500,7 @@ class Subagents:
             Whether the run is done.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        while not run.done() and not self._interrupted.is_set():
+        while not run.done() and not self.node.cancelled:
             left = POLL_SECONDS if deadline is None else min(POLL_SECONDS, deadline - time.monotonic())
             if left <= 0:
                 break

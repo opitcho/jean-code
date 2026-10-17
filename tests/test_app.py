@@ -210,7 +210,7 @@ def test_stop_ends_the_turn():
     next(b for b in at.button if b.label == "Stop").click().run()
     release.set()
     idle(session)
-    assert session.state().last_job.result == "interrupted"
+    assert session.state().last_job.result == "cancelled"
 
 
 def test_compact_that_changes_nothing_says_so():
