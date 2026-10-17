@@ -16,13 +16,22 @@ import pytest
 from conftest import FakeClient, agent_added, call, response
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
-from jean_code.core.events import ApprovalRequested, JobEnded, MessageAdded
+from jean_code.core.events import (
+    ApprovalRequested,
+    Configured,
+    Delivered,
+    JobEnded,
+    LimitSet,
+    MessageAdded,
+    RunEnded,
+    SkillLoaded,
+)
 from jean_code.core.llm import UserMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.view import AgentView
 from jean_code.logs import ProcessLogs, Recorder, read_trace, replay
-from test_driver import Builder, next_of
+from test_driver import Builder, eventually, next_of
 from test_subagents import echo_profile
 
 # ---------------------------------------------------------------- the process folder
@@ -152,20 +161,34 @@ def test_a_node_without_an_agent_gets_a_plain_folder(tmp_path):
 
 def test_replay_matches_the_view(tmp_path):
     # Catches an event the recorder drops, or one that doesn't survive the trip through JSON.
+    skill = tmp_path / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: A demo.\n---\nDEMO BODY\n")
+    load = {"id": "l1", "type": "function", "function": {"name": "load_skill", "arguments": '{"name": "demo"}'}}
     script = [
         response(tool_calls=[call("spawn", profile="echo", task="t1")]),
         response("spawned"),
+        response(tool_calls=[load]),
+        response("loaded"),
+        response(tool_calls=[call("spawn", profile="echo", task="t2", background=True)]),
+        response("started"),
         response(tool_calls=[call("rm", path="x")]),
         response("removed"),
         response("three"),
         response("four"),
         response("the summary"),
     ]
-    build = Builder(script, needs_approval={"rm"}, subagent_profiles={"echo": echo_profile()})
+    build = Builder(
+        script, needs_approval={"rm"}, subagent_profiles={"echo": echo_profile()}, skills_dir=tmp_path / "skills"
+    )
     driver, recorder = traced(build, tmp_path)
     turn(driver, "spawn one")
+    turn(driver, "load the skill")
+    driver.configure(reasoning="high", max_cost=5.0)
+    turn(driver, "spawn one in the background")
+    eventually(lambda: driver.view.state().waiting("main") == 1)
     with driver.view.subscribe() as (_, events):
-        driver.send("remove x")
+        driver.send("remove x")  # also delivers the background result
         driver.answer(next_of(events, ApprovalRequested).approval.id)
         next_of(events, JobEnded)
     turn(driver, "three")
@@ -174,6 +197,8 @@ def test_replay_matches_the_view(tmp_path):
         driver.compact()
         assert next_of(events, JobEnded).result == "compacted"
     finish(driver, recorder)
+    kinds = {type(event) for event in read_trace(tmp_path / "trace")}
+    assert {Configured, LimitSet, SkillLoaded, RunEnded, Delivered} <= kinds
     assert replay(tmp_path / "trace") == driver.view.state()
 
 

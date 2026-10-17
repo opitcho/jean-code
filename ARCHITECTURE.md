@@ -13,6 +13,10 @@
   `AgentView` before the agent is built and writes every event, on its own thread, to
   `logs/processes/<run>/chat-<n>/`, one folder per agent nested like the tree (`1-research/2-researcher/`), and
   each model call to `logs/usage.jsonl`. `replay` folds a trace back into the state the view held.
+- **Clients read only the event stream.** A UI drives the tree through a `Driver`'s commands and reads everything
+  it shows from `driver.view`, which is built only from events; the driver doesn't hand out its agent, and
+  `SLF001` holds `ui/` to that. The tests check `replay(trace) == view.state()`, so all of the state is in the
+  events.
 - **Parsing at the boundary.** Responses are parsed into typed messages as they come in (`core/llm.py`), so a
   malformed one raises `MalformedResponse` at once instead of failing later deep in the agent. Malformed tool
   arguments go back to the model as the tool's result, so it can retry.
