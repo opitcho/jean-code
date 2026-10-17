@@ -414,11 +414,12 @@ def test_spend_counts_toward_every_ancestor_and_the_tree_log():
     assert [c.path for c in state.calls] == ["main", "main/1", "main"]
 
 
-def test_pending_counts_background_results_waiting():
-    # Catches the "results waiting" line never shown, since no event marks a run's future completing.
+def test_the_view_counts_background_results_waiting():
+    # Catches the "results waiting" line never shown, because nothing tells the view a background run finished.
     driver, build = background_driver()
     driver.send("go")
-    eventually(lambda: build.agent.subagents is not None and build.agent.subagents.pending == 3)
+    eventually(lambda: driver.view.state().waiting("main") == 3)
+    assert build.agent.subagents is not None and build.agent.subagents.pending == 3
 
 
 # ---------------------------------------------------------------- settings, reset, close

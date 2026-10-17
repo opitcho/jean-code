@@ -78,12 +78,6 @@ def driver() -> Driver:
     return st.session_state.driver
 
 
-def results_waiting() -> int:
-    """Returns how many background subagent results the main agent hasn't received yet."""
-    subagents = driver().agent.subagents
-    return subagents.pending if subagents else 0
-
-
 def to_jsonable(value):
     """Converts models, dataclasses and containers into something st.json renders.
 
@@ -260,7 +254,7 @@ def signature(state: TreeState) -> tuple:
     wait. A change means a full rerun, so they catch up.
     """
     agents = tuple((path, a.running) for path, a in state.agents.items())
-    return agents, state.busy, state.approval is not None, results_waiting()
+    return agents, state.busy, state.approval is not None, state.waiting(MAIN)
 
 
 def live(state: TreeState) -> bool:
@@ -541,7 +535,7 @@ def render_agents(state: TreeState) -> None:
     )
     if len(paths) == 1:
         st.caption("No subagents started yet.")
-    if pending := results_waiting():
+    if pending := state.waiting(MAIN):
         st.info(
             f"{pending} subagent result{'s' if pending > 1 else ''} waiting; your next message delivers "
             f"{'them' if pending > 1 else 'it'}.",

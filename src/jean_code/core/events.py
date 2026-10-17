@@ -19,7 +19,7 @@ class Event(BaseModel):
     """Something an agent did, as it reports it.
 
     Attributes:
-        path: The emitting agent's node, e.g. "main/1".
+        path: The node of the agent the event is about, e.g. "main/1".
     """
 
     model_config = ConfigDict(frozen=True)
@@ -185,6 +185,25 @@ class Compaction(Event):
     context_tokens: int
 
 
+class RunEnded(Event):
+    """The subagent at `path` finished a task; its parent can now receive the result.
+
+    Attributes:
+        status: "done", "stopped" or "failed".
+        reason: Why it stopped, for "stopped".
+    """
+
+    type: Literal["run_ended"] = "run_ended"
+    status: Literal["done", "stopped", "failed"]
+    reason: TurnEnd | None = None
+
+
+class Delivered(Event):
+    """The parent's model received the latest result of the subagent at `path`."""
+
+    type: Literal["delivered"] = "delivered"
+
+
 class Charged(Event):
     """A paid model call, charged to the node at `path`.
 
@@ -206,6 +225,8 @@ AgentEvent = Annotated[
     | TurnStarted
     | TurnEnded
     | Compaction
+    | RunEnded
+    | Delivered
     | Charged,
     Field(discriminator="type"),
 ]
@@ -306,6 +327,8 @@ ViewEvent = Annotated[
     | TurnStarted
     | TurnEnded
     | Compaction
+    | RunEnded
+    | Delivered
     | Charged
     | JobStarted
     | Queued

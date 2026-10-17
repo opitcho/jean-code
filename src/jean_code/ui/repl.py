@@ -123,7 +123,7 @@ def repl(driver: Driver, recorder: Recorder | None = None) -> None:
     reported = 0
     with driver.view.subscribe() as (_, events):
         while True:
-            if pending := driver.agent.subagents.pending if driver.agent.subagents else 0:
+            if pending := driver.view.state().waiting("main"):
                 results, them = ("results", "them") if pending > 1 else ("result", "it")
                 print(dim(f"[{pending} subagent {results} waiting; your next message delivers {them}]"))
             try:

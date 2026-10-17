@@ -19,12 +19,14 @@ from jean_code.core.events import (
     Charged,
     Compaction,
     Configured,
+    Delivered,
     Delta,
     JobEnded,
     JobStarted,
     LimitSet,
     MessageAdded,
     Queued,
+    RunEnded,
     Settings,
     SkillLoaded,
     TurnEnd,
@@ -65,6 +67,8 @@ class AgentState:
         needs_approval: The names of the tools whose calls wait for approval, sorted.
         skills: The names of the skills it can load.
         loaded_skills: The skills it has loaded, first load first.
+        outcome: How its latest task as a subagent ended; None until one has.
+        delivered: Whether its parent's model has received that outcome.
         items: Every message it has had, in timeline order.
         context: The uids of its messages now, in order.
         draft: A reply streaming in: "content" and "reasoning" so far.
@@ -96,6 +100,8 @@ class AgentState:
     spent: float = 0.0
     compactions: list[Compaction] = field(default_factory=list)
     context_tokens: int = 0
+    outcome: RunEnded | None = None
+    delivered: bool = False
 
     def item(self, uid: int) -> Item:
         """Returns the item with `uid`."""
@@ -127,6 +133,18 @@ class TreeState:
     queued: str | None = None
     calls: list[ModelCall] = field(default_factory=list)
 
+    def waiting(self, path: str) -> int:
+        """Returns how many subagent results the agent at `path` hasn't received yet.
+
+        Only the subagents directly below `path` count: a nested one's result goes to its own parent.
+
+        Args:
+            path: The parent's path, e.g. "main".
+        """
+        return sum(
+            a.outcome is not None and not a.delivered for p, a in self.agents.items() if p.rpartition("/")[0] == path
+        )
+
 
 def apply(state: TreeState, event: ViewEvent) -> None:
     """Folds one event into `state`, in place.
@@ -151,6 +169,11 @@ def apply(state: TreeState, event: ViewEvent) -> None:
             state.agents[event.path].settings = event.settings
         case SkillLoaded():
             state.agents[event.path].loaded_skills.append(event.name)
+        case RunEnded():
+            agent = state.agents[event.path]
+            agent.outcome, agent.delivered = event, False
+        case Delivered():
+            state.agents[event.path].delivered = True
         case LimitSet():
             if (agent := state.agents.get(event.path)) is not None:  # a node without an agent has no state
                 agent.limit = event.limit

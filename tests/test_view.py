@@ -7,12 +7,14 @@ from conftest import agent_added
 from jean_code.core.events import (
     Charged,
     Compaction,
+    Delivered,
     Delta,
     JobEnded,
     JobStarted,
     LimitSet,
     MessageAdded,
     Queued,
+    RunEnded,
     SkillLoaded,
     TurnEnded,
     TurnStarted,
@@ -88,6 +90,20 @@ def test_an_agent_keeps_what_it_was_built_with():
     assert (main.tools, main.needs_approval, main.skills, main.loaded_skills) == (tools, ["rm"], ["demo", "pdf"], [])
     apply(state, SkillLoaded(path="main", name="pdf"))
     assert state.agents["main"].loaded_skills == ["pdf"]
+
+
+def test_waiting_counts_ended_results_not_yet_delivered_per_parent():
+    # Catches a result counted under the wrong parent, counted after delivery, or not counted again once resumed.
+    state = TreeState()
+    for path in ("main", "main/1", "main/2", "main/1/1"):
+        apply(state, agent_added(path))
+    apply(state, RunEnded(path="main/1", status="done"))
+    apply(state, RunEnded(path="main/1/1", status="stopped", reason="budget spent"))
+    assert (state.waiting("main"), state.waiting("main/1")) == (1, 1)
+    apply(state, Delivered(path="main/1"))
+    assert state.waiting("main") == 0
+    apply(state, RunEnded(path="main/1", status="done"))  # a resumed run ended again
+    assert state.waiting("main") == 1 and state.agents["main/1"].outcome.status == "done"
 
 
 def test_a_queued_message_shows_until_its_job_starts():

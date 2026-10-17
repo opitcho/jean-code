@@ -11,7 +11,7 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
-from jean_code.core.events import LimitSet
+from jean_code.core.events import Delivered, LimitSet, RunEnded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import (
     FOLLOW_UP,
@@ -23,6 +23,7 @@ from jean_code.core.subagents import (
     agent_tree,
 )
 from jean_code.core.tool_schema import tool
+from jean_code.core.view import AgentView
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
 
@@ -225,6 +226,53 @@ def test_a_result_read_with_subagent_is_not_injected_again():
     sub.spawn("echo", "x", background=True)
     assert "answer to x" in sub.subagent(1, wait=TIMEOUT)
     assert sub.pending == 0 and sub.claim() == []
+
+
+def outcomes(events: list) -> list:
+    return [e for e in events if isinstance(e, RunEnded | Delivered)]
+
+
+def test_a_foreground_result_is_delivered_before_spawn_returns():
+    # Catches a foreground result the view counts as waiting for the next message forever.
+    events = []
+    sub = make_subagents(AgentNode(listener=events.append))
+    sub.spawn("echo", "x")
+    assert outcomes(events) == [RunEnded(path="main/1", status="done"), Delivered(path="main/1")]
+
+
+def test_a_background_result_ends_then_is_delivered_when_claimed():
+    # Catches a finished background run the view never counts, or one it counts after its result was taken.
+    view = AgentView()
+    sub = make_subagents(AgentNode(listener=view.listen), held=held_profile(release := threading.Event()))
+    sub.spawn("held", "x", background=True)
+    assert view.state().waiting("main") == sub.pending == 0  # still running
+    release.set()
+    eventually(lambda: sub.pending == 1)
+    assert view.state().waiting("main") == 1
+    sub.claim()
+    assert view.state().waiting("main") == sub.pending == 0
+
+
+def test_the_view_agrees_with_pending_after_each_tool_call_and_turn():
+    # Catches the view's count and Subagents.pending drifting apart at the points a client reads it.
+    view = AgentView()
+    parent = Agent(
+        client=FakeClient(
+            [
+                response(tool_calls=[call("spawn", profile="echo", task="bg", background=True)]),
+                response(tool_calls=[call("spawn", profile="echo", task="fg")]),
+                response("both started"),
+                response("got it"),
+            ]
+        ),
+        subagent_profiles={"echo": echo_profile()},
+        node=AgentNode(listener=view.listen),
+    )
+    parent.run_turn("start two")
+    eventually(lambda: parent.subagents.pending == 1)
+    assert view.state().waiting("main") == parent.subagents.pending == 1
+    parent.run_turn("any news?")
+    assert view.state().waiting("main") == parent.subagents.pending == 0
 
 
 def test_running_and_foreground_runs_are_never_pending():

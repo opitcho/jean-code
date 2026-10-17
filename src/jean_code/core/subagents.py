@@ -16,6 +16,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
+from jean_code.core.events import Delivered, RunEnded
 from jean_code.core.llm import AssistantMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
@@ -176,6 +177,8 @@ class Run:
         except BaseException as e:  # noqa: BLE001 - the future must always get an outcome
             if outcome.status != "failed":  # keep the first error if there are two
                 outcome = Outcome("failed", f"{type(e).__name__}: {e}")
+        # Before the future: a result is delivered only once the run is done, so RunEnded comes before its Delivered.
+        self.agent.node.emit(RunEnded(path=self.path, status=outcome.status, reason=outcome.reason))
         self._future.set_result(outcome)
 
     def _finish(self) -> Outcome:
@@ -395,7 +398,9 @@ class Subagents:
             return f"started run {id} with ${child.remaining:.2f}"
         if not self._wait(run, None):  # stopped: the run ends after the call it's making
             run.cancel()
-        return result_block(id, profile, run.outcome())
+        outcome = run.outcome()
+        self._deliver([run])
+        return result_block(id, profile, outcome)
 
     @tool
     def subagent(self, run_id: int, wait: int = 0, cancel: bool = False) -> str:
@@ -487,7 +492,9 @@ class Subagents:
             return f"resumed run {run_id} with ${node.remaining:.2f}"
         if not self._wait(new, None):  # stopped: the run ends after the call it's making
             new.cancel()
-        return result_block(run_id, profile, new.outcome())
+        outcome = new.outcome()
+        self._deliver([new])
+        return result_block(run_id, profile, outcome)
 
     def _wait(self, run: Run, timeout: float | None) -> bool:
         """Waits until the run is done, the parent is stopped, or `timeout` passes.
@@ -523,7 +530,14 @@ class Subagents:
         with self._lock:
             ids = self._pending_ids() if run_id is None else [i for i in self._pending_ids() if i == run_id]
             self._delivered.update(self.runs[i][1] for i in ids)
-            return [(i, *self.runs[i]) for i in ids]
+            claimed = [(i, *self.runs[i]) for i in ids]
+        self._deliver([run for _, _, run in claimed])  # outside the lock: the listener takes the view's lock
+        return claimed
+
+    def _deliver(self, runs: list[Run]) -> None:
+        """Emits `Delivered` for each run whose result the model now receives."""
+        for run in runs:
+            self.node.emit(Delivered(path=run.path))
 
     @property
     def pending(self) -> int:
