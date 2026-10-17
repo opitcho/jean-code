@@ -467,14 +467,13 @@ def render_sidebar(state: TreeState) -> None:
         note = "<b>Docker sandbox</b> — commands run without asking"
     else:
         note = "<b>Local shell</b> — each command needs approval"
-    agent = driver().agent
-    skills = sorted(agent.skills.catalog)
     main = state.agents[MAIN]
+    skills = sorted(main.skills)
     with st.sidebar:
         if note:
             st.html(f'<div class="shell-note">{note}</div>')
         st.html(eyebrow(f"SKILLS · {len(skills)}"))
-        st.html(chips(skills, on=agent.skills.loaded, empty_text="no skills found"))
+        st.html(chips(skills, on=main.loaded_skills, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))
         st.html('<div class="row">' + pill(main.settings.model, cls="model") + "</div>")
         if recorder := st.session_state.get("recorder"):
@@ -899,11 +898,10 @@ def render_context(path: str, agent: AgentState) -> None:
 
 def render_state(path: str, agent: AgentState) -> None:
     """Draws the agent's config, the tools needing approval, its skills and its state."""
-    details = driver().agent_at(path)
     config = {k: getattr(agent.settings, k) for k in STATE_CONFIG} | {"max_cost": agent.limit}
     st.html(eyebrow("CONFIG") + kv_grid(config))
-    st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(details.needs_approval)))
-    st.html(eyebrow("LOADED SKILLS") + chips(details.skills.loaded))
+    st.html(eyebrow("NEEDS APPROVAL") + chips(agent.needs_approval))
+    st.html(eyebrow("LOADED SKILLS") + chips(agent.loaded_skills))
     summary = {
         "path": agent.path,
         "profile": agent.profile,

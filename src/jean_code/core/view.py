@@ -26,6 +26,7 @@ from jean_code.core.events import (
     MessageAdded,
     Queued,
     Settings,
+    SkillLoaded,
     TurnEnd,
     TurnEnded,
     TurnStarted,
@@ -60,6 +61,10 @@ class AgentState:
         task: What its node was created for.
         settings: Its settings, as of its last `Configured`.
         limit: Its node's limit in USD; None for none.
+        tools: The tool schemas it sends with every request.
+        needs_approval: The names of the tools whose calls wait for approval, sorted.
+        skills: The names of the skills it can load.
+        loaded_skills: The skills it has loaded, first load first.
         items: Every message it has had, in timeline order.
         context: The uids of its messages now, in order.
         draft: A reply streaming in: "content" and "reasoning" so far.
@@ -77,6 +82,10 @@ class AgentState:
     task: str
     settings: Settings
     limit: float | None
+    tools: list[dict] = field(default_factory=list)
+    needs_approval: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    loaded_skills: list[str] = field(default_factory=list)
     items: list[Item] = field(default_factory=list)
     context: list[int] = field(default_factory=list)
     draft: dict[str, str] = field(default_factory=dict)
@@ -128,9 +137,20 @@ def apply(state: TreeState, event: ViewEvent) -> None:
     """
     match event:
         case AgentAdded():
-            state.agents[event.path] = AgentState(event.path, event.profile, event.task, event.settings, event.limit)
+            state.agents[event.path] = AgentState(
+                event.path,
+                event.profile,
+                event.task,
+                event.settings,
+                event.limit,
+                tools=event.tools,
+                needs_approval=event.needs_approval,
+                skills=event.skills,
+            )
         case Configured():
             state.agents[event.path].settings = event.settings
+        case SkillLoaded():
+            state.agents[event.path].loaded_skills.append(event.name)
         case LimitSet():
             if (agent := state.agents.get(event.path)) is not None:  # a node without an agent has no state
                 agent.limit = event.limit
@@ -198,6 +218,7 @@ def snapshot(state: TreeState) -> TreeState:
             items=list(a.items),
             context=list(a.context),
             draft=dict(a.draft),
+            loaded_skills=list(a.loaded_skills),
             calls=list(a.calls),
             compactions=list(a.compactions),
         )

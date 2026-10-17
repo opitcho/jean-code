@@ -13,6 +13,7 @@ from jean_code.core.events import (
     LimitSet,
     MessageAdded,
     Queued,
+    SkillLoaded,
     TurnEnded,
     TurnStarted,
 )
@@ -76,6 +77,17 @@ def test_a_limit_change_reaches_its_agent_and_one_without_an_agent_is_ignored():
     apply(state, LimitSet(path="main", limit=2.0))
     apply(state, LimitSet(path="main/wf1", limit=0.5))
     assert state.agents["main"].limit == 2.0 and list(state.agents) == ["main"]
+
+
+def test_an_agent_keeps_what_it_was_built_with():
+    # Catches the inspector's tools, approval list or skill catalog missing from the view.
+    state = TreeState()
+    tools = [{"type": "function", "function": {"name": "rm"}}]
+    apply(state, agent_added("main", tools=tools, needs_approval=["rm"], skills=["demo", "pdf"]))
+    main = state.agents["main"]
+    assert (main.tools, main.needs_approval, main.skills, main.loaded_skills) == (tools, ["rm"], ["demo", "pdf"], [])
+    apply(state, SkillLoaded(path="main", name="pdf"))
+    assert state.agents["main"].loaded_skills == ["pdf"]
 
 
 def test_a_queued_message_shows_until_its_job_starts():

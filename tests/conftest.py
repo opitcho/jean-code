@@ -104,7 +104,7 @@ def agent_added(path: str = "main", profile: str = "", task: str = "", **fields)
     settings = Settings(
         model="m", reasoning=None, compact_at=None, max_tool_rounds=10, keep_first=1, keep_last=2, context_window=1000
     )
-    defaults = {"settings": settings, "limit": None, "tools": []}
+    defaults = {"settings": settings, "limit": None, "tools": [], "needs_approval": [], "skills": []}
     return AgentAdded(path=path, profile=profile, task=task, **(defaults | fields))
 
 

@@ -198,19 +198,19 @@ class Agent:
         self.approve = approve
         self.cleanup: list[Callable[[], None]] = list(cleanup or [])
 
-        self.skills = Skills(skills_dir)
-        # Currently only skills included, optional second argument is never used.
-        self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
-
-        listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
-        system = "\n\n".join(part for part in listings if part).strip()
-
         if max_cost is not None and max_cost <= 0:
             raise ValueError(f"max_cost must be positive, got {max_cost}")
         if max_cost is not None and node is not None:
             raise ValueError("pass max_cost or node, not both: a given node carries its own limit")
         self.node = node or AgentNode(max_cost)
         self.usage: list[ModelCall] = []
+
+        self.skills = Skills(skills_dir, self.node)
+        # Currently only skills included, optional second argument is never used.
+        self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
+
+        listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
+        system = "\n\n".join(part for part in listings if part).strip()
 
         if compact_at is not None and compact_at > context_window // 2:
             raise ValueError(f"compact_at must leave room for the summary call: at most {context_window // 2}")
@@ -247,6 +247,8 @@ class Agent:
                 settings=self._settings,
                 limit=self.node.limit,
                 tools=self._tool_schemas(),
+                needs_approval=sorted(self.needs_approval),
+                skills=list(self.skills.catalog),
             )
         )
         self.messages: tuple[Message, ...] = ()

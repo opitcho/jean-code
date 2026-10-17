@@ -279,7 +279,14 @@ def test_a_foreground_subagent_rebuilds_under_its_path_with_its_profile():
     child = agent.node.children[0].agent
     tools = list(child.last_request.tools)
     assert added == AgentAdded(
-        path="main/1", profile="echo", task="t1", settings=child.settings, limit=child.node.limit, tools=tools
+        path="main/1",
+        profile="echo",
+        task="t1",
+        settings=child.settings,
+        limit=child.node.limit,
+        tools=tools,
+        needs_approval=[],
+        skills=[],
     )
 
 
@@ -325,7 +332,14 @@ def test_an_agent_built_on_any_child_node_is_seen():
     added = events[0]
     tools = list(agent.last_request.tools)
     assert added == AgentAdded(
-        path="main/wf1/plan", profile="planner", task="", settings=agent.settings, limit=None, tools=tools
+        path="main/wf1/plan",
+        profile="planner",
+        task="",
+        settings=agent.settings,
+        limit=None,
+        tools=tools,
+        needs_approval=[],
+        skills=[],
     )
     assert tuple(rebuild(events)["main/wf1/plan"]) == agent.messages
     assert agent.node.agent is agent

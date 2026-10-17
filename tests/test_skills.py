@@ -9,8 +9,11 @@ import pytest
 
 from conftest import FakeClient, response
 from jean_code.core.agent import Agent
+from jean_code.core.events import SkillLoaded
+from jean_code.core.node import AgentNode
 from jean_code.core.skills import Skills
 from jean_code.core.tool_schema import is_tool
+from jean_code.core.view import TreeState, apply
 
 
 @pytest.fixture
@@ -108,6 +111,20 @@ def test_agent_runs_load_skill_calls_and_returns_errors_to_the_model(skills_dir)
     assert results[1].startswith("Error: ValueError: unknown skill 'nope'")
     assert agent.skills.loaded == ["demo"]
     assert "## Skills" in client.requests[0]["messages"][0]["content"]
+
+
+def test_a_first_load_is_emitted_once_whether_the_model_or_the_user_loads_it(skills_dir):
+    # Catches loaded skills the view never shows, or a reload announced as a new load.
+    events = []
+    client = FakeClient([response(tool_calls=[load_call("c1", "demo")]), response("done"), response("again")])
+    agent = Agent(client=client, skills_dir=skills_dir, node=AgentNode(listener=events.append))
+    agent.run_turn("hi")
+    agent.run_turn("/demo once more")
+    assert [e for e in events if isinstance(e, SkillLoaded)] == [SkillLoaded(path="main", name="demo")]
+    state = TreeState()
+    for event in events:
+        apply(state, event)
+    assert state.agents["main"].loaded_skills == ["demo"]
 
 
 def test_a_slash_command_puts_the_body_in_the_user_message(skills_dir):

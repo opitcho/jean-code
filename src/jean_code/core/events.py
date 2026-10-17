@@ -60,6 +60,8 @@ class AgentAdded(Event):
         settings: Its settings.
         limit: Its node's limit in USD; None for none.
         tools: The tool schemas it sends with every request.
+        needs_approval: The names of the tools whose calls wait for approval, sorted.
+        skills: The names of the skills it can load.
     """
 
     type: Literal["agent_added"] = "agent_added"
@@ -68,6 +70,8 @@ class AgentAdded(Event):
     settings: Settings
     limit: float | None
     tools: list[dict]
+    needs_approval: list[str]
+    skills: list[str]
 
 
 class Configured(Event):
@@ -86,6 +90,17 @@ class LimitSet(Event):
 
     type: Literal["limit_set"] = "limit_set"
     limit: float | None
+
+
+class SkillLoaded(Event):
+    """The agent loaded a skill for the first time.
+
+    Attributes:
+        name: The skill's name.
+    """
+
+    type: Literal["skill_loaded"] = "skill_loaded"
+    name: str
 
 
 class MessageAdded(Event):
@@ -182,7 +197,16 @@ class Charged(Event):
 
 
 AgentEvent = Annotated[
-    AgentAdded | Configured | LimitSet | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged,
+    AgentAdded
+    | Configured
+    | LimitSet
+    | SkillLoaded
+    | MessageAdded
+    | Delta
+    | TurnStarted
+    | TurnEnded
+    | Compaction
+    | Charged,
     Field(discriminator="type"),
 ]
 
@@ -276,6 +300,7 @@ ViewEvent = Annotated[
     AgentAdded
     | Configured
     | LimitSet
+    | SkillLoaded
     | MessageAdded
     | Delta
     | TurnStarted

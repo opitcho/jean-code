@@ -14,6 +14,8 @@ from pathlib import Path
 
 import yaml
 
+from jean_code.core.events import SkillLoaded
+from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
 
 
@@ -120,15 +122,17 @@ class Skills:
 
     Args:
         skills_dir: The folder of skill folders; None for no skills.
+        node: The agent's node, which a skill's first load is emitted through as `SkillLoaded`; None emits nothing.
 
     Attributes:
         catalog: The skills, by name.
         loaded: The names of the skills loaded so far, first load first.
     """
 
-    def __init__(self, skills_dir: str | Path | None):
+    def __init__(self, skills_dir: str | Path | None, node: AgentNode | None = None):
         self.catalog: dict[str, Skill] = discover_skills(skills_dir) if skills_dir else {}
         self.loaded: list[str] = []
+        self._node = node
 
     def prompt(self) -> str:
         """Returns the level-1 listing for the system prompt: names and descriptions.
@@ -176,6 +180,8 @@ class Skills:
         body = instructions(self._get(name))
         if name not in self.loaded:
             self.loaded.append(name)
+            if self._node is not None:
+                self._node.emit(SkillLoaded(path=self._node.path, name=name))
         return body
 
     @tool
