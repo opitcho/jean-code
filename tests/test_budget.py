@@ -120,6 +120,13 @@ def test_nodes_are_depth_first():
     assert [n.path for n in root.nodes()] == ["main", "main/1", "main/1/1", "main/2"]
 
 
+def test_root():
+    # Catches a subagent's node that doesn't lead back to its tree's root: its tree's log would be lost.
+    root = AgentNode()
+    grand = root.child(None, "1").child(None, "2")
+    assert root.root is root and grand.root is root
+
+
 def test_concurrent_charges_are_all_counted():
     # Catches lost updates when parallel subagents charge one tree without the lock.
     root = AgentNode()

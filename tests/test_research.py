@@ -14,11 +14,7 @@ import pytest
 
 from conftest import call, response, usage
 from jean_code.agents.research import (
-    Notebook,
-    check_quote,
-    read_facts,
-    render_report,
-    research_lead,
+    research_lead_agent,
     research_profile,
     research_result,
     researcher_profile,
@@ -27,6 +23,7 @@ from jean_code.agents.research import (
 from jean_code.core.llm import ChatRequest, Completion, UserMessage, parse_completion
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Run
+from jean_code.tools.notebook import Notebook, check_quote, read_facts, render_report
 from jean_code.tools.pages import html_text
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -594,7 +591,7 @@ def test_a_lead_stopped_after_drafting_hands_back_its_summary(tmp_path, pages):
             ]
         }
     )
-    lead = research_lead(notebook, AgentNode(0.5), client=client)
+    lead = research_lead_agent(notebook, AgentNode(0.5), client=client)
     outcome = Run.start(lead, "the brief", report=lambda: research_result(lead, notebook)).outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == ("stopped", "budget spent")
     assert "## Summary\n- Beta uses TOML [1], Alpha is Rust [2].\n\nFacts: 2 recorded" in outcome.text

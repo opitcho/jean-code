@@ -46,6 +46,11 @@ class AgentNode:
         return f"{self.parent.path}/{self.name}" if self.parent else self.name
 
     @property
+    def root(self) -> "AgentNode":
+        """The root of this node's agent tree."""
+        return self._chain()[-1]
+
+    @property
     def journal(self) -> list[ModelCall]:
         """The whole tree's calls in charge order, each carrying its node's path. Append-only, so
         `journal[start:]` is every call made in the tree since `len(journal)` was `start`."""
@@ -70,7 +75,7 @@ class AgentNode:
         with self._lock:
             self.entries.append(call)
             self._journal.append(call)
-        if path := self._chain()[-1].log_path:
+        if path := self.root.log_path:
             append_log(path, [call])
 
     def cancel(self) -> None:

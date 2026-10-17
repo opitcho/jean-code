@@ -45,10 +45,11 @@ jean-code runs from its repo checkout: it reads `skills/` and writes `workspace/
 put `jean-code` on your PATH, install it editable with `uv tool install -e ~/jean-code`; a copying install refuses to
 start.
 
-In the UI, the sidebar has the sandbox switch ("Run bash in Docker sandbox", which starts a new chat) and the
-reasoning effort. Type `/compact` in the chat to summarize older turns now.
+In the UI, the sidebar has the Agent select (Coding or Orchestrator), the sandbox switch ("Run bash in Docker
+sandbox", for the coding agent) and the reasoning effort. Changing the agent or the switch starts a new chat. Type `/compact` in the chat to summarize older turns now.
 
-REPL options: `--sandbox` runs commands in Docker, `--no-network` cuts the container off from the network,
+REPL options: `--agent orchestrator` starts the orchestrator instead of the coding agent, `--sandbox` runs the
+coding agent's commands in Docker, `--no-network` cuts the containers off from the network,
 `--model` takes any OpenRouter model id, `--reasoning low|medium|high`, `--max-cost` stops the session at a USD
 limit, and `--compact-at` sets the token count that triggers compaction. Type `/cost` to see what the session has
 spent, and `exit` to quit.
@@ -79,6 +80,10 @@ without Docker and the image it fails, and only the `searcher` subagent works.
 - **Research reports**: ask it to research something and it agrees a brief with you, then a research run works in
   the background. Researchers record facts with quotes that are checked against the pages they fetched, and a lead
   writes a report citing them, to `workspace/research/<run>/report.md`.
+- **Builds with expert agents**: the orchestrator (`--agent orchestrator`) has no shell. It runs a planner, a
+  product manager, an architect, an engineer and an auditor, each in its own sandbox, through plan → PRD → spec →
+  implementation, with every step audited against `skills/build/rules.md`. The files land in
+  `workspace/builds/<slug>/`.
 - **Skills**: teach it a task with a folder in `skills/`: a `SKILL.md` (YAML front matter with a `name` and a
   `description`, then the instructions) plus any reference files. See `skills/unit-conversion/` for an example.
 - **Long sessions**: when the conversation gets too long, it summarizes the older turns and carries on.
@@ -135,10 +140,12 @@ src/jean_code/
     shell.py               host and Docker shell backends
     web.py                 the web tools agents call: search, and fetching a page a window at a time
     pages.py               page text from HTML and PDFs, cached per URL, and the windows cut from it
-  agents/                  agents assembled from core and tools
-    coding.py              the coding agent and its subagent profiles
-    research.py            research runs: a lead, researchers and the notebook of checked facts they share
-    prompts.py             the agents' system prompts
+    notebook.py            a research run's folder of checked facts, and the report rendered from it
+  agents/                  agents assembled from core and tools; each module: prompts, *_agent, *_profile(s)
+    common.py              the subagent note and the shell-plus-web toolset several agents share
+    coding.py              the coding agent (a root) and its searcher and general subagents
+    experts.py             the orchestrator (a root, no shell) and its experts
+    research.py            research runs: a lead and the researchers it starts
   ui/                      the front-ends
     repl.py                terminal front-end
     app.py                 Streamlit front-end (app.css holds its styles)

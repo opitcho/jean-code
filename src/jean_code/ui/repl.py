@@ -1,6 +1,6 @@
-"""Terminal chat with the coding agent.
+"""Terminal chat with the coding agent, or with the orchestrator.
 
-Run with: uv run --env-file .env jean-code [--sandbox]
+Run with: uv run --env-file .env jean-code [--sandbox] [--agent orchestrator]
 """
 
 import argparse
@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from jean_code.agents.coding import coding_agent
+from jean_code.agents.experts import orchestrator_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent, TurnEnd
 from jean_code.core.llm import AssistantMessage, Message, ToolMessage
@@ -197,10 +198,18 @@ def print_cost(agent: Agent) -> None:
 
 
 def main() -> None:
-    """Parse the command line, build the coding agent and chat with it until the user exits."""
-    parser = argparse.ArgumentParser(description="Chat with a coding agent that has a shell.")
-    parser.add_argument("--sandbox", action="store_true", help="run commands in a Docker container")
-    parser.add_argument("--no-network", action="store_true", help="with --sandbox: no network in the container")
+    """Parse the command line, build the agent and chat with it until the user exits."""
+    parser = argparse.ArgumentParser(description="Chat with a coding agent that has a shell, or with the orchestrator.")
+    parser.add_argument(
+        "--agent",
+        choices=("coding", "orchestrator"),
+        default="coding",
+        help="coding: a shell, web tools and helpers; orchestrator: no shell, it runs expert subagents",
+    )
+    parser.add_argument("--sandbox", action="store_true", help="coding agent: run commands in a Docker container")
+    parser.add_argument(
+        "--no-network", action="store_true", help="no network in the containers (--sandbox, or the experts')"
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenRouter model id")
     parser.add_argument("--reasoning", default="medium", help="reasoning effort: low, medium or high")
     parser.add_argument("--max-cost", type=float, default=None, help="stop once the session has spent this many USD")
@@ -211,17 +220,18 @@ def main() -> None:
         help="compact the context after a turn that ends over this many tokens",
     )
     cli = parser.parse_args()
+    if cli.agent == "orchestrator" and cli.sandbox:
+        parser.error("--sandbox is for the coding agent: the orchestrator has no shell")
 
-    approvals = Approvals()
-    agent = coding_agent(
-        cli.model,
-        sandbox=cli.sandbox,
-        network=not cli.no_network,
-        reasoning=cli.reasoning,
-        max_cost=cli.max_cost,
-        compact_at=cli.compact_at,
-        approve=approvals.ask,
-    )
+    common = {"reasoning": cli.reasoning, "max_cost": cli.max_cost, "compact_at": cli.compact_at}
+    if cli.agent == "orchestrator":
+        approvals = None  # nothing it calls needs approval
+        agent = orchestrator_agent(cli.model, network=not cli.no_network, **common)
+    else:
+        approvals = Approvals()
+        agent = coding_agent(
+            cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approvals.ask, **common
+        )
     try:
         repl(agent, approvals)
     finally:

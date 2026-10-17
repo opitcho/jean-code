@@ -23,6 +23,7 @@ from typing import Any
 import streamlit as st
 
 from jean_code.agents.coding import coding_agent
+from jean_code.agents.experts import orchestrator_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core import llm
 from jean_code.core.agent import DEFAULT_MODEL, NOT_RUN, Agent
@@ -34,6 +35,7 @@ from jean_code.ui.approval import Approvals, denied
 from jean_code.ui.repl import compaction_line
 
 MODEL = DEFAULT_MODEL
+AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
 REASONING_LEVELS = ("off", "low", "medium", "high")  # "off" sends no reasoning setting (agent.reasoning = None)
 POLL_SECONDS = 0.5
 CSS_PATH = Path(__file__).with_name("app.css")
@@ -362,24 +364,33 @@ def compact_now(agent, run: dict) -> None:
 
 
 def new_chat() -> None:
-    """A fresh agent; the sidebar toggle picks where its shell runs. The old agent's jobs/container are closed."""
+    """A fresh agent of the kind the sidebar picks; for the coding agent, its toggle picks where the shell runs. The
+    old agent's jobs/containers are closed."""
     if old := st.session_state.get("agent"):
         old.interrupt()
         st.session_state.approvals.answer(NOT_RUN)  # a turn waiting for approval ends, and its thread with it
         old.close()
     st.session_state.approvals = Approvals()  # the turn's thread asks through it; the approval card answers
-    st.session_state.agent = coding_agent(
-        MODEL,
-        sandbox=st.session_state.get("sandbox", False),
-        reasoning=reasoning_effort(),
-        approve=st.session_state.approvals.ask,
-    )
+    if orchestrating():
+        st.session_state.agent = orchestrator_agent(MODEL, reasoning=reasoning_effort())  # nothing needs approval
+    else:
+        st.session_state.agent = coding_agent(
+            MODEL,
+            sandbox=st.session_state.get("sandbox", False),
+            reasoning=reasoning_effort(),
+            approve=st.session_state.approvals.ask,
+        )
     st.session_state.agent.node.log_path = USAGE_LOG  # every call in its tree, subagents' between turns included
     st.session_state.histories = {}  # path -> that agent's list[Entry]
     st.session_state.selected = {}  # path -> selected uid; None or missing follows the latest
     st.session_state.view = st.session_state.agent.node.path  # the agent picker's value
     st.session_state.run = {"thread": None, "error": None, "notice": None, "end": None}
     st.session_state.compactions_seen = 0
+
+
+def orchestrating() -> bool:
+    """Whether the sidebar's Agent select is on the orchestrator."""
+    return st.session_state.get("agent_kind", AGENT_KINDS[0]) == "Orchestrator"
 
 
 def reasoning_effort() -> str | None:
@@ -464,13 +475,24 @@ def show_reasoning(text: str) -> None:
 
 
 def render_sidebar_top() -> None:
-    """Brand and the sandbox toggle; drawn before the agent exists, since the toggle decides its shell."""
+    """Brand, the Agent select and (for the coding agent) the sandbox toggle; drawn before the agent exists, since
+    they decide which agent it is and where its shell runs."""
     with st.sidebar:
         st.html(
             '<div class="brand"><div class="brand-mark">🧮</div>'
             '<div><div class="brand-name">jean-code</div><div class="brand-sub">agent inspector</div></div></div>'
         )
         st.html(eyebrow("ENVIRONMENT"))
+        st.selectbox(
+            "Agent",
+            AGENT_KINDS,
+            key="agent_kind",
+            on_change=new_chat,
+            help="Coding: a shell, web tools and helper subagents. Orchestrator: no shell; it runs expert subagents "
+            "(planner, pm, architect, engineer, auditor), each in its own sandbox. Starts a new chat.",
+        )
+        if orchestrating():
+            return  # no shell, so no sandbox question
         st.toggle(
             "Run bash in Docker sandbox",
             key="sandbox",
@@ -481,12 +503,15 @@ def render_sidebar_top() -> None:
 
 
 def render_sidebar(agent) -> None:
-    if st.session_state.get("sandbox", False):
+    if orchestrating():
+        note = None  # no shell
+    elif st.session_state.get("sandbox", False):
         note = "<b>Docker sandbox</b> — commands run without asking"
     else:
         note = "<b>Local shell</b> — each command needs approval"
     with st.sidebar:
-        st.html(f'<div class="shell-note">{note}</div>')
+        if note:
+            st.html(f'<div class="shell-note">{note}</div>')
         st.html(eyebrow(f"SKILLS · {len(agent.skills.catalog)}"))
         st.html(chips(sorted(agent.skills.catalog), on=agent.skills.loaded, empty_text="no skills found"))
         st.html(eyebrow("SESSION"))

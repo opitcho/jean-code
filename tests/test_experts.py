@@ -1,4 +1,4 @@
-"""Tests for the expert profiles (experts.py) and the `build` skill that puts them together.
+"""Tests for the orchestrator and its experts (experts.py), and the `build` skill that puts them together.
 
 Nothing here starts a container or calls a model. Each test names the bug it would catch.
 """
@@ -8,8 +8,8 @@ from types import MethodType
 
 import pytest
 
-from jean_code.agents.coding import coding_agent, subagent_profiles
-from jean_code.agents.experts import EXPERTS, expert_agent
+from jean_code.agents.coding import subagent_profiles
+from jean_code.agents.experts import EXPERTS, expert_agent, orchestrator_agent
 from jean_code.config import SKILLS_DIR
 from jean_code.core.node import AgentNode
 from jean_code.core.skills import Skills
@@ -21,11 +21,30 @@ def api_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")  # builds a client; nothing here sends a request
 
 
-def test_the_coding_agent_lists_the_experts():
-    # Catches experts that exist but never reach the orchestrator, or that replace the existing profiles.
-    assert {"planner", "pm", "architect", "engineer", "auditor", "searcher", "general", "research"} <= set(
-        subagent_profiles("m")
-    )
+def test_the_coding_agent_has_no_experts():
+    # Catches the experts leaking back into the coding agent: builds belong to the orchestrator, which has no shell.
+    assert set(subagent_profiles("m")) == {"searcher", "general", "research"}
+
+
+def test_the_orchestrator_has_no_tools_of_its_own():
+    # Catches a shell, file or web tool on the orchestrator: with one, it does the experts' work instead of routing it.
+    agent = orchestrator_agent("m")
+    try:
+        assert set(agent._tools) == {"load_skill", "read_skill_file", "spawn", "subagent", "resume"}
+        assert agent.needs_approval == set()
+    finally:
+        agent.close()
+
+
+def test_the_orchestrator_lists_the_experts():
+    # Catches experts that exist but never reach the orchestrator's prompt.
+    agent = orchestrator_agent("m", skills_dir=None)
+    try:
+        prompt = agent.messages[0].content
+        assert all(f"- {name}: " in prompt for name in EXPERTS)
+        assert "load_skill" not in agent._tools  # no skills, and no crash without them
+    finally:
+        agent.close()
 
 
 @pytest.mark.parametrize("name", list(EXPERTS))
@@ -75,8 +94,8 @@ def test_experts_have_room_for_a_whole_step():
 
 
 def test_the_orchestrator_has_room_for_a_whole_build():
-    # Catches the default 10 rounds on the coding agent: a build (5 steps, each spawned and audited) stops halfway.
-    agent = coding_agent(skills_dir=None, approve=lambda name, arguments: None)
+    # Catches the default 10 rounds: a build (5 steps, each spawned and audited) stops halfway.
+    agent = orchestrator_agent("m", skills_dir=None)
     try:
         assert agent.max_tool_rounds == 40
     finally:
