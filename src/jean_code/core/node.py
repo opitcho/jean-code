@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from jean_code.core.events import AgentEvent, Charged
+from jean_code.core.events import AgentEvent, Charged, LimitSet
 from jean_code.core.usage import ModelCall
 
 if TYPE_CHECKING:
@@ -21,7 +21,8 @@ class AgentNode:
     keeps are attributes of the same name.
 
     Args:
-        limit: Most the subtree may spend, in USD; None for no limit. Settable at any time.
+        limit: Most the subtree may spend, in USD; None for no limit. Settable at any time; a change is emitted as
+            `LimitSet`.
         parent: The parent's node; None for the root.
         name: The last part of `path`.
         task: What this node's agent was asked to do.
@@ -43,7 +44,7 @@ class AgentNode:
         profile: str = "",
         listener: Callable[[AgentEvent], None] | None = None,
     ):
-        self.limit = limit
+        self._limit = limit  # not through the setter: no agent is on the node yet for a LimitSet to follow
         self.parent = parent
         self.name = name
         self.task = task
@@ -55,6 +56,16 @@ class AgentNode:
         self._cancelled = False  # set by cancel(), cleared only by reopen()
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
         self._journal: list[ModelCall] = parent._journal if parent else []
+
+    @property
+    def limit(self) -> float | None:
+        """Most the subtree may spend, in USD; None for no limit."""
+        return self._limit
+
+    @limit.setter
+    def limit(self, value: float | None) -> None:
+        self._limit = value
+        self.emit(LimitSet(path=self.path, limit=value))
 
     @property
     def path(self) -> str:

@@ -306,7 +306,7 @@ def test_resume_after_every_ending(start, first):
     run = start()
     outcome = run.outcome(TIMEOUT)
     assert (outcome.status, outcome.reason) == first
-    run.agent.max_cost = run.agent.node.spent + 1.0  # a spent budget is topped up, as Subagents.resume does
+    run.agent.node.limit = run.agent.node.spent + 1.0  # a spent budget is topped up, as Subagents.resume does
     scripted(run.agent).responses.append(response("carried on"))
     again = run.resume("carry on")
     assert again.outcome(TIMEOUT) == done("carried on")

@@ -11,6 +11,7 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
+from jean_code.core.events import LimitSet
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import (
     FOLLOW_UP,
@@ -491,15 +492,19 @@ def test_a_cancelled_run_can_be_resumed():
 
 
 def test_resume_tops_up_the_budget():
-    # Catches a follow-up to a spent run that stops at once, or a top-up past the profile's cap.
+    # Catches a follow-up to a spent run that stops at once, a top-up past the profile's cap, or one the view
+    # never hears about.
     spend = response("let me check", tool_calls=[call("add", a=1, b=2)], usage=usage(cost=0.4))
+    events = []
     sub = make_subagents(
-        AgentNode(1.0), tiny=turns_profile(spend, response("finished"), max_cost=0.4, max_cost_cap=1.0)
+        AgentNode(1.0, listener=events.append),
+        tiny=turns_profile(spend, response("finished"), max_cost=0.4, max_cost_cap=1.0),
     )
     assert 'reason="budget spent"' in sub.spawn("tiny", "go")
     node = run_of(sub, 1).agent.node
     assert sub.resume(1, "carry on", max_cost=5.0, background=True) == "resumed run 1 with $0.60"
     assert node.limit == pytest.approx(1.4)  # spent + the cap; the parent's $0.60 left is what binds
+    assert [e for e in events if isinstance(e, LimitSet)] == [LimitSet(path="main/1", limit=node.limit)]
     assert 'status="done">\nfinished\n' in sub.subagent(1, wait=TIMEOUT)
 
 

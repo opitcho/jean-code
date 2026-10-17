@@ -204,7 +204,7 @@ def test_turn_after_raising_the_budget_runs():
     # Catches a budget stop that outlasts the budget being raised.
     agent, client = make_agent([tool_reply() for _ in range(3)] + [response("done")], max_cost=0.01)
     assert agent.run_turn("go") == "budget spent"
-    agent.max_cost = 1.0
+    agent.node.limit = 1.0
     assert agent.run_turn("more") == "answered"
     assert len(client.requests) == 4
 

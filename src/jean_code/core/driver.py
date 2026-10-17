@@ -163,7 +163,7 @@ class Driver:
         if rest:
             self.agent.configure(**rest)
         if "max_cost" in settings:  # after configure: a setting it refuses leaves the limit as it was
-            self.agent.max_cost = settings["max_cost"]
+            self.agent.node.limit = settings["max_cost"]
 
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.

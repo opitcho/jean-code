@@ -459,7 +459,8 @@ def test_live_settings_apply_to_the_agent_and_reach_the_view():
         10_000,
         2.0,
     )
-    assert driver.view.state().agents["main"].settings == settings
+    main = driver.view.state().agents["main"]
+    assert (main.settings, main.limit) == (settings, 2.0)
 
 
 def test_configure_emits_one_configured_with_every_setting():
@@ -490,9 +491,9 @@ def test_invalid_settings_are_refused_with_nothing_applied(changes):
 
 
 def test_the_root_carries_the_budget():
-    # Catches a driver whose max_cost never reaches the root node.
+    # Catches a driver whose max_cost never reaches the root node, or the view.
     driver = Driver(Builder([response("hi")]), max_cost=0.5)
-    assert driver.agent.max_cost == 0.5
+    assert driver.agent.max_cost == driver.view.state().agents["main"].limit == 0.5
 
 
 def test_the_view_given_is_the_one_that_listens():

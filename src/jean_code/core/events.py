@@ -58,6 +58,7 @@ class AgentAdded(Event):
         profile: What kind of agent it is; "" for the root.
         task: What its node was created for; "" for the root.
         settings: Its settings.
+        limit: Its node's limit in USD; None for none.
         tools: The tool schemas it sends with every request.
     """
 
@@ -65,6 +66,7 @@ class AgentAdded(Event):
     profile: str
     task: str
     settings: Settings
+    limit: float | None
     tools: list[dict]
 
 
@@ -73,6 +75,17 @@ class Configured(Event):
 
     type: Literal["configured"] = "configured"
     settings: Settings
+
+
+class LimitSet(Event):
+    """The limit of the node at `path` changed.
+
+    Attributes:
+        limit: The most its subtree may spend now, in USD; None for no limit.
+    """
+
+    type: Literal["limit_set"] = "limit_set"
+    limit: float | None
 
 
 class MessageAdded(Event):
@@ -169,7 +182,7 @@ class Charged(Event):
 
 
 AgentEvent = Annotated[
-    AgentAdded | Configured | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged,
+    AgentAdded | Configured | LimitSet | MessageAdded | Delta | TurnStarted | TurnEnded | Compaction | Charged,
     Field(discriminator="type"),
 ]
 
@@ -262,6 +275,7 @@ class ApprovalResolved(BaseModel):
 ViewEvent = Annotated[
     AgentAdded
     | Configured
+    | LimitSet
     | MessageAdded
     | Delta
     | TurnStarted

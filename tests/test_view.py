@@ -10,6 +10,7 @@ from jean_code.core.events import (
     Delta,
     JobEnded,
     JobStarted,
+    LimitSet,
     MessageAdded,
     Queued,
     TurnEnded,
@@ -65,6 +66,16 @@ def test_the_reducer_drops_a_draft_once_its_reply_lands():
     apply(state, Charged(path="main", call=call_for("main", 0.1)))
     apply(state, TurnEnded(path="main", end="answered", context_tokens=5))
     assert not state.agents["main"].running and state.agents["main"].end == "answered"
+
+
+def test_a_limit_change_reaches_its_agent_and_one_without_an_agent_is_ignored():
+    # Catches a raised budget the inspector never shows, or a crash on a grouping node's limit (the engine's, later).
+    state = TreeState()
+    apply(state, agent_added("main", limit=1.0))
+    assert state.agents["main"].limit == 1.0
+    apply(state, LimitSet(path="main", limit=2.0))
+    apply(state, LimitSet(path="main/wf1", limit=0.5))
+    assert state.agents["main"].limit == 2.0 and list(state.agents) == ["main"]
 
 
 def test_a_queued_message_shows_until_its_job_starts():

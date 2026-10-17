@@ -104,7 +104,8 @@ def agent_added(path: str = "main", profile: str = "", task: str = "", **fields)
     settings = Settings(
         model="m", reasoning=None, compact_at=None, max_tool_rounds=10, keep_first=1, keep_last=2, context_window=1000
     )
-    return AgentAdded(path=path, profile=profile, task=task, **({"settings": settings, "tools": []} | fields))
+    defaults = {"settings": settings, "limit": None, "tools": []}
+    return AgentAdded(path=path, profile=profile, task=task, **(defaults | fields))
 
 
 def scripted(agent) -> FakeClient:

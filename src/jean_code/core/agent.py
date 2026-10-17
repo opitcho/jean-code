@@ -245,6 +245,7 @@ class Agent:
                 profile=self.node.profile,
                 task=self.node.task,
                 settings=self._settings,
+                limit=self.node.limit,
                 tools=self._tool_schemas(),
             )
         )
@@ -287,12 +288,8 @@ class Agent:
 
     @property
     def max_cost(self) -> float | None:
-        """This agent's limit in USD, which is its node's; settable."""
+        """This agent's limit in USD, which is its node's."""
         return self.node.limit
-
-    @max_cost.setter
-    def max_cost(self, value: float | None) -> None:
-        self.node.limit = value
 
     @property
     def over_budget(self) -> bool:

@@ -491,7 +491,7 @@ def render_sidebar(state: TreeState) -> None:
             help="Sent with each of the main agent's requests, from the next one on, "
             "so it can change mid-chat. Subagents keep their own (medium).",
         )
-        if limit := agent.max_cost:  # the agent and any subagents
+        if limit := main.limit:  # the agent and any subagents
             st.progress(min(main.spent / limit, 1.0), text=f"${main.spent:.4f} of ${limit:.2f} budget")
         render_agents(state)
 
@@ -900,7 +900,7 @@ def render_context(path: str, agent: AgentState) -> None:
 def render_state(path: str, agent: AgentState) -> None:
     """Draws the agent's config, the tools needing approval, its skills and its state."""
     details = driver().agent_at(path)
-    config = {k: getattr(agent.settings, k) for k in STATE_CONFIG} | {"max_cost": details.max_cost}
+    config = {k: getattr(agent.settings, k) for k in STATE_CONFIG} | {"max_cost": agent.limit}
     st.html(eyebrow("CONFIG") + kv_grid(config))
     st.html(eyebrow("NEEDS APPROVAL") + chips(sorted(details.needs_approval)))
     st.html(eyebrow("LOADED SKILLS") + chips(details.skills.loaded))

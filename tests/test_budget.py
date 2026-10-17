@@ -11,6 +11,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
+from jean_code.core.events import LimitSet
 from jean_code.core.llm import parse_completion
 from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
@@ -208,9 +209,20 @@ def test_max_cost_is_a_view_of_the_budget_limit():
     # Catches `max_cost` and the node's limit disagreeing, e.g. after the REPL raises the limit mid-session.
     agent = make_agent([], max_cost=0.01)
     assert agent.node.limit == 0.01
-    agent.max_cost = 1.0
-    assert agent.node.limit == 1.0 and agent.max_cost == 1.0
+    agent.node.limit = 1.0
+    assert agent.max_cost == 1.0
     assert make_agent([]).node.limit is None
+
+
+def test_a_changed_limit_is_emitted_and_a_new_node_emits_nothing():
+    # Catches a limit raised mid-run (the driver's, or a resumed subagent's) that the view never hears about.
+    events = []
+    root = AgentNode(0.5, listener=events.append)
+    child = root.child(0.1, "1")
+    assert events == []
+    child.limit = 0.3
+    root.limit = None
+    assert events == [LimitSet(path="main/1", limit=0.3), LimitSet(path="main", limit=None)]
 
 
 def test_max_cost_and_budget_together_are_rejected():

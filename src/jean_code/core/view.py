@@ -22,6 +22,7 @@ from jean_code.core.events import (
     Delta,
     JobEnded,
     JobStarted,
+    LimitSet,
     MessageAdded,
     Queued,
     Settings,
@@ -58,6 +59,7 @@ class AgentState:
         profile: What kind of agent it is; "" for the root.
         task: What its node was created for.
         settings: Its settings, as of its last `Configured`.
+        limit: Its node's limit in USD; None for none.
         items: Every message it has had, in timeline order.
         context: The uids of its messages now, in order.
         draft: A reply streaming in: "content" and "reasoning" so far.
@@ -74,6 +76,7 @@ class AgentState:
     profile: str
     task: str
     settings: Settings
+    limit: float | None
     items: list[Item] = field(default_factory=list)
     context: list[int] = field(default_factory=list)
     draft: dict[str, str] = field(default_factory=dict)
@@ -125,9 +128,12 @@ def apply(state: TreeState, event: ViewEvent) -> None:
     """
     match event:
         case AgentAdded():
-            state.agents[event.path] = AgentState(event.path, event.profile, event.task, event.settings)
+            state.agents[event.path] = AgentState(event.path, event.profile, event.task, event.settings, event.limit)
         case Configured():
             state.agents[event.path].settings = event.settings
+        case LimitSet():
+            if (agent := state.agents.get(event.path)) is not None:  # a node without an agent has no state
+                agent.limit = event.limit
         case MessageAdded():
             agent = state.agents[event.path]
             uid = max((i.uid for i in agent.items), default=0) + 1
