@@ -4,7 +4,8 @@ The texts are the head marker, the summary message and the prompt asking for the
 prompt prefix stays cached. The marker and the summary are user messages the agent writes; their opening tags
 (`HEAD_MARKER_TAG`, `SUMMARY_TAG`) tell them apart from the user's own messages.
 
-The functions find where turns start (`turn_starts`) and which messages a compaction replaces (`middle`), write
+The functions find where turns start (`turn_starts`), where the head ends (`head_end`) and which messages a
+compaction replaces (`middle`), write
 the summary prompt (`summary_prompt`), and check whether the reply is usable (`summary_failure`).
 """
 
@@ -88,6 +89,20 @@ def turn_starts(messages: Sequence[Message]) -> list[int]:
         messages: A transcript.
     """
     return [i for i, m in enumerate(messages) if isinstance(m, UserMessage) and not is_synthetic(m)]
+
+
+def head_end(messages: Sequence[Message]) -> int | None:
+    """Returns the index just after the head marker, or None before there is one.
+
+    Nothing before it is ever compacted.
+
+    Args:
+        messages: A transcript.
+    """
+    return next(
+        (i + 1 for i, m in enumerate(messages) if isinstance(m, UserMessage) and m.content.startswith(HEAD_MARKER_TAG)),
+        None,
+    )
 
 
 def middle(messages: Sequence[Message], head_end: int | None, keep_last: int) -> tuple[int, int] | None:

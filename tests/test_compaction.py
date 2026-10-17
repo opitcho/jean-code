@@ -21,6 +21,7 @@ from jean_code.core.compaction import (
     EARLIER_SUMMARY_NOTE,
     HEAD_MARKER_TAG,
     SUMMARY_TAG,
+    head_end,
     is_synthetic,
 )
 from jean_code.core.llm import AssistantMessage, Message, ToolMessage, render_request
@@ -149,7 +150,14 @@ def test_transcript_is_head_marker_summary_tail():
     assert contents[6].startswith(SUMMARY_TAG) and "SUMMARY TEXT" in contents[6]
     assert "no new requests" in contents[6]
     assert contents[7:] == ["turn 4", "reply 4", "turn 5", "reply 5"]
-    assert agent.head_end == 6
+    assert head_end(agent.messages) == 6
+
+
+def test_head_end_is_none_before_the_marker():
+    # Catches a head found in a transcript that has none yet, which would let the first turns be compacted.
+    agent = Agent(client=FakeClient([response("reply 1")]), system_prompt="sys", keep_first=2)
+    agent.run_turn("turn 1")
+    assert head_end(agent.messages) is None
 
 
 def test_kept_messages_are_the_same_objects():

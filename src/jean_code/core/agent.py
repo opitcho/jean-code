@@ -12,7 +12,15 @@ from pathlib import Path
 
 from pydantic import validate_call
 
-from jean_code.core.compaction import HEAD_MARKER, SUMMARY_MESSAGE, middle, summary_failure, summary_prompt, turn_starts
+from jean_code.core.compaction import (
+    HEAD_MARKER,
+    SUMMARY_MESSAGE,
+    head_end,
+    middle,
+    summary_failure,
+    summary_prompt,
+    turn_starts,
+)
 from jean_code.core.events import AgentAdded, Compaction, Delta, MessageAdded, TurnEnd, TurnEnded, TurnStarted
 from jean_code.core.llm import (
     AssistantMessage,
@@ -131,7 +139,6 @@ class Agent:
         subagents: The kinds of subagent it may start, and their runs; None if `subagent_profiles` is empty.
         messages: The transcript, oldest first, with each reply as the provider sent it.
         usage: One `ModelCall` per paid model call, in call order.
-        head_end: The index just after the head marker, once there is one; nothing before it is ever compacted.
         compactions: One record per compaction attempt that got past the checks.
         last_request: The last request sent to the model; None before the first.
 
@@ -201,7 +208,6 @@ class Agent:
         self.keep_first = keep_first
         self.keep_last = keep_last
         self.context_window = context_window
-        self.head_end: int | None = None
         self.compactions: list[dict] = []
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
@@ -319,9 +325,8 @@ class Agent:
         if claimed:
             blocks = "\n\n".join(result_block(id, profile, run.outcome()) for id, profile, run in claimed)
             content = f"{content}\n\n{blocks}" if content else blocks
-        if self.head_end is None and len(turn_starts(self.messages)) == self.keep_first:
+        if head_end(self.messages) is None and len(turn_starts(self.messages)) == self.keep_first:
             self._append(UserMessage(content=HEAD_MARKER))
-            self.head_end = len(self.messages)
         self._append(UserMessage(content=content))
         try:
             self._loop()
@@ -369,7 +374,7 @@ class Agent:
         if not force and (self.compact_at is None or tokens_before < self.compact_at):
             return "below threshold"
         messages = self.messages
-        region = middle(messages, self.head_end, self.keep_last)
+        region = middle(messages, head_end(messages), self.keep_last)
         if region is None:
             return "nothing to compact"
         start, end = region

@@ -87,6 +87,11 @@ class AgentState:
         """Returns the item with `uid`."""
         return next(i for i in self.items if i.uid == uid)
 
+    def messages(self) -> tuple[Message, ...]:
+        """Returns its messages now, in order: what its next request sends."""
+        by_uid = {i.uid: i.message for i in self.items}
+        return tuple(by_uid[uid] for uid in self.context)
+
 
 @dataclass
 class TreeState:

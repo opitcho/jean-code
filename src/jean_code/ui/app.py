@@ -22,7 +22,7 @@ from jean_code.agents.experts import orchestrator_agent
 from jean_code.config import USAGE_LOG
 from jean_code.core import llm
 from jean_code.core.agent import DEFAULT_MODEL, Agent
-from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG
+from jean_code.core.compaction import HEAD_MARKER_TAG, SUMMARY_TAG, head_end
 from jean_code.core.driver import Approve, Busy, Driver, denied
 from jean_code.core.events import Compaction
 from jean_code.core.node import AgentNode
@@ -62,7 +62,7 @@ ERROR_PREFIXES = ("Error", "Denied by user", "Not run")  # results the agent wri
 EXIT_CODE = re.compile(r"exit code: (\d+)[^\n]*\n?")  # first line of a bash result, see shell.format_result
 LONG_ARG = 80  # string arguments longer than this get their own code block in the inspector
 STATE_CONFIG = ("model", "reasoning", "max_tool_rounds", "max_cost")
-CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window", "head_end")
+CONTEXT_CONFIG = ("compact_at", "keep_first", "keep_last", "context_window")
 USAGE_COLUMNS = {
     "time": st.column_config.TextColumn("time"),
     "provider": st.column_config.TextColumn("provider"),
@@ -873,7 +873,8 @@ def render_context(path: str, agent: AgentState) -> None:
         )
     else:
         st.html(pill("context", bold=context_size(agent, None), cls="mono") + pill("automatic compaction off"))
-    st.html(eyebrow("SETTINGS") + kv_grid({k: getattr(details, k) for k in CONTEXT_CONFIG}))
+    settings = {k: getattr(details, k) for k in CONTEXT_CONFIG} | {"head_end": head_end(agent.messages())}
+    st.html(eyebrow("SETTINGS") + kv_grid(settings))
 
     st.html(eyebrow(f"COMPACTIONS · {len(agent.compactions)}"))
     if not agent.compactions:

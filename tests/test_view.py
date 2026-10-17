@@ -47,7 +47,7 @@ def test_the_reducer_splices_a_compaction_and_keeps_the_replaced_items():
         ("SUMMARY", True),
         ("t4", True),
     ]
-    assert [main.item(uid).message.content for uid in main.context] == ["t1", "SUMMARY", "t4"]
+    assert [m.content for m in main.messages()] == ["t1", "SUMMARY", "t4"]
     assert main.context_tokens == 20 and len(main.compactions) == 1
 
 
