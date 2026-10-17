@@ -11,6 +11,7 @@ import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core.agent import Agent
+from jean_code.core.events import RunEnded
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Outcome, Profile, Run, agent_profile
 from jean_code.core.tool_schema import tool
@@ -328,3 +329,15 @@ def test_a_resumed_run_keeps_its_report():
     run = Run.start(agent, "go", report=lambda: "the notebook")
     assert run.outcome(TIMEOUT) == done("the notebook")
     assert run.resume("dig deeper").outcome(TIMEOUT) == done("the notebook")
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")  # the error still surfaces
+def test_a_listener_that_fails_on_run_ended_still_completes_the_run():
+    # Catches a run whose future is never set when its RunEnded can't be recorded: the parent would wait forever.
+    def listen(event) -> None:
+        if isinstance(event, RunEnded):
+            raise KeyError(event.path)
+
+    agent = Agent(client=FakeClient([response("hi")]), node=AgentNode(listener=listen).child(None, "1"))
+    run = Run.start(agent, "task")
+    assert run.wait(TIMEOUT) and run.outcome(0) == Outcome("done", "hi")

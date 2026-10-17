@@ -178,8 +178,10 @@ class Run:
             if outcome.status != "failed":  # keep the first error if there are two
                 outcome = Outcome("failed", f"{type(e).__name__}: {e}")
         # Before the future: a result is delivered only once the run is done, so RunEnded comes before its Delivered.
-        self.agent.node.emit(RunEnded(path=self.path, status=outcome.status, reason=outcome.reason))
-        self._future.set_result(outcome)
+        try:
+            self.agent.node.emit(RunEnded(path=self.path, status=outcome.status, reason=outcome.reason))
+        finally:  # a listener that raises must not leave the parent waiting on a future that never completes
+            self._future.set_result(outcome)
 
     def _finish(self) -> Outcome:
         """Runs the agent's turn and returns how it ended.
