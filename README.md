@@ -89,6 +89,8 @@ without Docker and the image it fails, and only the `searcher` subagent works.
 - **Long sessions**: when the conversation gets too long, it summarizes the older turns and carries on.
 - **Cost control**: shows what each session costs, and stops at a spending limit you set. Every model call is also
   logged to `logs/usage.jsonl`.
+- **Full traces**: every session writes everything each agent did (messages, model calls, turns, compactions,
+  approvals) to `logs/processes/`, one folder per agent, nested like the agent tree.
 - **See what it's doing**: the UI shows every thought, tool call and result live, for the main agent and each subagent.
 
 ## How a turn works
@@ -129,10 +131,11 @@ Everything else is built on that loop:
 ```
 src/jean_code/
   config.py                paths in the repo
+  logs.py                  logging from a tree's view: the trace and the usage log, and reading a trace back
   core/                    the agent machinery; imports nothing from the packages below
     agent.py               the agent loop: tool calls, and running compactions
     llm.py                 OpenRouter client, and tool schemas built from functions
-    usage.py               cost records and logging
+    usage.py               cost records, and the lines that sum them
     node.py                the agent tree: paths, spend, limits, cancel
     subagents.py           starting, waiting for and managing subagent runs
     skills.py              skills: discovery, the load tools and /name commands
@@ -158,7 +161,8 @@ docs/                      the README's screenshot
 
 Created at runtime (gitignored):
 workspace/                 the sandbox's /workspace; research runs in workspace/research/
-logs/                      usage.jsonl, one line per model call
+logs/                      usage.jsonl, one line per model call; processes/, one folder per run, holding each
+                           agent tree's trace: <tree>/<node path>/events.jsonl
 ```
 
 Run the tests with `uv run pytest`, the linter with `uv run ruff check` and the type checker with
