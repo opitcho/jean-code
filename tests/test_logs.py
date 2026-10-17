@@ -48,12 +48,14 @@ def test_one_process_folder_that_says_what_ran(tmp_path):
     assert set(info["git"]) == {"sha", "dirty"}
 
 
-def test_trees_are_numbered_in_order(tmp_path):
-    # Catches two root agents, both "main", sharing a folder: two chats in the app, two eval trials.
+def test_trees_are_numbered_chats_made_on_first_write(tmp_path):
+    # Catches two root agents, both "main", sharing a folder, or a chat that never wrote leaving an empty folder.
     logs = ProcessLogs(tmp_path)
     first, second = logs.new_tree(), logs.new_tree()
-    assert (first, second) == (logs.dir / "1", logs.dir / "2")
-    assert first.is_dir() and second.is_dir()
+    assert (first, second) == (logs.dir / "chat-1", logs.dir / "chat-2")
+    assert not first.exists() and not second.exists()
+    Recorder(AgentView(), second).close()
+    assert sorted(p.name for p in logs.dir.iterdir()) == ["process.json"]
 
 
 def test_concurrent_new_trees_get_different_folders(tmp_path):
@@ -71,7 +73,7 @@ def test_concurrent_new_trees_get_different_folders(tmp_path):
         thread.start()
     for thread in threads:
         thread.join()
-    assert sorted(int(p.name) for p in found) == list(range(1, 9))
+    assert sorted(int(p.name.removeprefix("chat-")) for p in found) == list(range(1, 9))
     assert len(list(tmp_path.iterdir())) == 1
 
 
@@ -122,14 +124,30 @@ def spawning_driver(tmp_path, usage_log=None) -> tuple[Driver, Recorder]:
 
 
 def test_folders_follow_the_tree(tmp_path):
-    # Catches a subagent filed outside its parent's folder, or an event written to another agent's file.
+    # Catches a subagent filed outside its parent's folder, an event written to another agent's file, or folders
+    # named by bare run numbers that can't be told from the tree's own number.
     spawning_driver(tmp_path)
     trace = tmp_path / "trace"
-    files = sorted(str(f.relative_to(trace)) for f in trace.rglob("events.jsonl"))
-    assert files == ["main/1/1/events.jsonl", "main/1/events.jsonl", "main/events.jsonl"]
-    for file in trace.rglob("events.jsonl"):
-        path = str(file.parent.relative_to(trace))
-        assert {line["path"] for line in lines(file) if "path" in line} == {path}
+    paths = {
+        str(f.relative_to(trace)): {line["path"] for line in lines(f) if "path" in line}
+        for f in trace.rglob("events.jsonl")
+    }
+    assert paths == {
+        "events.jsonl": {"main"},
+        "1-lead/events.jsonl": {"main/1"},
+        "1-lead/1-echo/events.jsonl": {"main/1/1"},
+    }
+
+
+def test_a_node_without_an_agent_gets_a_plain_folder(tmp_path):
+    # Catches an agent under a grouping node (the engine's, later) with no folder for the group, or a crash.
+    view = AgentView()
+    recorder = Recorder(view, tmp_path / "trace")
+    view.listen(AgentAdded(path="main", profile="", task="", model="m", tools=[]))
+    view.listen(AgentAdded(path="main/wf1/plan", profile="planner", task="", model="m", tools=[]))
+    recorder.close()
+    assert (tmp_path / "trace" / "wf1" / "plan-planner" / "events.jsonl").is_file()
+    assert recorder.errors == []
 
 
 def test_replay_matches_the_view(tmp_path):
@@ -172,7 +190,7 @@ def test_deltas_are_not_written(tmp_path):
     driver, recorder = traced(Builder([response("a streamed reply")], stream=True), tmp_path)
     turn(driver, "go")
     finish(driver, recorder)
-    types = [line["type"] for line in lines(tmp_path / "trace" / "main" / "events.jsonl")]
+    types = [line["type"] for line in lines(tmp_path / "trace" / "events.jsonl")]
     assert "delta" not in types
     assert driver.view.state().agents["main"].items[-1].message.content == "a streamed reply"
     assert types.count("message") == 2  # the user's, and the reply
@@ -187,7 +205,7 @@ def test_driver_events_go_to_the_root(tmp_path):
         driver.answer(next_of(events, ApprovalRequested).approval.id)
         next_of(events, JobEnded)
     finish(driver, recorder)
-    types = [line["type"] for line in lines(tmp_path / "trace" / "main" / "events.jsonl")]
+    types = [line["type"] for line in lines(tmp_path / "trace" / "events.jsonl")]
     for kind in ("job_started", "approval_requested", "approval_resolved", "job_ended"):
         assert kind in types
 
@@ -243,7 +261,7 @@ def test_a_cut_trace_replays_busy(tmp_path):
     trace = tmp_path / "trace"
     finished = replay(trace)
     assert not finished.busy and not finished.agents["main"].running
-    file = trace / "main" / "events.jsonl"
+    file = trace / "events.jsonl"
     kept = file.read_text().splitlines(keepends=True)
     cut = next(n for n, line in enumerate(kept) if '"turn_started"' in line) + 1
     file.write_text("".join(kept[:cut]))
@@ -257,7 +275,7 @@ def test_unfinished_last_line_is_skipped(tmp_path):
     turn(driver, "go")
     finish(driver, recorder)
     trace = tmp_path / "trace"
-    file = trace / "main" / "events.jsonl"
+    file = trace / "events.jsonl"
     whole = len(read_trace(trace))
     file.write_text(file.read_text() + '{"seq": 999, "type": "mess')
     assert len(read_trace(trace)) == whole

@@ -161,8 +161,8 @@ docs/                      the README's screenshot
 
 Created at runtime (gitignored):
 workspace/                 the sandbox's /workspace; research runs in workspace/research/
-logs/                      usage.jsonl, one line per model call; processes/, one folder per run, holding each
-                           agent tree's trace: <tree>/<node path>/events.jsonl
+logs/                      usage.jsonl, one line per model call; processes/, one folder per run, holding a
+                           chat-<n>/ folder per chat: its events.jsonl, and a <run>-<profile>/ folder per subagent
 ```
 
 Run the tests with `uv run pytest`, the linter with `uv run ruff check` and the type checker with

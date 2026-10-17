@@ -1,6 +1,6 @@
 """Logging agent trees to disk, from their views.
 
-`Recorder` writes what an `AgentView` receives: the trace, one `events.jsonl` per node in folders nested like the
+`Recorder` writes what an `AgentView` receives: the trace, one `events.jsonl` per agent in folders nested like the
 tree, and the usage log. `read_trace` and `replay` read a trace back. `ProcessLogs` is a process's log folder, with
 a numbered folder per agent tree in it; `process_logs` is this process's. `append_log` appends model calls to a usage
 log.
@@ -40,8 +40,10 @@ _STOP = object()  # ends the recorder's loop; put on the queue after everything 
 class Recorder:
     """Writes everything an agent tree's view receives, on a thread of its own.
 
-    Each trace line is an event's JSON plus `seq`, its place among the lines written, and `at`, the Unix time it
-    was written. Streamed deltas aren't written. A write that fails turns off that one sink, the trace or the usage
+    The root agent's file is `<trace_dir>/events.jsonl`; a subagent's is in a folder under its parent's, named
+    `<run>-<profile>`, e.g. `1-research/2-researcher/events.jsonl`. Folders are made on their first line. Each line
+    is an event's JSON plus `seq`, its place among the lines written, and `at`, the Unix time it was written.
+    Streamed deltas aren't written. A write that fails turns off that one sink, the trace or the usage
     log, and adds to `errors`; nothing reaches the agents. A recorder that isn't closed is closed at exit. The
     arguments it keeps are attributes of the same name; each is set to None once its sink fails.
 
@@ -67,6 +69,7 @@ class Recorder:
         self.errors: list[str] = []
         self._seq = 0
         self._root: str | None = None
+        self._folders: dict[str, Path] = {}  # node path -> its folder, fixed by the node's first event
         self._thread = threading.Thread(target=self._run, name="recorder", daemon=True)
         self._thread.start()
         atexit.register(self.close)  # needs the daemon: exit joins non-daemon threads before atexit runs
@@ -99,17 +102,26 @@ class Recorder:
                     self.usage_log = None
 
     def _trace(self, trace_dir: Path, event: ViewEvent) -> None:
-        path = getattr(event, "path", None)
-        self._root = self._root or path  # the first event is the root's AgentAdded
-        path = path or self._root  # a driver event belongs to the root
+        path = getattr(event, "path", None) or self._root  # a driver event belongs to the root
         if path is None:
             raise ValueError(f"a {event.type} event came before any agent's, so it has no folder")
-        folder = trace_dir / path
+        self._root = self._root or path  # the first event is the root's AgentAdded
+        folder = self._folder(trace_dir, path, getattr(event, "profile", ""))
         folder.mkdir(parents=True, exist_ok=True)
         self._seq += 1
         line = {"seq": self._seq, "at": round(time.time(), 3)} | event.model_dump(mode="json")
         with (folder / "events.jsonl").open("a") as f:
             f.write(json.dumps(line) + "\n")
+
+    def _folder(self, trace_dir: Path, path: str, profile: str = "") -> Path:
+        if (folder := self._folders.get(path)) is None:
+            parent, _, name = path.rpartition("/")
+            if not parent:
+                folder = trace_dir  # the tree's folder is the root agent's
+            else:  # an agent's first event is its AgentAdded, so its profile names it; a grouping node has none
+                folder = self._folder(trace_dir, parent) / (f"{name}-{profile}" if profile else name)
+            self._folders[path] = folder
+        return folder
 
     def _fail(self, sink: str, error: Exception) -> None:
         self.errors.append(f"{sink}: {error}")
@@ -155,8 +167,8 @@ class ProcessLogs:
     """A process's log folder, with one numbered folder per agent tree in it.
 
     The folder is `<root>/<YYYYmmdd-HHMMSS>-<pid>/`, with a `process.json` that says what ran: argv, pid, start
-    time, and the git commit and whether the checkout had changes. Trees are numbered from 1 in the order they're
-    made. Nothing is created until a folder is asked for. Thread-safe.
+    time, and the git commit and whether the checkout had changes. Tree folders are `chat-1`, `chat-2`, … in the
+    order they're asked for. Nothing is created until a folder is asked for. Thread-safe.
 
     Args:
         root: The folder the process folders go in; kept as `root`.
@@ -175,11 +187,13 @@ class ProcessLogs:
             return self._process_dir()
 
     def new_tree(self) -> Path:
-        """Creates the next agent tree's folder, and returns it."""
+        """Returns the next agent tree's folder, in the process's folder.
+
+        The process's folder is created; the tree's folder isn't, so a tree that never writes leaves nothing.
+        """
         with self._lock:
-            tree = self._process_dir() / str(next(self._numbers))  # never reused: no tree lands in an old folder
-            tree.mkdir()
-            return tree
+            # Never reused, though not yet created: no tree lands in another's folder.
+            return self._process_dir() / f"chat-{next(self._numbers)}"
 
     def _process_dir(self) -> Path:
         """Returns the process's folder, created on first use; the caller holds the lock."""

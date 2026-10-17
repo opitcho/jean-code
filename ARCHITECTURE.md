@@ -11,8 +11,8 @@
   talks to streams; subagents don't.
 - **Logging subscribes to the view; the core writes no files.** A `Recorder` (`logs.py`) subscribes to a tree's
   `AgentView` before the agent is built and writes every event, on its own thread, to
-  `logs/processes/<run>/<tree>/<node path>/events.jsonl`, and each model call to `logs/usage.jsonl`. `replay` folds
-  a trace back into the state the view held.
+  `logs/processes/<run>/chat-<n>/`, one folder per agent nested like the tree (`1-research/2-researcher/`), and
+  each model call to `logs/usage.jsonl`. `replay` folds a trace back into the state the view held.
 - **Parsing at the boundary.** Responses are parsed into typed messages as they come in (`core/llm.py`), so a
   malformed one raises `MalformedResponse` at once instead of failing later deep in the agent. Malformed tool
   arguments go back to the model as the tool's result, so it can retry.
