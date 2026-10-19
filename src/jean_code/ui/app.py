@@ -11,9 +11,8 @@ import html
 import json
 import re
 from contextlib import nullcontext
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 import streamlit as st
 
@@ -29,6 +28,7 @@ from jean_code.core.node import AgentNode
 from jean_code.core.usage import human, usage_line
 from jean_code.core.view import AgentState, AgentView, Item, TreeState
 from jean_code.logs import Recorder, process_logs
+from jean_code.ui.repl import compaction_line
 
 MAIN = "main"  # the main agent's path
 AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
@@ -78,42 +78,16 @@ def driver() -> Driver:
     return st.session_state.driver
 
 
-def to_jsonable(value):
-    """Converts models, dataclasses and containers into something st.json renders.
-
-    Best effort: anything else becomes its `str`.
-    """
-    if isinstance(value, dict):
-        return {k: to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [to_jsonable(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if hasattr(value, "model_dump"):
-        return to_jsonable(value.model_dump())
-    if is_dataclass(value) and not isinstance(value, type):
-        return to_jsonable(asdict(value))
-    return str(value)
-
-
-def mget(msg, key, default=None) -> Any:
-    """Reads `key` from a message, whether it's a dict or an attribute-style object."""
-    if isinstance(msg, dict):
-        return msg.get(key, default)
-    return getattr(msg, key, default)
-
-
 def turn_kind(msg) -> str:
     """Returns a message's kind: by its calls, then its thinking, then its role."""
-    role = mget(msg, "role")
-    if mget(msg, "tool_calls"):
+    role = msg.role
+    if getattr(msg, "tool_calls", ()):
         return "tool_call"
-    if mget(msg, "reasoning") and not mget(msg, "content"):
+    if getattr(msg, "reasoning", None) and not msg.content:
         return "thinking"
-    content = mget(msg, "content")
-    if role == "user" and isinstance(content, str) and content.startswith(HEAD_MARKER_TAG):
+    if role == "user" and msg.content.startswith(HEAD_MARKER_TAG):
         return "marker"
-    if role == "user" and isinstance(content, str) and content.startswith(SUMMARY_TAG):
+    if role == "user" and msg.content.startswith(SUMMARY_TAG):
         return "summary"
     if role in ("tool", "user", "system"):
         return {"tool": "tool_result"}.get(role, role)
@@ -127,7 +101,7 @@ def parse_args(call) -> dict:
     """
     try:
         value = json.loads(call.function.arguments or "{}")
-    except (ValueError, TypeError):
+    except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
 
@@ -137,7 +111,7 @@ def is_error(msg) -> bool:
 
     A failure is a tool error, a denial, a skipped call or a non-zero exit code.
     """
-    content = str(mget(msg, "content") or "")
+    content = msg.content
     exit_code = EXIT_CODE.match(content)
     return content.startswith(ERROR_PREFIXES) or (exit_code is not None and exit_code.group(1) != "0")
 
@@ -167,7 +141,7 @@ def result_line(msg) -> str:
 
     A failed command's exit code comes before the line.
     """
-    content = str(mget(msg, "content") or "")
+    content = msg.content
     exit_code = EXIT_CODE.match(content)
     if exit_code:
         content = content[exit_code.end() :]
@@ -178,25 +152,12 @@ def result_line(msg) -> str:
 
 def call_names(entries: list[Item]) -> dict[str, str]:
     """Returns each call's tool name by call id, to match a result by `tool_call_id`."""
-    return {call.id: call.function.name for e in entries for call in mget(e.message, "tool_calls") or []}
+    return {call.id: call.function.name for e in entries for call in getattr(e.message, "tool_calls", ())}
 
 
 def compaction_of(agent: AgentState, msg) -> Compaction | None:
     """Returns the compaction whose summary is `msg`, if any."""
     return next((c for c in agent.compactions if c.summary is msg), None)
-
-
-def compaction_line(event: Compaction) -> str:
-    """Returns the line for a compaction, or for why it didn't happen.
-
-    For example `[compacted 38 messages · ~210.0k → ~24.0k tokens]`.
-    """
-    if event.status == "compacted":
-        return (
-            f"[compacted {event.removed} messages · ~{human(event.tokens_before)} → "
-            f"~{human(event.tokens_after or 0)} tokens]"
-        )
-    return f"[compaction {event.status}]"
 
 
 def money(cost: float | None) -> str:
@@ -650,9 +611,9 @@ def render_item(agent: AgentState, e: Item, results: dict[str, Item], waiting: s
     """
     msg, kind = e.message, turn_kind(e.message)
     out = "" if e.in_context else "out-"
-    if reasoning := mget(msg, "reasoning"):
+    if reasoning := getattr(msg, "reasoning", None):
         render_thought(f"r{e.uid}", reasoning, out)
-    content = mget(msg, "content")
+    content = msg.content
     if kind in ("user", "agent") or (kind == "tool_call" and content):
         with st.container(key=f"blk-{'user' if kind == 'user' else 'agent'}-{out}{e.uid}"):
             st.markdown(content or "*(no content)*")
@@ -673,8 +634,8 @@ def render_item(agent: AgentState, e: Item, results: dict[str, Item], waiting: s
                             )
                         )
                     st.markdown(content or "*(no content)*")
-    if kind == "tool_call":
-        for i, call in enumerate(mget(msg, "tool_calls")):
+    if isinstance(msg, llm.AssistantMessage):  # a reply without calls has none to draw
+        for i, call in enumerate(msg.tool_calls):
             render_call(f"c{e.uid}-{i}", call.function.name, parse_args(call), results.get(call.id), waiting, out)
     elif kind == "tool_result":  # a result whose call isn't in the timeline
         render_call(f"c{e.uid}", "tool", {}, e, "", out)
@@ -714,7 +675,7 @@ def render_chat(agent: AgentState, entries: list[Item], running: bool, pending, 
     for approval; then a message waiting for the agent to stop.
     """
     names = call_names(entries)
-    results = {mget(e.message, "tool_call_id"): e for e in entries if turn_kind(e.message) == "tool_result"}
+    results = {e.message.tool_call_id: e for e in entries if isinstance(e.message, llm.ToolMessage)}
     last_calls = next((e for e in reversed(entries) if turn_kind(e.message) == "tool_call"), None)
     live = "running…" if running else "awaiting approval" if pending is not None else "no result"
     with st.container(height=640, autoscroll=True, border=False, key="timeline"):
@@ -729,7 +690,7 @@ def render_chat(agent: AgentState, entries: list[Item], running: bool, pending, 
                         text += f" · ~{human(rec.tokens_before)} → ~{human(rec.tokens_after or 0)} tokens"
                     st.html(f'<div class="divider">{text}</div>')
                 compacted_run = 0 if e.in_context else compacted_run + 1
-                if turn_kind(e.message) == "tool_result" and mget(e.message, "tool_call_id") in names:
+                if isinstance(e.message, llm.ToolMessage) and e.message.tool_call_id in names:
                     continue  # drawn on its call's row
                 render_item(agent, e, results, live if e is last_calls else "no result")
 
@@ -790,7 +751,7 @@ def render_output(result: Item) -> None:
 
     It's pretty JSON when it parses as JSON, height-capped when long, and red when the call failed.
     """
-    content, language = str(mget(result.message, "content")), None
+    content, language = result.message.content, None
     try:
         parsed = json.loads(content)
         if isinstance(parsed, (dict, list)):
@@ -802,18 +763,16 @@ def render_output(result: Item) -> None:
         st.code(content, language=language, wrap_lines=True, height=height)
 
 
-def render_request(path: str, agent: AgentState) -> None:
+def render_request(agent: AgentState) -> None:
     """Draws the agent's next request, then its last call and its usage."""
     settings = agent.settings
     req = llm.render_request(llm.ChatRequest(settings.model, agent.messages(), tuple(agent.tools), settings.reasoning))
-    tools = [(t.get("function") or {}).get("name", "?") for t in req.get("tools", [])]
-    reasoning = req.get("reasoning")
-    effort = reasoning.get("effort") if isinstance(reasoning, dict) else reasoning
+    tools = [t["function"]["name"] for t in agent.tools]
     st.html(
         '<div class="hdr">'
-        + pill(req.get("model"), cls="model")
-        + pill("reasoning", bold=effort or "none")
-        + pill("messages", bold=len(req.get("messages", [])))
+        + pill(settings.model, cls="model")
+        + pill("reasoning", bold=settings.reasoning or "none")
+        + pill("messages", bold=len(req["messages"]))
         + "</div>"
     )
     st.html(eyebrow(f"TOOLS · {len(tools)}") + chips(tools))
@@ -844,12 +803,12 @@ def render_request(path: str, agent: AgentState) -> None:
 
     st.html(eyebrow("PAYLOAD"))
     with st.expander("Messages sent", icon=":material/forum:"):
-        st.json(to_jsonable(req.get("messages", [])), expanded=1)
+        st.json(req["messages"], expanded=1)
     with st.expander("Full request", icon=":material/data_object:"):
-        st.json(to_jsonable(req), expanded=1)
+        st.json(req, expanded=1)
 
 
-def render_context(path: str, agent: AgentState) -> None:
+def render_context(agent: AgentState) -> None:
     """Draws the context's size and settings, and every compaction attempt.
 
     The size is shown against the compaction threshold.
@@ -887,7 +846,7 @@ def render_context(path: str, agent: AgentState) -> None:
                 st.markdown(c.summary.content)
 
 
-def render_state(path: str, agent: AgentState) -> None:
+def render_state(agent: AgentState) -> None:
     """Draws the agent's config, the tools needing approval, its skills and its state."""
     config = {k: getattr(agent.settings, k) for k in STATE_CONFIG} | {"max_cost": agent.limit}
     st.html(eyebrow("CONFIG") + kv_grid(config))
@@ -907,7 +866,7 @@ def render_state(path: str, agent: AgentState) -> None:
         "context tokens": agent.context_tokens,
     }
     st.html(eyebrow("AGENT STATE"))
-    st.json(to_jsonable(summary), expanded=1)
+    st.json(summary, expanded=1)
 
 
 def announce(state: TreeState) -> None:
@@ -1002,11 +961,11 @@ def live_view() -> None:
         with inspector_col:
             request_tab, context_tab, state_tab = st.tabs(["Next request", "Context", "Agent state"])
             with request_tab:
-                render_request(path, agent)
+                render_request(agent)
             with context_tab:
-                render_context(path, agent)
+                render_context(agent)
             with state_tab:
-                render_state(path, agent)
+                render_state(agent)
 
 
 live_view()

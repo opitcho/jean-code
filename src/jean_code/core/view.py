@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 
 from jean_code.core.events import (
@@ -107,10 +106,6 @@ class AgentState:
     context_tokens: int = 0
     outcome: RunEnded | None = None
     delivered: bool = False
-
-    def item(self, uid: int) -> Item:
-        """Returns the item with `uid`."""
-        return next(i for i in self.items if i.uid == uid)
 
     def messages(self) -> tuple[Message, ...]:
         """Returns its messages now, in order: what its next request sends."""
@@ -319,10 +314,6 @@ class Subscription:
             queue.Empty: No event arrived within `timeout`.
         """
         return self.queue.get(timeout=timeout)
-
-    def __iter__(self) -> Iterator[ViewEvent]:
-        while True:
-            yield self.get()
 
     def close(self) -> None:
         """Stops the events; the subscription receives nothing more."""

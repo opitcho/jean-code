@@ -58,7 +58,6 @@ def coding_agent(
     sandbox: bool = False,
     network: bool = True,
     skills_dir: str | Path | None = SKILLS_DIR,
-    subagents: bool = True,
     **kwargs,
 ) -> Agent:
     """Returns a coding agent, with a shell, web tools and subagents.
@@ -72,7 +71,6 @@ def coding_agent(
         sandbox: Run `bash` in a Docker container instead of on the host.
         network: Whether containers get a network.
         skills_dir: Folder of skills the model can load.
-        subagents: Whether it may start the subagents in `subagent_profiles`.
         **kwargs: Passed on to `Agent`, except `stream`.
     """
     tools = shell_tools(sandbox, network)
@@ -83,7 +81,7 @@ def coding_agent(
         needs_approval=tools.needs_approval,
         cleanup=tools.cleanup,
         skills_dir=skills_dir,
-        subagent_profiles=subagent_profiles(model, network, skills_dir) if subagents else None,
+        subagent_profiles=subagent_profiles(model, network, skills_dir),
         stream=True,
         **kwargs,
     )

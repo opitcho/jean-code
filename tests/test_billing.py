@@ -63,7 +63,7 @@ def test_usage_entry_has_the_response_metadata():
     u = usage(prompt=500, cost=0.002)
     agent, _ = make_agent([response("hi", usage=u, id="gen-abc", created=1789748403)])
     agent.run_turn("hello")
-    assert agent.usage == [
+    assert agent.node.entries == [
         ModelCall(
             "gen-abc",
             "DeepSeek",
@@ -89,8 +89,8 @@ def test_every_call_of_a_turn_is_recorded_in_order():
     )
     agent.run_turn("go")
     assert len(client.requests) == 3
-    assert [c.generation_id for c in agent.usage] == ["gen-1", "gen-2", "gen-3"]
-    assert agent.total_cost == pytest.approx(0.006)
+    assert [c.generation_id for c in agent.node.entries] == ["gen-1", "gen-2", "gen-3"]
+    assert agent.node.spent == pytest.approx(0.006)
 
 
 def test_response_without_usage_is_recorded_with_unknown_cost(caplog):
@@ -98,9 +98,9 @@ def test_response_without_usage_is_recorded_with_unknown_cost(caplog):
     agent, _ = make_agent([response("hi", no_usage=True, id="gen-x")])
     assert agent.run_turn("hello") == "answered"
     assert "gen-x reported no cost" in caplog.text
-    assert len(agent.usage) == 1
-    assert agent.usage[0].generation_id == "gen-x"
-    assert agent.usage[0].cost is None
+    assert len(agent.node.entries) == 1
+    assert agent.node.entries[0].generation_id == "gen-x"
+    assert agent.node.entries[0].cost is None
 
 
 def test_malformed_response_raises_and_books_nothing():
@@ -110,7 +110,7 @@ def test_malformed_response_raises_and_books_nothing():
     agent, _ = make_agent([bad])
     with pytest.raises(MalformedResponse, match=r"choices\.0\.message\.content"):
         agent.run_turn("hello")
-    assert agent.usage == []
+    assert agent.node.entries == []
 
 
 @pytest.mark.parametrize("refusal", [None, "Denied by user."], ids=["approve", "deny"])
@@ -122,7 +122,7 @@ def test_calls_after_an_approval_decision_are_recorded(refusal):
         approve=lambda name, arguments: refusal,
     )
     agent.run_turn("delete x")
-    assert [c.generation_id for c in agent.usage] == ["gen-1", "gen-2"]
+    assert [c.generation_id for c in agent.node.entries] == ["gen-1", "gen-2"]
 
 
 # ---------------------------------------------------------------- budget
@@ -134,7 +134,7 @@ def test_budget_is_checked_before_every_call():
     agent, client = make_agent([tool_reply() for _ in range(11)], max_cost=0.01)
     end = agent.run_turn("go")
     assert len(client.requests) == 3  # spent before each: 0, 0.004, 0.008 < 0.01; then 0.012 stops
-    assert end == "budget spent" and agent.over_budget
+    assert end == "budget spent" and agent.node.exhausted
 
 
 def test_spending_exactly_the_budget_stops():
@@ -190,7 +190,7 @@ def test_unknown_cost_warns_and_the_turn_carries_on(unknown, max_cost, caplog):
     assert agent.run_turn("go") == "answered"
     assert "reported no cost" in caplog.text
     assert len(client.requests) == 3
-    assert len(agent.usage) == 3 and agent.usage[1].cost is None
+    assert len(agent.node.entries) == 3 and agent.node.entries[1].cost is None
 
 
 @pytest.mark.parametrize("max_cost", [0, -1])
@@ -238,7 +238,7 @@ def test_error_body_with_status_200_raises_and_records_nothing(monkeypatch):
     agent = Agent(client=client)
     with pytest.raises(RuntimeError, match="provider down"):
         agent.run_turn("hello")
-    assert agent.usage == []
+    assert agent.node.entries == []
 
 
 def test_not_json_books_nothing(monkeypatch):
@@ -247,4 +247,4 @@ def test_not_json_books_nothing(monkeypatch):
     agent = Agent(client=client)
     with pytest.raises(MalformedResponse, match="not JSON"):
         agent.run_turn("hello")
-    assert agent.usage == []
+    assert agent.node.entries == []

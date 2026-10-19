@@ -430,7 +430,7 @@ class Subagents:
         outcome = run.outcome(0)
         if outcome is None:
             return (
-                f"run {run_id} is still running: {len(run.agent.usage)} model calls, "
+                f"run {run_id} is still running: {len(run.agent.node.entries)} model calls, "
                 f"${run.agent.node.spent:.4f} spent so far"
             )
         self.claim(run_id)

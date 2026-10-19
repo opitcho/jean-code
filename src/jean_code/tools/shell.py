@@ -20,6 +20,8 @@ from jean_code.config import WORKSPACE_DIR
 from jean_code.core.tool_schema import tool
 
 JOBS_DIR = ".jobs"
+IMAGE = "jean-code-sandbox"
+MAX_TIMEOUT = 600  # the most seconds a `bash` call or a `job` wait may take
 MAX_OUTPUT_CHARS = 10000
 ENV = {"PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb", "DEBIAN_FRONTEND": "noninteractive"}
 TIMEOUT_HINT = "For commands that take longer, rerun with background=True and check on them with job()."
@@ -59,7 +61,6 @@ class Shell:
     Args:
         workdir: Where commands run.
         jobs_dir: Where background jobs' files go, on the host.
-        max_timeout: The most seconds a `bash` call may wait.
 
     Attributes:
         requires_approval: Whether the agent should ask the user before each `bash` call.
@@ -68,11 +69,10 @@ class Shell:
 
     requires_approval = True
 
-    def __init__(self, workdir: str | Path, jobs_dir: str | Path, max_timeout: int = 600):
+    def __init__(self, workdir: str | Path, jobs_dir: str | Path):
         self.workdir = Path(workdir).resolve()
         self.jobs_dir = Path(jobs_dir).resolve()
         self._make_jobs_dir()
-        self.max_timeout = max_timeout
         self.jobs: dict[str, int] = {}
 
     @tool
@@ -101,7 +101,7 @@ class Shell:
             self.jobs[job_id] = 0
             return f"started job {job_id} (output in {self._jobs_path()}/{job_id}.log); check it with job('{job_id}')"
 
-        timeout = max(1, min(timeout, self.max_timeout))
+        timeout = max(1, min(timeout, MAX_TIMEOUT))
         code, output, timed_out = self._exec(command, timeout)
         if timed_out:
             return f"exit code: 124 (timed out after {timeout}s)\n{truncate_middle(output)}\n\n{TIMEOUT_HINT}"
@@ -124,7 +124,7 @@ class Shell:
             raise ValueError(f"unknown job '{job_id}'; jobs: {', '.join(self.jobs) or 'none'}")
         if kill:
             self._kill_job(job_id)
-        deadline = time.monotonic() + max(0, min(wait, self.max_timeout))
+        deadline = time.monotonic() + max(0, min(wait, MAX_TIMEOUT))
         while self._exit_code(job_id) is None and time.monotonic() < deadline:
             time.sleep(0.5)
 
@@ -213,13 +213,12 @@ class LocalShell(Shell):
 
     Args:
         workdir: Where commands run; the current directory by default.
-        max_timeout: The most seconds a `bash` call may wait.
     """
 
     requires_approval = True
 
-    def __init__(self, workdir: str | Path | None = None, max_timeout: int = 600):
-        super().__init__(workdir or Path.cwd(), tempfile.mkdtemp(prefix="jean-code-jobs-"), max_timeout)
+    def __init__(self, workdir: str | Path | None = None):
+        super().__init__(workdir or Path.cwd(), tempfile.mkdtemp(prefix="jean-code-jobs-"))
 
     def close(self) -> None:
         """Kills background jobs that are still running, and removes their files."""
@@ -285,9 +284,7 @@ class DockerShell(Shell):
 
     Args:
         workdir: The workspace folder, mounted at /workspace.
-        image: The container image.
         network: Whether the container gets a network.
-        max_timeout: The most seconds a `bash` call may wait.
 
     Attributes:
         container: The running container's name; None until the first command.
@@ -295,17 +292,10 @@ class DockerShell(Shell):
 
     requires_approval = False
 
-    def __init__(
-        self,
-        workdir: str | Path = WORKSPACE_DIR,
-        image: str = "jean-code-sandbox",
-        network: bool = True,
-        max_timeout: int = 600,
-    ):
+    def __init__(self, workdir: str | Path = WORKSPACE_DIR, network: bool = True):
         # One per shell, relative to the workspace: every shell numbers its jobs from 1
         self._jobs_folder = f"{JOBS_DIR}/{uuid.uuid4().hex[:8]}"
-        super().__init__(workdir, Path(workdir) / self._jobs_folder, max_timeout)
-        self.image = image
+        super().__init__(workdir, Path(workdir) / self._jobs_folder)
         self.network = network
         self.container: str | None = None
         self._remove: weakref.finalize | None = None
@@ -344,7 +334,7 @@ class DockerShell(Shell):
             "--memory", "2g", "--cpus", "2", "--pids-limit", "256",
             *[arg for key, value in ENV.items() for arg in ("--env", f"{key}={value}")],
             *(self._proxy_env(info.stdout) if self.network else ["--network", "none"]),
-            self.image, "bash", "-c", "echo ready && exec cat > /dev/null",
+            IMAGE, "bash", "-c", "echo ready && exec cat > /dev/null",
         ]  # fmt: skip
         # The container lives as long as `cat` reads our end of its stdin: when this process
         # exits, however it exits, the OS closes the pipe and the container stops and is removed.
@@ -355,7 +345,7 @@ class DockerShell(Shell):
         if first_line.strip() != "ready":
             error = process.communicate()[1].strip()
             if "Unable to find image" in error or "pull access denied" in error:
-                error += f"\n(build the image with `docker build -t {self.image} sandbox/`)"
+                error += f"\n(build the image with `docker build -t {IMAGE} sandbox/`)"
             raise RuntimeError(f"couldn't start the sandbox: {error}")
         self.container = name
         # also on garbage collection (a dropped Streamlit session) and at interpreter exit
@@ -394,13 +384,6 @@ class DockerShell(Shell):
         shutil.rmtree(self.jobs_dir, ignore_errors=True)
         # Not Shell.close: killing each job would start a new container just to reach the old one's processes
         self.jobs.clear()
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
 
     def _exec(self, command: str, timeout: int) -> tuple[int, str, bool]:
         container = self.start()

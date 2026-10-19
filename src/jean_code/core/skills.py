@@ -156,16 +156,10 @@ class Skills:
             return {}
         return {"load_skill": self.load_skill, "read_skill_file": self.read_skill_file}
 
-    def commands(self) -> dict[str, Callable[[str], str | None]]:
-        """Returns a `/name` command per skill, which loads the skill.
-
-        Each is a function of the rest of the line, which it ignores.
-        """
-        return {
-            # name=name binds each name now: a closure would see only the loop's last one
-            name: lambda rest, name=name: self.load_skill(name)
-            for name in self.catalog
-        }
+    def commands(self) -> dict[str, Callable[[], str]]:
+        """Returns a `/name` command per skill, which loads the skill."""
+        # name=name binds each name now: a closure would see only the loop's last one
+        return {name: lambda name=name: self.load_skill(name) for name in self.catalog}
 
     @tool
     def load_skill(self, name: str) -> str:

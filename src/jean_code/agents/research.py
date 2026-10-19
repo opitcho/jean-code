@@ -220,7 +220,7 @@ def research_result(lead: Agent, notebook: Notebook) -> str:
                 "path": path,
                 "task": agent.node.task,
                 "messages": [render_message(m) for m in agent.messages],
-                "usage": [asdict(c) for c in agent.usage],
+                "usage": [asdict(c) for c in agent.node.entries],
             },
         )
     write_json(

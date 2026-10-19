@@ -49,8 +49,9 @@ def gated(agent: Agent) -> threading.Event:
     """Hold a run whose task starts with `/gate` just before `run_turn` clears the interrupt flag, until set."""
     gate = threading.Event()
 
-    def hold(rest: str) -> None:  # None: the task goes on as typed
+    def hold() -> str:
         gate.wait(TIMEOUT)
+        return ""
 
     agent.commands["gate"] = hold
     return gate

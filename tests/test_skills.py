@@ -83,8 +83,8 @@ def test_commands_load_their_skill_and_ignore_the_rest_of_the_line(skills_dir):
     skills = Skills(skills_dir)
     commands = skills.commands()
     assert sorted(commands) == ["demo", "plain"]
-    assert commands["demo"]("convert 5 miles").startswith("DEMO BODY")
-    assert commands["plain"]("").startswith("PLAIN BODY")
+    assert commands["demo"]().startswith("DEMO BODY")
+    assert commands["plain"]().startswith("PLAIN BODY")
     assert skills.loaded == ["demo", "plain"]
 
 

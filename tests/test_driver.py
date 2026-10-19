@@ -138,8 +138,9 @@ def test_a_turn_is_wrapped_in_job_events_and_its_messages_land_in_the_state():
 def gated(agent: Agent, gate: threading.Event) -> None:
     """Adds a `/gate` command that holds the turn before its first model call until `gate` is set."""
 
-    def hold(rest: str) -> None:
+    def hold() -> str:
         gate.wait(TIMEOUT)
+        return ""
 
     agent.commands["gate"] = hold
 
@@ -289,8 +290,9 @@ def test_a_stop_right_after_send_holds_for_that_job():
     gate = threading.Event()
     driver, build = make_driver([response("never")])
 
-    def hold(rest: str) -> None:  # holds the turn before its first model call
+    def hold() -> str:  # holds the turn before its first model call
         gate.wait(TIMEOUT)
+        return ""
 
     build.agent.commands["gate"] = hold
     with driver.view.subscribe() as (_, events):
@@ -490,7 +492,7 @@ def test_live_settings_apply_to_the_agent_and_reach_the_view():
     driver.configure(model="other", reasoning="high", compact_at=10_000)
     driver.set_limit("main", 2.0)
     settings = build.agent.settings
-    assert (settings.model, settings.reasoning, settings.compact_at, build.agent.max_cost) == (
+    assert (settings.model, settings.reasoning, settings.compact_at, build.agent.node.limit) == (
         "other",
         "high",
         10_000,
@@ -518,20 +520,20 @@ def test_invalid_settings_are_refused_with_nothing_applied(changes):
     # Catches half-applied settings, a value Agent.__init__ would refuse accepted live, or a setting fixed at
     # construction changed mid-run.
     driver, build = make_driver([])
-    before = (build.agent.settings, build.agent.max_cost)
+    before = (build.agent.settings, build.agent.node.limit)
     with driver.view.subscribe() as (_, events):
         with pytest.raises(ValueError):
             driver.configure(**({"reasoning": "low"} | changes))  # the good change must not apply either
         with pytest.raises(queue.Empty):
             events.get(timeout=0)
-    assert (build.agent.settings, build.agent.max_cost) == before
+    assert (build.agent.settings, build.agent.node.limit) == before
 
 
 def test_the_root_carries_the_budget():
     # Catches a driver whose max_cost never reaches the root node, or the view.
     build = Builder([response("hi")])
     driver = Driver(build, max_cost=0.5)
-    assert build.agent.max_cost == driver.view.state().agents["main"].limit == 0.5
+    assert build.agent.node.limit == driver.view.state().agents["main"].limit == 0.5
 
 
 def test_the_view_given_is_the_one_that_listens():

@@ -160,14 +160,6 @@ def test_head_end_is_none_before_the_marker():
     assert head_end(agent.messages) is None
 
 
-def test_kept_messages_are_the_same_objects():
-    # Catches copies: app.py matches messages by id(), so it would show everything as compacted and duplicated.
-    agent, _ = compacted_session()
-    before = agent.compactions[0]["before"]
-    assert all(a is b for a, b in zip(agent.messages[:6], before[:6], strict=True))
-    assert all(a is b for a, b in zip(agent.messages[-4:], before[-4:], strict=True))
-
-
 def test_tool_calls_stay_with_their_results():
     # Catches a cut inside a turn: the API rejects the next request with a 400, and every one after it.
     agent, client = make_agent([])
@@ -188,15 +180,6 @@ def test_tool_calls_stay_with_their_results():
     assert agent.compactions[-1]["status"] == "compacted"
     assert_valid(agent.messages)
     assert sum(m.role == "tool" for m in agent.messages) == 3 + 1  # turn 4's three results and turn 5's one
-
-
-def test_context_history_keeps_each_earlier_context():
-    # Catches the pre-compaction context being lost, or modified in place.
-    agent, _ = compacted_session()
-    history = agent.context_history
-    assert len(history) == 2
-    assert [m.content[:7] for m in history[0]][6:8] == ["turn 3", "reply 3"]
-    assert history[1] is agent.messages
 
 
 # ---------------------------------------------------------------- when it runs
@@ -309,7 +292,8 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
     record = agent.compactions[-1]
     tools = estimate_tokens(client.requests[-1]["tools"])
     new = tools + sum(message_tokens(m) for m in agent.messages)
-    old = tools + sum(message_tokens(m) for m in record["before"])
+    before = client.requests[-1]["messages"][:-1]  # the summary request: the old transcript, then the instruction
+    old = tools + sum(estimate_tokens(m) for m in before)
     assert agent.context_tokens == record["tokens_after"] == round(record["tokens_before"] * new / old)
     assert agent.settings.compact_at is not None and agent.context_tokens < agent.settings.compact_at
 
@@ -336,7 +320,6 @@ def test_a_failed_summary_changes_nothing(reply, reason):
     before = agent.messages
     assert agent.compactions[-1]["status"].startswith("failed") and reason in agent.compactions[-1]["status"]
     assert agent.messages is before and [m.content for m in before][-2:] == ["turn 5", "reply 5"]
-    assert agent.context_history == [before]
 
 
 def test_second_compaction_folds_the_first_summary_in():
@@ -351,7 +334,7 @@ def test_second_compaction_folds_the_first_summary_in():
     synthetic = [m.content for m in agent.messages if is_synthetic(m)]
     assert len(synthetic) == 2 and "SECOND" in synthetic[1] and "SUMMARY TEXT" not in synthetic[1]
     assert [m.content for m in agent.messages[7:]] == ["turn 7", "reply 7", "turn 8", "reply 8"]
-    assert len(agent.context_history) == 3
+    assert [c["status"] for c in agent.compactions] == ["compacted", "compacted"]
 
 
 # ---------------------------------------------------------------- budget, hard limit
@@ -360,8 +343,8 @@ def test_second_compaction_folds_the_first_summary_in():
 def test_summary_call_is_billed_and_respects_the_budget():
     # Catches the most expensive call of a session left out of the budget, or made after it's spent.
     agent, _ = compacted_session()
-    assert agent.usage[-1].kind == "compaction"
-    assert agent.total_cost == pytest.approx(5 * 0.001 + 0.002)
+    assert agent.node.entries[-1].kind == "compaction"
+    assert agent.node.spent == pytest.approx(5 * 0.001 + 0.002)
 
     agent, client = make_agent([], max_cost=0.005)
     run_small_turns(agent, 4)

@@ -32,7 +32,9 @@ class Node:
         name: The last part of `path`.
         task: What this node was made for.
         profile: What kind of agent or group this is; "" for the root.
-        listener: Root only: receives every event the tree's nodes `emit`. Settable.
+        listener: Root only: called with every event any node of the tree emits, on the thread that emits it, and
+            sometimes while the tree is locked. It must not call into the tree, and must take no lock that anything
+            holds while calling into the tree. Settable.
 
     Attributes:
         children: The nodes under this one, in creation order.
@@ -56,7 +58,6 @@ class Node:
         self.children: list[Node] = []
         self._cancelled = False  # set by cancel(), cleared only by AgentNode.reopen()
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
-        self._journal: list[ModelCall] = parent._journal if parent else []
 
     @property
     def limit(self) -> float | None:
@@ -78,15 +79,6 @@ class Node:
     def root(self) -> Node:
         """The root of this node's tree."""
         return self._chain()[-1]
-
-    @property
-    def journal(self) -> list[ModelCall]:
-        """The whole tree's model calls, in charge order.
-
-        Each carries its node's path. Append-only, so `journal[start:]` is every call made in the tree since
-        `len(journal)` was `start`.
-        """
-        return self._journal
 
     def add_agent(self, limit: float | None, task: str = "", profile: str = "") -> AgentNode:
         """Creates a node under this one, for an agent.
@@ -139,10 +131,9 @@ class Node:
         return node
 
     def emit(self, event: AgentEvent) -> None:
-        """Hands `event` to the root's listener, if there is one.
+        """Calls the root's listener with `event`, if any, and returns once it has.
 
-        The listener runs on the calling thread, possibly while a lock is held, so it must take no lock but its own.
-        `AgentView.listen` takes only the view's.
+        Raises what the listener raises.
 
         Args:
             event: What happened.
@@ -261,8 +252,6 @@ class AgentNode(Node):
     def charge(self, call: ModelCall) -> None:
         """Records one model call at this node, and emits it as `Charged`.
 
-        The call also goes into the tree's `journal`.
-
         Args:
             call: The call, tagged with this node's path.
 
@@ -273,7 +262,6 @@ class AgentNode(Node):
             raise ValueError(f"call for {call.path!r} charged to {self.path!r}")
         with self._lock:
             self.entries.append(call)
-            self._journal.append(call)
         self.emit(Charged(path=self.path, call=call))
 
     def record_error(self, error: BaseException, tool_call_id: str | None = None) -> str:

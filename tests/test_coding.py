@@ -32,7 +32,6 @@ def test_the_coding_agent_offers_its_subagents():
         assert {"spawn", "subagent"} <= set(agent._tools)
     finally:
         agent.close()
-    assert coding_agent(skills_dir=None, subagents=False, approve=yes).subagents is None
 
 
 def test_subagents_have_no_subagents_of_their_own():

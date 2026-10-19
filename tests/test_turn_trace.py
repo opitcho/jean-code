@@ -126,7 +126,7 @@ def test_each_call_is_booked_with_its_receipt():
     # Catches a call left out of the usage or the budget, or one booked with another call's metadata or counts.
     agent, _, _ = run_trace()
     path = agent.node.path
-    assert agent.usage == [
+    assert agent.node.entries == [
         ModelCall(
             "gen-1789747504-RyoGTjA4HffARiEWPE0t",
             "Relace",
@@ -151,6 +151,5 @@ def test_each_call_is_booked_with_its_receipt():
             finish_reason="stop",
         ),
     ]
-    assert agent.total_cost == pytest.approx(9.315e-05 + 6.87e-05)
-    assert agent.node.spent == pytest.approx(agent.total_cost)
+    assert agent.node.spent == pytest.approx(9.315e-05 + 6.87e-05)
     assert agent.context_tokens == 410 + 12  # measured by the last call: its prompt plus the answer

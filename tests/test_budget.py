@@ -1,4 +1,4 @@
-"""Tests for the work tree's spend: its limits, journal and breakdown, and how `Agent` and the REPL use them. The
+"""Tests for the work tree's spend: its limits and breakdown, and how `Agent` and the REPL use them. The
 tree itself is tested in `test_node.py`.
 
 Each test names the bug it would catch.
@@ -88,30 +88,18 @@ def test_unknown_costs_count_as_zero():
     assert node.spent == 0
 
 
-def test_paths_and_the_journal():
-    # Catches paths that don't match the eval harness's "main/1/2", or a journal per node instead of per tree.
+def test_paths():
+    # Catches paths that don't match the eval harness's "main/1/2".
     root = AgentNode()
     lead = root.add_agent(None)
     researcher = lead.add_agent(None)
     assert researcher.path == "main/1/1"
-    researcher.charge(model_call(researcher.path, 0.004))
-    root.charge(model_call(root.path, 0.001))
-    assert researcher.journal is root.journal
-    assert [c.path for c in root.journal] == ["main/1/1", "main"]
 
 
 def test_charge_refuses_a_call_for_another_node():
     # Catches spend booked to the wrong subtree.
     with pytest.raises(ValueError):
         AgentNode().add_agent(1.0).charge(model_call(path="main"))
-
-
-def test_entries_and_journal_share_the_call():
-    # Catches the journal holding a tagged copy that drifts from the node's own record.
-    root = AgentNode()
-    call = model_call(path="main")
-    root.charge(call)
-    assert root.entries[-1] is call and root.journal[-1] is call
 
 
 def test_concurrent_charges_are_all_counted():
@@ -130,7 +118,6 @@ def test_concurrent_charges_are_all_counted():
         t.start()
     for t in threads:
         t.join()
-    assert len(root.journal) == 8000
     assert sum(len(n.entries) for n in nodes) == 8000
     assert root.spent == pytest.approx(8.0)
 
@@ -183,13 +170,6 @@ def test_breakdown_lines_mark_unknown_costs():
     assert breakdown_lines(root.breakdown())[1].split()[-1] == "$0.0000+?"
 
 
-def test_journal_keeps_the_budget_path():
-    # Catches the log losing which agent made a call.
-    root = AgentNode()
-    root.add_agent(None).charge(model_call("main/1", 0.001))
-    assert root.journal[0].path == "main/1"
-
-
 # ---------------------------------------------------------------- Agent
 
 
@@ -197,12 +177,9 @@ def make_agent(responses, **kwargs) -> Agent:
     return Agent(client=FakeClient(responses), tools={"add": add}, **kwargs)
 
 
-def test_max_cost_is_a_view_of_the_budget_limit():
-    # Catches `max_cost` and the node's limit disagreeing, e.g. after the REPL raises the limit mid-session.
-    agent = make_agent([], max_cost=0.01)
-    assert agent.node.limit == 0.01
-    agent.node.limit = 1.0
-    assert agent.max_cost == 1.0
+def test_max_cost_sets_the_root_limit():
+    # Catches `max_cost` not reaching the new tree's root.
+    assert make_agent([], max_cost=0.01).node.limit == 0.01
     assert make_agent([]).node.limit is None
 
 
@@ -223,18 +200,16 @@ def test_max_cost_and_budget_together_are_rejected():
         make_agent([], max_cost=1.0, node=AgentNode(2.0))
 
 
-def test_every_call_is_charged_and_usage_stays_the_agents_own():
-    # Catches calls missing from the budget, or subagent entries leaking into an agent's `usage`.
+def test_every_call_is_charged_and_entries_stay_the_agents_own():
+    # Catches calls missing from the budget, or a subagent's calls charged to its parent's node.
     root = AgentNode()
     parent = make_agent([response("hi", usage=usage(cost=0.001))], node=root)
     child = make_agent([tool_reply(), response("done", usage=usage(cost=0.002))], node=root.add_agent(None))
     parent.run_turn("hello")
     child.run_turn("go")
-    assert parent.node.entries == parent.usage and len(parent.usage) == 1
-    assert child.node.entries == child.usage and len(child.usage) == 2
+    assert [c.path for c in parent.node.entries] == ["main"]
+    assert [c.path for c in child.node.entries] == ["main/1", "main/1"]
     assert root.spent == pytest.approx(0.007)
-    assert parent.total_cost == pytest.approx(0.001)  # its own calls only, as before
-    assert [c.path for c in root.journal] == ["main", "main/1", "main/1"]
 
 
 def test_a_subagent_makes_no_call_once_its_parent_budget_is_spent():
@@ -246,14 +221,13 @@ def test_a_subagent_makes_no_call_once_its_parent_budget_is_spent():
     child = Agent(client=client, node=root.add_agent(1.0))
     end = child.run_turn("hello")
     assert client.requests == []
-    assert child.over_budget and end == "budget spent"
+    assert child.node.exhausted and end == "budget spent"
 
 
 def test_compaction_calls_are_charged():
     # Catches the summary call, often a session's most expensive, missing from the budget.
     agent, _ = compacted_session()
     assert agent.node.entries[-1].kind == "compaction"
-    assert agent.node.spent == pytest.approx(agent.total_cost)
 
 
 # ---------------------------------------------------------------- the REPL
@@ -317,7 +291,7 @@ def test_an_agent_on_a_cancelled_budget_makes_no_call():
     node.cancel()
     end = agent.run_turn("hello")
     assert client.requests == []
-    assert agent.over_budget and end == "cancelled"
+    assert agent.node.exhausted and end == "cancelled"
 
 
 def test_reopen_clears_only_this_nodes_cancel():

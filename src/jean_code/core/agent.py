@@ -149,11 +149,10 @@ class Agent:
             `context_window`, as given or as `configure` last changed them.
         tool_map: The `tools` argument.
         skills: The skills the model can load, from `skills_dir`.
-        commands: What the user runs by starting a message with `/name`: name → a function of the rest of the line.
+        commands: What the user runs by starting a message with `/name`: name → a function returning its output.
         node: Its place in the agent tree: `node` if given, else the root of a new tree.
         subagents: The kinds of subagent it may start, and their runs; None if `subagent_profiles` is empty.
         messages: The transcript, oldest first, with each reply as the provider sent it.
-        usage: One `ModelCall` per paid model call, in call order.
         compactions: One record per compaction attempt that got past the checks.
 
     Raises:
@@ -202,11 +201,9 @@ class Agent:
         if max_cost is not None and node is not None:
             raise ValueError("pass max_cost or node, not both: a given node carries its own limit")
         self.node = node or AgentNode(max_cost)
-        self.usage: list[ModelCall] = []
 
         self.skills = Skills(skills_dir, self.node)
-        # Currently only skills included, optional second argument is never used.
-        self.commands: dict[str, Callable[[str], str | None]] = self.skills.commands()
+        self.commands: dict[str, Callable[[], str]] = self.skills.commands()
 
         listings = (self.system_prompt, self.skills.prompt(), subagents_prompt(subagent_profiles or {}))
         system = "\n\n".join(part for part in listings if part).strip()
@@ -282,21 +279,6 @@ class Agent:
         self.node.emit(Configured(path=self.node.path, settings=self._settings))
 
     @property
-    def total_cost(self) -> float:
-        """USD this agent has spent on model calls."""
-        return sum(call.cost or 0 for call in self.usage)
-
-    @property
-    def max_cost(self) -> float | None:
-        """This agent's limit in USD, which is its node's."""
-        return self.node.limit
-
-    @property
-    def over_budget(self) -> bool:
-        """Whether this agent's node, or an ancestor's, has spent its limit."""
-        return self.node.exhausted
-
-    @property
     def context_tokens(self) -> int:
         """Tokens the next request's prompt will take.
 
@@ -307,11 +289,6 @@ class Agent:
             return estimate_tokens(self._tool_schemas()) + sum(message_tokens(m) for m in messages)
         count, tokens = measured
         return tokens + sum(message_tokens(m) for m in messages[count:])
-
-    @property
-    def context_history(self) -> list[tuple[Message, ...]]:
-        """Every context the agent has had: one per compaction, then the current one."""
-        return [c["before"] for c in self.compactions if c["status"] == "compacted"] + [self.messages]
 
     def interrupt(self):
         """Stops this agent and every agent below it before their next model call.
@@ -422,7 +399,7 @@ class Agent:
 
     def _maybe_compact(self, force: bool = False) -> str:
         """Does what `compact` does, but leaves what it raises for its caller to record."""
-        if self.over_budget:
+        if self.node.exhausted:
             return "refused: the budget is spent"
         tokens_before = self.context_tokens
         compact_at = self.settings.compact_at
@@ -472,8 +449,8 @@ class Agent:
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
         # A reply with tool calls counts as a failure instead.
-        record["request"] = request
-        booked = len(self.usage)
+        calls = self.node.entries
+        booked = len(calls)
         try:
             completion = self._call(request, kind="compaction")
         except TurnStopped:  # stopped before the summary's first chunk
@@ -483,14 +460,13 @@ class Agent:
             record["status"] = f"failed: {self.node.record_error(e)}"
             return record["status"]
         finally:
-            record["call"] = self.usage[-1] if len(self.usage) > booked else None  # booked even when it failed
+            record["call"] = calls[-1] if len(calls) > booked else None  # booked even when it failed
         if failure := summary_failure(completion, self.node.cancelled):
             record["status"] = failure
             return failure
 
         summary = completion.message.content.strip()
         record["summary"] = UserMessage(content=SUMMARY_MESSAGE.format(summary=summary))
-        record["before"] = messages  # the old tuple itself: it's replaced, never modified
         self.messages = (*head, record["summary"], *tail)
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
@@ -537,9 +513,8 @@ class Agent:
         return completion
 
     def _book(self, completion: Completion, kind: str | None) -> ModelCall:
-        """Records a paid call in `usage` and charges it to the node."""
+        """Charges a paid call to the node."""
         call = ModelCall.from_completion(completion, path=self.node.path, kind=kind)
-        self.usage.append(call)
         self.node.charge(call)
         return call
 
@@ -577,14 +552,11 @@ class Agent:
 
     def _run_command(self, user_input: str) -> str:
         """Returns the message, with a command's output appended if it starts with one."""
-        first, _, rest = user_input.strip().partition(" ")
+        first = user_input.strip().partition(" ")[0]
         command = self.commands.get(first[1:]) if first.startswith("/") else None
         if command is None:  # not a command, or an unknown `/foo`: plain text
             return user_input
-        output = command(rest.strip())
-        if output is None:
-            return user_input
-        return f'{user_input}\n\n<command name="{first[1:]}">\n{output}\n</command>'
+        return f'{user_input}\n\n<command name="{first[1:]}">\n{command()}\n</command>'
 
     def _loop(self) -> None:
         """Calls the model until it answers, running the tools it calls.
@@ -597,7 +569,7 @@ class Agent:
         for calls in itertools.count():
             if self.node.cancelled:  # before the budget: a cancelled one also counts as spent
                 raise TurnStopped("cancelled")
-            if self.over_budget:
+            if self.node.exhausted:
                 raise TurnStopped("budget spent")
             if self.context_tokens >= HARD_LIMIT * self.settings.context_window:
                 raise TurnStopped("context full")

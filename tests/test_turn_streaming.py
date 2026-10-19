@@ -91,7 +91,7 @@ def test_a_reply_cut_off_mid_stream_keeps_its_text_and_runs_none_of_its_calls():
     last = agent.messages[-1]
     assert isinstance(last, AssistantMessage) and last.tool_calls == ()
     assert last.content and REPLY.startswith(last.content) and last.content != REPLY
-    assert len(agent.usage) == 1 and agent.usage[0].cost is None
+    assert len(agent.node.entries) == 1 and agent.node.entries[0].cost is None
     agent.node.reopen()
     assert agent.run_turn("again") == "answered"
     sent = client.requests[-1]["messages"]
@@ -103,7 +103,7 @@ def test_a_stop_before_the_first_chunk_books_nothing():
     agent, _ = streaming_agent(StopAt([response(REPLY)], at=0, items=0))
     before = agent.messages
     assert agent.run_turn("go") == "cancelled"
-    assert agent.usage == [] and agent.messages[len(before) :][-1].role == "user"
+    assert agent.node.entries == [] and agent.messages[len(before) :][-1].role == "user"
 
 
 def test_a_reply_that_arrived_whole_runs_its_calls_and_then_stops():

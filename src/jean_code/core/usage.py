@@ -113,7 +113,7 @@ def usage_line(calls: list[ModelCall]) -> str:
     amount and flagged: `+?` after the known amount, or `$?` if no call's cost is known.
 
     Args:
-        calls: Model calls to sum, usually the calls of one turn: a slice of `AgentNode.journal`.
+        calls: Model calls to sum, usually the calls of one turn: a slice of `TreeState.calls`.
 
     Returns:
         The total cost, the prompt tokens with the share read from cache, and the completion tokens.
