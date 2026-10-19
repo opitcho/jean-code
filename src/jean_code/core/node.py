@@ -1,4 +1,4 @@
-"""The agent tree: one `AgentNode` per agent."""
+"""The work tree: `Node`, its kinds `AgentNode` and `GroupNode`, and `UnknownNode`."""
 
 from __future__ import annotations
 
@@ -7,54 +7,54 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from jean_code.core.events import AgentEvent, Charged, ErrorCaught, LimitSet, error_line
+from jean_code.core.events import AgentEvent, Charged, ErrorCaught, GroupAdded, LimitSet, error_line
 from jean_code.core.usage import ModelCall, breakdown_row
 
 if TYPE_CHECKING:
     from jean_code.core.agent import Agent
 
 
-class AgentNode:
-    """One agent's place in the agent tree.
+class UnknownNode(LookupError):
+    """No node in the tree has this path."""
 
-    A node holds what applies to its agent and every agent below it: where it is, what it may spend and has
-    spent, and whether it may go on. A subagent's node is a child of its parent's. Thread-safe. The arguments it
-    keeps are attributes of the same name.
+
+class Node:
+    """A place in the work tree: an agent's, or a group's.
+
+    A group holds the nodes under it. A node holds what applies to it and everything below it: where it is, what it
+    may spend and has spent, and whether it may go on. Thread-safe. The arguments it keeps are attributes of the same
+    name.
 
     Args:
         limit: Most the subtree may spend, in USD; None for no limit. Settable at any time; a change is emitted as
             `LimitSet`.
         parent: The parent's node; None for the root.
         name: The last part of `path`.
-        task: What this node's agent was asked to do.
-        profile: What kind of agent this is; "" for the root.
-        listener: Root only: receives every event the tree's agents `emit`. Settable.
+        task: What this node was made for.
+        profile: What kind of agent or group this is; "" for the root.
+        listener: Root only: receives every event the tree's nodes `emit`. Settable.
 
     Attributes:
-        agent: The agent built on this node, once there is one.
-        children: The subagents' nodes, in creation order.
-        entries: This node's own model calls, in charge order.
+        children: The nodes under this one, in creation order.
     """
 
     def __init__(
         self,
         limit: float | None = None,
-        parent: AgentNode | None = None,
+        parent: Node | None = None,
         name: str = "main",
         task: str = "",
         profile: str = "",
         listener: Callable[[AgentEvent], None] | None = None,
     ):
-        self._limit = limit  # not through the setter: no agent is on the node yet for a LimitSet to follow
+        self._limit = limit  # not through the setter: nothing has announced the node yet for a LimitSet to follow
         self.parent = parent
         self.name = name
         self.task = task
         self.profile = profile
         self.listener = listener
-        self.agent: Agent | None = None
-        self.children: list[AgentNode] = []
-        self.entries: list[ModelCall] = []
-        self._cancelled = False  # set by cancel(), cleared only by reopen()
+        self.children: list[Node] = []
+        self._cancelled = False  # set by cancel(), cleared only by AgentNode.reopen()
         self._lock: threading.Lock = parent._lock if parent else threading.Lock()
         self._journal: list[ModelCall] = parent._journal if parent else []
 
@@ -65,8 +65,9 @@ class AgentNode:
 
     @limit.setter
     def limit(self, value: float | None) -> None:
-        self._limit = value
-        self.emit(LimitSet(path=self.path, limit=value))
+        with self._lock:  # one hold for both: with two writers, the last LimitSet still matches the limit
+            self._limit = value
+            self.emit(LimitSet(path=self.path, limit=value))
 
     @property
     def path(self) -> str:
@@ -74,8 +75,8 @@ class AgentNode:
         return f"{self.parent.path}/{self.name}" if self.parent else self.name
 
     @property
-    def root(self) -> AgentNode:
-        """The root of this node's agent tree."""
+    def root(self) -> Node:
+        """The root of this node's tree."""
         return self._chain()[-1]
 
     @property
@@ -87,14 +88,14 @@ class AgentNode:
         """
         return self._journal
 
-    def child(self, limit: float | None, name: str, task: str = "", profile: str = "") -> AgentNode:
-        """Creates a node under this one, for a subagent.
+    def add_agent(self, limit: float | None, task: str = "", profile: str = "") -> AgentNode:
+        """Creates a node under this one, for an agent.
 
-        The new node's spend counts against this node and every ancestor.
+        It's named with the next number among this node's children, of either kind. The new node's spend counts
+        against this node and every ancestor.
 
         Args:
             limit: Most its subtree may spend, in USD; None for no limit.
-            name: The last part of its path.
             task: What its agent is asked to do.
             profile: What kind of agent it is.
 
@@ -102,28 +103,40 @@ class AgentNode:
             The new node.
         """
         with self._lock:
-            node = AgentNode(limit, parent=self, name=name, task=task, profile=profile)
-            node._cancelled = self._cancelled  # a child made after a cancel is part of the stopped subtree
-            self.children.append(node)
-        return node
+            return self._add_locked(AgentNode, limit, task, profile)
 
-    def charge(self, call: ModelCall) -> None:
-        """Records one model call at this node, and emits it as `Charged`.
+    def add_group(self, limit: float | None, task: str = "", profile: str = "") -> GroupNode:
+        """Creates a group node under this one, and emits `GroupAdded`.
 
-        The call also goes into the tree's `journal`.
+        It's named as `add_agent` names a node.
 
         Args:
-            call: The call, tagged with this node's path.
+            limit: Most the group's subtree may spend, in USD; None for no limit.
+            task: What the group was made for.
+            profile: What kind of group it is.
+
+        Returns:
+            The new node.
+        """
+        with self._lock:
+            group = self._add_locked(GroupNode, limit, task, profile)
+            # In the same hold: nothing can find the group, and emit its LimitSet, before its GroupAdded
+            self.emit(GroupAdded(path=group.path, profile=profile, task=task, limit=limit))
+        return group
+
+    def find(self, path: str) -> Node:
+        """Returns the node at `path` in this subtree.
+
+        Args:
+            path: The node's full path, e.g. "main/1/2".
 
         Raises:
-            ValueError: The call is tagged with another node's path, so its spend would land in the wrong subtree.
+            UnknownNode: No node in this subtree has `path`.
         """
-        if call.path != self.path:
-            raise ValueError(f"call for {call.path!r} charged to {self.path!r}")
-        with self._lock:
-            self.entries.append(call)
-            self._journal.append(call)
-        self.emit(Charged(path=self.path, call=call))
+        node = next((n for n in self.nodes() if n.path == path), None)
+        if node is None:
+            raise UnknownNode(path)
+        return node
 
     def emit(self, event: AgentEvent) -> None:
         """Hands `event` to the root's listener, if there is one.
@@ -132,30 +145,10 @@ class AgentNode:
         `AgentView.listen` takes only the view's.
 
         Args:
-            event: What the agent did.
+            event: What happened.
         """
         if (listener := self.root.listener) is not None:
             listener(event)
-
-    def record_error(self, error: BaseException, tool_call_id: str | None = None) -> str:
-        """Emits `error` as `ErrorCaught`, with its traceback, and returns it as one line.
-
-        Only an `Exception` is emitted: `KeyboardInterrupt` and `SystemExit` are the process stopping. Never raises,
-        unless the listener does.
-
-        Args:
-            error: The exception caught.
-            tool_call_id: The tool call that raised it, if one did.
-
-        Returns:
-            The exception as one line, as `error_line` gives it.
-        """
-        line = error_line(error)
-        # Nothing here may raise: agents call it inside the handlers that must still end their turn.
-        if isinstance(error, Exception):
-            trace = "".join(traceback.format_exception(error))
-            self.emit(ErrorCaught(path=self.path, error=line, traceback=trace, tool_call_id=tool_call_id))
-        return line
 
     def cancel(self) -> None:
         """Stops model calls in this subtree.
@@ -167,18 +160,11 @@ class AgentNode:
             for node in self._subtree():
                 node._cancelled = True
 
-    def reopen(self) -> None:
-        """Lets this node's agent call the model again.
-
-        Only this node is reopened: its descendants stay cancelled, and a cancelled ancestor still stops it.
-        """
-        self._cancelled = False
-
     @property
     def spent(self) -> float:
         """USD spent by this node's subtree; unknown costs count as 0."""
         with self._lock:
-            return sum(call.cost or 0 for node in self._subtree() for call in node.entries)
+            return sum(call.cost or 0 for node in self._agent_nodes() for call in node.entries)
 
     @property
     def cancelled(self) -> bool:
@@ -202,30 +188,125 @@ class AgentNode:
         left = [node.limit - node.spent for node in self._chain() if node.limit is not None]
         return max(0.0, min(left)) if left else None
 
-    def nodes(self) -> list[AgentNode]:
+    def nodes(self) -> list[Node]:
         """Returns this node and its descendants, depth first."""
         with self._lock:
             return self._subtree()
 
+    def agents(self) -> list[AgentNode]:
+        """Returns the nodes of this subtree that carry an agent, depth first."""
+        with self._lock:
+            return self._agents_locked()
+
     def breakdown(self) -> list[dict]:
-        """Returns one `breakdown_row` per node of the subtree, to see where spend went.
+        """Returns one `breakdown_row` per node in `agents()`, to see where spend went.
 
         Each row sums the node's own calls.
         """
         with self._lock:
-            snapshot = [(node.path, node.task, list(node.entries)) for node in self._subtree()]
-        return [breakdown_row(path, task, calls) for path, task, calls in snapshot]
+            rows = [(node.path, node.task, list(node.entries)) for node in self._agents_locked()]
+        return [breakdown_row(path, task, calls) for path, task, calls in rows]
 
-    def _chain(self) -> list[AgentNode]:
+    def _add_locked[N: Node](self, kind: type[N], limit: float | None, task: str, profile: str) -> N:
+        node = kind(limit, parent=self, name=str(len(self.children) + 1), task=task, profile=profile)
+        node._cancelled = self._cancelled  # a child made after a cancel is part of the stopped subtree
+        self.children.append(node)
+        return node
+
+    def _agent_nodes(self) -> list[AgentNode]:
+        """Returns the subtree's `AgentNode`s, agent or not; the caller holds the lock."""
+        return [node for node in self._subtree() if isinstance(node, AgentNode)]
+
+    def _agents_locked(self) -> list[AgentNode]:
+        return [node for node in self._agent_nodes() if node.agent is not None]
+
+    def _chain(self) -> list[Node]:
         """Returns this node and its ancestors, ending at the root."""
-        chain: list[AgentNode] = [self]
+        chain: list[Node] = [self]
         while chain[-1].parent is not None:
             chain.append(chain[-1].parent)
         return chain
 
-    def _subtree(self) -> list[AgentNode]:
+    def _subtree(self) -> list[Node]:
         """Returns this node and its descendants, depth first; the caller holds the lock."""
-        nodes: list[AgentNode] = [self]
+        nodes: list[Node] = [self]
         for child in self.children:
             nodes += child._subtree()
         return nodes
+
+
+class AgentNode(Node):
+    """A node that carries one agent.
+
+    Its own model calls are charged to it. The root of a tree is always one. Takes the same arguments as `Node`.
+
+    Attributes:
+        agent: The agent built on this node, once there is one.
+        entries: This node's own model calls, in charge order.
+    """
+
+    def __init__(
+        self,
+        limit: float | None = None,
+        parent: Node | None = None,
+        name: str = "main",
+        task: str = "",
+        profile: str = "",
+        listener: Callable[[AgentEvent], None] | None = None,
+    ):
+        super().__init__(limit, parent, name, task, profile, listener)
+        self.agent: Agent | None = None
+        self.entries: list[ModelCall] = []
+
+    def charge(self, call: ModelCall) -> None:
+        """Records one model call at this node, and emits it as `Charged`.
+
+        The call also goes into the tree's `journal`.
+
+        Args:
+            call: The call, tagged with this node's path.
+
+        Raises:
+            ValueError: The call is tagged with another node's path, so its spend would land in the wrong subtree.
+        """
+        if call.path != self.path:
+            raise ValueError(f"call for {call.path!r} charged to {self.path!r}")
+        with self._lock:
+            self.entries.append(call)
+            self._journal.append(call)
+        self.emit(Charged(path=self.path, call=call))
+
+    def record_error(self, error: BaseException, tool_call_id: str | None = None) -> str:
+        """Emits `error` as `ErrorCaught`, with its traceback, and returns it as one line.
+
+        Only an `Exception` is emitted: `KeyboardInterrupt` and `SystemExit` are the process stopping. Never raises,
+        unless the listener does.
+
+        Args:
+            error: The exception caught.
+            tool_call_id: The tool call that raised it, if one did.
+
+        Returns:
+            The exception as one line, as `error_line` gives it.
+        """
+        line = error_line(error)
+        # Nothing here may raise: agents call it inside the handlers that must still end their turn.
+        if isinstance(error, Exception):
+            trace = "".join(traceback.format_exception(error))
+            self.emit(ErrorCaught(path=self.path, error=line, traceback=trace, tool_call_id=tool_call_id))
+        return line
+
+    def reopen(self) -> None:
+        """Lets this node's agent call the model again.
+
+        Only this node is reopened: its descendants stay cancelled, and a cancelled ancestor still stops it.
+        """
+        self._cancelled = False
+
+
+class GroupNode(Node):
+    """A node that holds other nodes and runs nothing itself.
+
+    The nodes under it share its limit, and a cancel of it stops them all. Once cancelled, it stays cancelled: a new
+    run takes a new group. Takes the same arguments as `Node`.
+    """

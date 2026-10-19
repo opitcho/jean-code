@@ -60,7 +60,7 @@ def test_the_orchestrator_and_its_experts_stream():
 def test_experts_run_bash_in_docker_without_approval(name):
     # Catches an expert that Run.start refuses (host bash needs approval) or that runs on the host.
     _, prompt, max_cost, _ = EXPERTS[name]
-    node = AgentNode().child(max_cost, "1")
+    node = AgentNode().add_agent(max_cost)
     agent = expert_agent(prompt, "m", node, network=False)
     try:
         assert agent.needs_approval == set()

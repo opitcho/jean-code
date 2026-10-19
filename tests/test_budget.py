@@ -1,5 +1,5 @@
-"""Tests for `AgentNode` (node.py): the agent tree's spend, its limits, journal and breakdown, and how `Agent` and
-the REPL use it.
+"""Tests for the work tree's spend: its limits, journal and breakdown, and how `Agent` and the REPL use them. The
+tree itself is tested in `test_node.py`.
 
 Each test names the bug it would catch.
 """
@@ -50,8 +50,8 @@ def tool_reply(cost=0.004) -> dict:
 def test_a_childs_spend_counts_against_its_ancestors_and_stays_at_its_node():
     # Catches a parent that doesn't see its subagents' spend, or entries filed at the wrong node.
     root = AgentNode()
-    lead = root.child(0.5, "1")
-    researcher = lead.child(0.1, "1")
+    lead = root.add_agent(0.5)
+    researcher = lead.add_agent(0.1)
     root.charge(model_call(root.path, 0.001))
     lead.charge(model_call(lead.path, 0.002))
     researcher.charge(model_call(researcher.path, 0.004))
@@ -64,8 +64,8 @@ def test_a_childs_spend_counts_against_its_ancestors_and_stays_at_its_node():
 def test_exhausted_follows_the_chain():
     # Catches a subagent that keeps spending after its parent's (or the session's) limit is reached.
     root = AgentNode(1.0)  # amounts exact in binary floating point, so the sum reaches the limit exactly
-    lead = root.child(None, "1")
-    researcher = lead.child(5.0, "1")
+    lead = root.add_agent(None)
+    researcher = lead.add_agent(5.0)
     researcher.charge(model_call(researcher.path, 0.75))
     assert not researcher.exhausted
     lead.charge(model_call(lead.path, 0.25))  # the root's limit is now spent, by its descendants
@@ -91,19 +91,19 @@ def test_unknown_costs_count_as_zero():
 def test_paths_and_the_journal():
     # Catches paths that don't match the eval harness's "main/1/2", or a journal per node instead of per tree.
     root = AgentNode()
-    lead = root.child(None, "1")
-    researcher = lead.child(None, "2")
-    assert researcher.path == "main/1/2"
+    lead = root.add_agent(None)
+    researcher = lead.add_agent(None)
+    assert researcher.path == "main/1/1"
     researcher.charge(model_call(researcher.path, 0.004))
     root.charge(model_call(root.path, 0.001))
     assert researcher.journal is root.journal
-    assert [c.path for c in root.journal] == ["main/1/2", "main"]
+    assert [c.path for c in root.journal] == ["main/1/1", "main"]
 
 
 def test_charge_refuses_a_call_for_another_node():
     # Catches spend booked to the wrong subtree.
     with pytest.raises(ValueError):
-        AgentNode().child(1.0, "1").charge(model_call(path="main"))
+        AgentNode().add_agent(1.0).charge(model_call(path="main"))
 
 
 def test_entries_and_journal_share_the_call():
@@ -114,25 +114,10 @@ def test_entries_and_journal_share_the_call():
     assert root.entries[-1] is call and root.journal[-1] is call
 
 
-def test_nodes_are_depth_first():
-    root = AgentNode()
-    a = root.child(None, "1")
-    a.child(None, "1")
-    root.child(None, "2")
-    assert [n.path for n in root.nodes()] == ["main", "main/1", "main/1/1", "main/2"]
-
-
-def test_root():
-    # Catches a subagent's node that doesn't lead back to its tree's root: its tree's log would be lost.
-    root = AgentNode()
-    grand = root.child(None, "1").child(None, "2")
-    assert root.root is root and grand.root is root
-
-
 def test_concurrent_charges_are_all_counted():
     # Catches lost updates when parallel subagents charge one tree without the lock.
     root = AgentNode()
-    nodes = [root.child(None, str(i)) for i in range(8)]
+    nodes = [root.add_agent(None) for _ in range(8)]
     start = threading.Barrier(len(nodes))
 
     def charge_many(node: AgentNode) -> None:
@@ -153,10 +138,16 @@ def test_concurrent_charges_are_all_counted():
 # ---------------------------------------------------------------- breakdown and records
 
 
+def with_agent(node: AgentNode) -> AgentNode:
+    """`node`, with an agent on it: the breakdown has rows only for nodes that carry one."""
+    Agent(client=FakeClient([]), node=node)
+    return node
+
+
 def test_breakdown_has_one_row_per_node_with_its_own_numbers():
     # Catches rows that mix a node's calls with its children's, or a wrong peak context.
-    root = AgentNode(task="")
-    lead = root.child(None, "1", task="Compare uv, Poetry and PDM")
+    root = with_agent(AgentNode(task=""))
+    lead = with_agent(root.add_agent(None, task="Compare uv, Poetry and PDM"))
     lead.charge(model_call(lead.path, 0.002, prompt=1000, cached=800, completion=50, reasoning=20))
     lead.charge(model_call(lead.path, None, prompt=3000, cached=600, completion=70, reasoning=30))
     rows = {row["path"]: row for row in root.breakdown()}
@@ -177,9 +168,9 @@ def test_breakdown_has_one_row_per_node_with_its_own_numbers():
 
 def test_breakdown_lines_put_the_most_expensive_first():
     # Catches a table that hides the subagent that took the money.
-    root = AgentNode()
-    root.child(None, "1", task="cheap").charge(model_call("main/1", 0.001))
-    root.child(None, "2", task="expensive").charge(model_call("main/2", 0.009))
+    root = with_agent(AgentNode())
+    with_agent(root.add_agent(None, task="cheap")).charge(model_call("main/1", 0.001))
+    with_agent(root.add_agent(None, task="expensive")).charge(model_call("main/2", 0.009))
     header, *lines = breakdown_lines(root.breakdown())
     assert header.split()[:2] == ["path", "task"]
     assert [line.split()[0] for line in lines] == ["main/2", "main/1", "main"]
@@ -187,7 +178,7 @@ def test_breakdown_lines_put_the_most_expensive_first():
 
 
 def test_breakdown_lines_mark_unknown_costs():
-    root = AgentNode()
+    root = with_agent(AgentNode())
     root.charge(model_call(root.path, None))
     assert breakdown_lines(root.breakdown())[1].split()[-1] == "$0.0000+?"
 
@@ -195,7 +186,7 @@ def test_breakdown_lines_mark_unknown_costs():
 def test_journal_keeps_the_budget_path():
     # Catches the log losing which agent made a call.
     root = AgentNode()
-    root.child(None, "1").charge(model_call("main/1", 0.001))
+    root.add_agent(None).charge(model_call("main/1", 0.001))
     assert root.journal[0].path == "main/1"
 
 
@@ -219,7 +210,7 @@ def test_a_changed_limit_is_emitted_and_a_new_node_emits_nothing():
     # Catches a limit raised mid-run (the driver's, or a resumed subagent's) that the view never hears about.
     events = []
     root = AgentNode(0.5, listener=events.append)
-    child = root.child(0.1, "1")
+    child = root.add_agent(0.1)
     assert events == []
     child.limit = 0.3
     root.limit = None
@@ -236,7 +227,7 @@ def test_every_call_is_charged_and_usage_stays_the_agents_own():
     # Catches calls missing from the budget, or subagent entries leaking into an agent's `usage`.
     root = AgentNode()
     parent = make_agent([response("hi", usage=usage(cost=0.001))], node=root)
-    child = make_agent([tool_reply(), response("done", usage=usage(cost=0.002))], node=root.child(None, "1"))
+    child = make_agent([tool_reply(), response("done", usage=usage(cost=0.002))], node=root.add_agent(None))
     parent.run_turn("hello")
     child.run_turn("go")
     assert parent.node.entries == parent.usage and len(parent.usage) == 1
@@ -252,7 +243,7 @@ def test_a_subagent_makes_no_call_once_its_parent_budget_is_spent():
     parent = make_agent([tool_reply(cost=0.004)], node=root)
     parent.run_turn("go")  # spends the root's whole limit; its next call is refused
     client = FakeClient([response("never")])
-    child = Agent(client=client, node=root.child(1.0, "1"))
+    child = Agent(client=client, node=root.add_agent(1.0))
     end = child.run_turn("hello")
     assert client.requests == []
     assert child.over_budget and end == "budget spent"
@@ -269,14 +260,21 @@ def test_compaction_calls_are_charged():
 
 
 def tree_with_spend() -> tuple[Driver, AgentNode]:
-    """A driver whose root and two nested subagents have each made calls."""
+    """A driver whose root, two nested subagents and an agent in a group have each made calls.
+
+    The tree also has a node whose start failed, with no agent on it.
+    """
     built: list[Agent] = []
     session = Driver(lambda node, approve: built.append(a := Agent(client=FakeClient([]), node=node)) or a)
     root = built[0].node
     root.charge(model_call(root.path, 0.001))
-    child = Agent(client=FakeClient([]), node=root.child(None, "1", task="look something up")).node
+    child = Agent(client=FakeClient([]), node=root.add_agent(None, task="look something up")).node
     child.charge(model_call("main/1", 0.004, prompt=900, cached=300))
-    Agent(client=FakeClient([]), node=child.child(None, "1", task="deeper")).node.charge(model_call("main/1/1", None))
+    Agent(client=FakeClient([]), node=child.add_agent(None, task="deeper")).node.charge(model_call("main/1/1", None))
+    group = root.add_group(None, task="compare", profile="pair")
+    grouped = Agent(client=FakeClient([]), node=group.add_agent(None, task="in a group")).node
+    grouped.charge(model_call("main/2/1", 0.002))
+    root.add_agent(None, task="its start failed")
     return session, root
 
 
@@ -285,7 +283,7 @@ def test_cost_prints_the_breakdown_once_there_are_several_agents(capsys):
     session, _ = tree_with_spend()
     print_cost(session, credits=None)
     out = capsys.readouterr().out
-    assert "session: $0.0050 over 3 model calls" in out
+    assert "session: $0.0070 over 4 model calls" in out
     assert "main/1" in out and "look something up" in out
 
 
@@ -302,8 +300,8 @@ def test_the_breakdown_from_the_view_is_the_trees_own():
 def test_cancel_stops_the_subtree_until_reopened():
     # Catches a cancel that misses descendants, reaches the parent, or wears off by itself.
     root = AgentNode()
-    run = root.child(1.0, "1")
-    below = run.child(None, "1")
+    run = root.add_agent(1.0)
+    below = run.add_agent(None)
     run.cancel()
     assert run.exhausted and below.exhausted and below.cancelled
     assert not root.exhausted and not root.cancelled
@@ -313,7 +311,7 @@ def test_cancel_stops_the_subtree_until_reopened():
 
 def test_an_agent_on_a_cancelled_budget_makes_no_call():
     # Catches the cancel being cleared at the start of a turn, as the interrupt flag is.
-    node = AgentNode().child(1.0, "1")
+    node = AgentNode().add_agent(1.0)
     client = FakeClient([response("never")])
     agent = Agent(client=client, node=node)
     node.cancel()
@@ -325,8 +323,8 @@ def test_an_agent_on_a_cancelled_budget_makes_no_call():
 def test_reopen_clears_only_this_nodes_cancel():
     # Catches reopen clearing an ancestor's cancel, or a child reopened past a parent that is still cancelled.
     root = AgentNode()
-    parent = root.child(1.0, "1")
-    child = parent.child(None, "1")
+    parent = root.add_agent(1.0)
+    child = parent.add_agent(None)
     parent.cancel()
     child.cancel()
     child.reopen()
@@ -338,8 +336,8 @@ def test_reopen_clears_only_this_nodes_cancel():
 def test_reopening_a_parent_leaves_its_cancelled_children_cancelled():
     # Catches the next turn of the root reviving the subagents a stop cancelled, background runs included.
     root = AgentNode()
-    run = root.child(1.0, "1")
-    below = run.child(None, "1")
+    run = root.add_agent(1.0)
+    below = run.add_agent(None)
     root.cancel()
     root.reopen()
     assert not root.cancelled and run.cancelled and below.cancelled
@@ -351,14 +349,14 @@ def test_a_child_created_after_a_cancel_is_cancelled():
     # Catches a subagent spawned in the moment after a stop slipping through it, once its parent is reopened.
     root = AgentNode()
     root.cancel()
-    late = root.child(1.0, "1")
+    late = root.add_agent(1.0)
     root.reopen()
     assert late.cancelled
 
 
 def test_a_cancel_after_reopen_still_holds():
     # Catches reopen leaving the node unable to be cancelled again.
-    node = AgentNode().child(1.0, "1")
+    node = AgentNode().add_agent(1.0)
     client = FakeClient([response("never")])
     agent = Agent(client=client, node=node)
     node.cancel()
@@ -372,10 +370,10 @@ def test_a_cancel_after_reopen_still_holds():
 def test_remaining_is_the_tightest_limit_on_the_chain():
     # Catches a subagent told it has more than an ancestor has left.
     root = AgentNode(1.0)
-    run = root.child(0.5, "1")
+    run = root.add_agent(0.5)
     assert run.remaining == pytest.approx(0.5)
     root.charge(model_call(root.path, 0.75))  # the root has 0.25 left, less than the run's own 0.5
     assert run.remaining == pytest.approx(0.25)
     root.charge(model_call(root.path, 0.5))  # overspent: never negative
     assert run.remaining == 0.0
-    assert AgentNode().child(None, "1").remaining is None
+    assert AgentNode().add_agent(None).remaining is None

@@ -21,6 +21,7 @@ from jean_code.core.events import (
     Configured,
     Delivered,
     ErrorCaught,
+    GroupAdded,
     JobEnded,
     LimitSet,
     MessageAdded,
@@ -149,14 +150,16 @@ def test_folders_follow_the_tree(tmp_path):
     }
 
 
-def test_a_node_without_an_agent_gets_a_plain_folder(tmp_path):
-    # Catches an agent under a grouping node (the engine's, later) with no folder for the group, or a crash.
+def test_a_group_gets_a_folder_named_by_its_profile(tmp_path):
+    # Catches an agent under a group with no folder for the group, or a crash on the group's first event.
     view = AgentView()
     recorder = Recorder(view, tmp_path / "trace")
     view.listen(agent_added("main"))
-    view.listen(agent_added("main/wf1/plan", profile="planner"))
+    view.listen(GroupAdded(path="main/1", profile="pair", task="compare", limit=None))
+    view.listen(agent_added("main/1/1"))
     recorder.close()
-    assert (tmp_path / "trace" / "wf1" / "plan-planner" / "events.jsonl").is_file()
+    assert (tmp_path / "trace" / "1-pair" / "events.jsonl").is_file()
+    assert (tmp_path / "trace" / "1-pair" / "1" / "events.jsonl").is_file()
     assert recorder.errors == []
 
 
@@ -186,7 +189,8 @@ def test_replay_matches_the_view(tmp_path):
     driver, recorder = traced(build, tmp_path)
     turn(driver, "spawn one")
     turn(driver, "load the skill")
-    driver.configure(reasoning="high", max_cost=5.0)
+    driver.configure(reasoning="high")
+    driver.set_limit("main", 5.0)
     turn(driver, "spawn one in the background")
     eventually(lambda: driver.view.state().waiting("main") == 1)
     with driver.view.subscribe() as (_, events):
@@ -198,9 +202,12 @@ def test_replay_matches_the_view(tmp_path):
     with driver.view.subscribe() as (_, events):
         driver.compact()
         assert next_of(events, JobEnded).result == "compacted"
+    group = build.agent.node.add_group(1.0, task="by hand", profile="pair")  # the driver never makes one
+    Agent(client=FakeClient([response("in a group")]), node=group.add_agent(None)).run_turn("go")
+    driver.set_limit(group.path, 2.0)
     finish(driver, recorder)
     kinds = {type(event) for event in read_trace(tmp_path / "trace")}
-    assert {Configured, LimitSet, SkillLoaded, RunEnded, Delivered, ErrorCaught} <= kinds
+    assert {Configured, LimitSet, SkillLoaded, RunEnded, Delivered, ErrorCaught, GroupAdded} <= kinds
     assert replay(tmp_path / "trace") == driver.view.state()
 
 

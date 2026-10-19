@@ -22,6 +22,7 @@ from jean_code.core.events import (
     Delivered,
     Delta,
     ErrorCaught,
+    GroupAdded,
     JobEnded,
     JobStarted,
     LimitSet,
@@ -118,11 +119,31 @@ class AgentState:
 
 
 @dataclass
+class GroupState:
+    """One group node, as its events describe it.
+
+    Attributes:
+        path: The group's node, e.g. "main/1".
+        profile: What kind of group it is.
+        task: What it was made for.
+        limit: Its node's limit in USD; None for none.
+        spent: USD spent by every agent below it.
+    """
+
+    path: str
+    profile: str
+    task: str
+    limit: float | None
+    spent: float = 0.0
+
+
+@dataclass
 class TreeState:
     """An agent tree and its driver, as their events describe them.
 
     Attributes:
         agents: Every agent, by path, in the order they were added.
+        groups: Every group, by path, in the order they were added.
         busy: Whether the driver runs a job.
         approval: The tool call waiting for the user, if any.
         last_job: How the last job ended.
@@ -131,6 +152,7 @@ class TreeState:
     """
 
     agents: dict[str, AgentState] = field(default_factory=dict)
+    groups: dict[str, GroupState] = field(default_factory=dict)
     busy: bool = False
     approval: Approval | None = None
     last_job: JobEnded | None = None
@@ -169,6 +191,8 @@ def apply(state: TreeState, event: ViewEvent) -> None:
                 needs_approval=event.needs_approval,
                 skills=event.skills,
             )
+        case GroupAdded():
+            state.groups[event.path] = GroupState(event.path, event.profile, event.task, event.limit)
         case Configured():
             state.agents[event.path].settings = event.settings
         case SkillLoaded():
@@ -179,8 +203,9 @@ def apply(state: TreeState, event: ViewEvent) -> None:
         case Delivered():
             state.agents[event.path].delivered = True
         case LimitSet():
-            if (agent := state.agents.get(event.path)) is not None:  # a node without an agent has no state
-                agent.limit = event.limit
+            # A spawn whose start failed leaves a node with neither state
+            if (node := state.agents.get(event.path) or state.groups.get(event.path)) is not None:
+                node.limit = event.limit
         case MessageAdded():
             agent = state.agents[event.path]
             uid = max((i.uid for i in agent.items), default=0) + 1
@@ -209,9 +234,9 @@ def apply(state: TreeState, event: ViewEvent) -> None:
         case Charged():
             state.calls.append(event.call)
             state.agents[event.path].calls.append(event.call)
-            for path, agent in state.agents.items():  # the call counts toward every ancestor
+            for path, node in [*state.agents.items(), *state.groups.items()]:  # it counts toward every ancestor
                 if event.path == path or event.path.startswith(path + "/"):
-                    agent.spent += event.call.cost or 0
+                    node.spent += event.call.cost or 0
         case JobStarted():
             state.busy, state.queued = True, None
         case Queued():
@@ -265,7 +290,8 @@ def snapshot(state: TreeState) -> TreeState:
         )
         for path, a in state.agents.items()
     }
-    return replace(state, agents=agents, calls=list(state.calls))
+    groups = {path: replace(g) for path, g in state.groups.items()}
+    return replace(state, agents=agents, groups=groups, calls=list(state.calls))
 
 
 class Subscription:

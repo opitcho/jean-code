@@ -58,7 +58,7 @@ def test_the_coding_agent_and_its_subagents_stream():
 
 def test_the_general_subagent_runs_bash_in_docker_without_approval():
     # Catches a general subagent that Run.start refuses (host bash needs approval) or that runs on the host.
-    node = AgentNode().child(0.5, "1")
+    node = AgentNode().add_agent(0.5)
     agent = general_agent("m", node, skills_dir=None)
     try:
         assert agent.needs_approval == set() and "bash" in agent.tool_map

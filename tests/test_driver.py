@@ -12,9 +12,9 @@ import pytest
 
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent
-from jean_code.core.driver import Busy, Driver, UnknownAgent
+from jean_code.core.driver import Busy, Driver
 from jean_code.core.events import ApprovalRequested, ApprovalResolved, Configured, JobEnded, JobStarted, Queued
-from jean_code.core.node import AgentNode
+from jean_code.core.node import AgentNode, UnknownNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
 from jean_code.core.view import AgentView, apply
@@ -332,20 +332,51 @@ def test_cancel_a_subagent_path_stops_only_that_run():
 def test_any_node_in_the_tree_can_be_cancelled_by_path():
     # Catches agents built outside spawn (the engine, later) that clients see but can't stop.
     driver, build = make_driver([])
-    group = build.agent.node.child(None, name="wf1")
-    planner = Agent(client=FakeClient([]), node=group.child(None, name="plan", profile="planner"))
-    assert driver.view.state().agents["main/wf1/plan"].profile == "planner"
-    driver.cancel("main/wf1")
+    group = build.agent.node.add_group(None)
+    planner = Agent(client=FakeClient([]), node=group.add_agent(None, profile="planner"))
+    assert driver.view.state().agents["main/1/1"].profile == "planner"
+    driver.cancel("main/1")
     assert planner.node.cancelled and not build.agent.node.cancelled
-    with pytest.raises(UnknownAgent):
+    with pytest.raises(UnknownNode):
         driver.cancel("main/nope")
+
+
+def test_a_group_stays_cancelled_after_a_root_stop_and_a_new_turn():
+    # Catches a stopped group that comes back with main's next turn: the engine relies on a new run taking a new one.
+    driver, build = make_driver([response("hi")])
+    group = build.agent.node.add_group(None)
+    driver.cancel()
+    with driver.view.subscribe() as (_, events):
+        driver.send("go")
+        assert next_of(events, JobEnded).result == "answered"
+    assert group.cancelled and not build.agent.node.cancelled
+
+
+def test_set_limit_reaches_the_node_and_the_view():
+    # Catches a client's new limit that the node never enforces, or that the view never hears about.
+    driver, build = make_driver([])
+    spend = response(tool_calls=[call("add", a=1, b=2)], usage=usage(cost=0.01))
+    node = build.agent.node.add_agent(0.01)
+    sub = Agent(client=FakeClient([spend, response("done")]), tools={"add": add}, node=node)
+    assert sub.run_turn("go") == "budget spent"
+    driver.set_limit("main/1", 1.0)
+    assert sub.run_turn("again") == "answered"
+    assert driver.view.state().agents["main/1"].limit == 1.0
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_set_limit_refuses_a_limit_that_isnt_positive(bad):
+    # Catches a limit that stops the tree at once, set by a typo.
+    driver, _ = make_driver([])
+    with pytest.raises(ValueError, match="positive"):
+        driver.set_limit("main", bad)
 
 
 def test_a_client_gets_only_the_view_and_the_commands():
     # Catches a driver that hands out its agent again, so a client could read state the events never carried.
     driver, _ = make_driver([])
     public = {name for name in dir(driver) if not name.startswith("_")}
-    assert public == {"view", "send", "compact", "cancel", "answer", "configure", "close"}
+    assert public == {"view", "send", "compact", "cancel", "answer", "configure", "set_limit", "close"}
 
 
 # ---------------------------------------------------------------- the state and subscriptions
@@ -456,7 +487,8 @@ def test_an_approval_asked_after_a_stop_is_refused_at_once():
 def test_live_settings_apply_to_the_agent_and_reach_the_view():
     # Catches a reasoning change that needs a new chat, one the agent never reads, or a view left on the old model.
     driver, build = make_driver([])
-    driver.configure(model="other", reasoning="high", compact_at=10_000, max_cost=2.0)
+    driver.configure(model="other", reasoning="high", compact_at=10_000)
+    driver.set_limit("main", 2.0)
     settings = build.agent.settings
     assert (settings.model, settings.reasoning, settings.compact_at, build.agent.max_cost) == (
         "other",

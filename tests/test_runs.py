@@ -73,8 +73,8 @@ def test_each_start_is_a_new_run():
 
     profile = agent_profile("helper", build, max_cost=1.0)
     root = AgentNode()
-    a = profile.start("a", root.child(1.0, "1"))
-    b = profile.start("b", root.child(1.0, "2"))
+    a = profile.start("a", root.add_agent(1.0))
+    b = profile.start("b", root.add_agent(1.0))
     assert (a.outcome(TIMEOUT), b.outcome(TIMEOUT)) == (done("answer to a"), done("answer to b"))
     assert a.agent is not b.agent and len(built) == 2
     assert (a.path, b.path) == ("main/1", "main/2")
@@ -236,7 +236,7 @@ def test_a_malformed_response_fails_the_run():
     bad = response("x", usage=usage(cost=0.005))
     bad["choices"] = []
     root = AgentNode(1.0)
-    run = Run.start(make_agent([bad], root.child(0.5, "1")), "go")
+    run = Run.start(make_agent([bad], root.add_agent(0.5)), "go")
     outcome = run.outcome(TIMEOUT)
     assert outcome is not None and outcome.status == "failed" and outcome.text.startswith("MalformedResponse:")
 
@@ -338,7 +338,7 @@ def test_a_listener_that_fails_on_run_ended_still_completes_the_run():
         if isinstance(event, RunEnded):
             raise KeyError(event.path)
 
-    agent = Agent(client=FakeClient([response("hi")]), node=AgentNode(listener=listen).child(None, "1"))
+    agent = Agent(client=FakeClient([response("hi")]), node=AgentNode(listener=listen).add_agent(None))
     run = Run.start(agent, "task")
     assert run.wait(TIMEOUT) and run.outcome(0) == Outcome("done", "hi")
     for thread in threading.enumerate():  # the error ends the run's thread: let it, inside this test

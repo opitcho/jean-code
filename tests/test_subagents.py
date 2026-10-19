@@ -138,6 +138,14 @@ def test_ids_count_up_and_a_failed_start_skips_its_id():
     assert list(sub.runs) == [1, 3]
 
 
+def test_a_spawn_after_a_group_under_the_same_parent_takes_the_next_number():
+    # Catches a spawn and a group both taking "main/1", so the run id names the wrong node.
+    sub = make_subagents()
+    sub.node.add_group(None)
+    sub.spawn("echo", "x")
+    assert list(sub.runs) == [2] and run_of(sub, 2).agent.node.path == "main/2"
+
+
 def test_unknown_names_list_the_valid_ones():
     sub = make_subagents()
     with pytest.raises(ValueError, match="unknown profile 'nope'; profiles: echo"):

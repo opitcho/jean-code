@@ -40,9 +40,9 @@ _STOP = object()  # ends the recorder's loop; put on the queue after everything 
 class Recorder:
     """Writes everything an agent tree's view receives, on a thread of its own.
 
-    - Each agent's events go to its own `events.jsonl`: the root's in `trace_dir`, a subagent's in a folder under
-      its parent's named `<run>-<profile>`, e.g. `1-research/2-researcher/events.jsonl`. A folder is made when its
-      first line is written.
+    - Each node's events go to its own `events.jsonl`: the root's in `trace_dir`, any other node's (a subagent's or a
+      group's) in a folder under its parent's named `<name>-<profile>`, e.g. `1-research/2-researcher/events.jsonl`.
+      A folder is made when its first line is written.
     - Each line is an event's JSON plus `seq`, its place among the lines written, and `at`, the Unix time it was
       written. Streamed deltas aren't written.
     - A write that fails turns off its sink (the trace or the usage log), sets that sink's argument to None and adds
@@ -122,7 +122,7 @@ class Recorder:
             parent, _, name = path.rpartition("/")
             if not parent:
                 folder = trace_dir  # the tree's folder is the root agent's
-            else:  # an agent's first event is its AgentAdded, so its profile names it; a grouping node has none
+            else:  # a node's first event is its AgentAdded or GroupAdded, so its profile names it
                 folder = self._folder(trace_dir, parent) / (f"{name}-{profile}" if profile else name)
             self._folders[path] = folder
         return folder

@@ -77,6 +77,23 @@ class AgentAdded(Event):
     skills: list[str]
 
 
+class GroupAdded(Event):
+    """A group node was made at `path`.
+
+    It comes before any event from a node under it.
+
+    Attributes:
+        profile: What kind of group it is.
+        task: What it was made for.
+        limit: Its limit in USD; None for none.
+    """
+
+    type: Literal["group_added"] = "group_added"
+    profile: str
+    task: str
+    limit: float | None
+
+
 class Configured(Event):
     """The agent's settings changed; `settings` is all of them now."""
 
@@ -245,6 +262,7 @@ class Charged(Event):
 
 AgentEvent = Annotated[
     AgentAdded
+    | GroupAdded
     | Configured
     | LimitSet
     | SkillLoaded
@@ -348,6 +366,7 @@ class ApprovalResolved(BaseModel):
 
 ViewEvent = Annotated[
     AgentAdded
+    | GroupAdded
     | Configured
     | LimitSet
     | SkillLoaded

@@ -52,10 +52,6 @@ class Busy(RuntimeError):
     """
 
 
-class UnknownAgent(LookupError):
-    """No node in the tree has this path."""
-
-
 def denied(reason: str = "") -> str:
     """Returns the result the model gets for a call the user refused.
 
@@ -135,22 +131,22 @@ class Driver:
         self._spawn(job)
 
     def cancel(self, path: str = "main") -> None:
-        """Stops the agent at `path`, and every agent below it, before its next model call.
+        """Stops every agent at or below the node at `path` before its next model call.
 
-        For the root, the job ends "cancelled" and a waiting approval is refused. Any other agent stays cancelled
-        until it's resumed.
+        For the root, the job ends "cancelled" and a waiting approval is refused. A subagent stays cancelled until
+        it's resumed, and a group for good.
 
         Args:
-            path: The agent's path, e.g. "main/1".
+            path: The node's path, e.g. "main/1".
 
         Raises:
-            UnknownAgent: No node in the tree has `path`.
+            UnknownNode: No node in the tree has `path`.
         """
         if path == self._agent.node.path:
             with self._lock:
                 self._stop_locked()
         else:
-            self._node(path).cancel()
+            self._agent.node.find(path).cancel()
 
     def answer(self, approval_id: int, refusal: str | None = None) -> None:
         """Answers the tool call waiting for approval.
@@ -172,19 +168,31 @@ class Driver:
         the next request pays the uncached price for every token of the prompt.
 
         Args:
-            **settings: Any of `model`, `reasoning` ("low", "medium", "high" or None), `max_cost` (USD, positive,
-                or None) and `compact_at` (tokens, at most half the context window, or None).
+            **settings: Any of `model`, `reasoning` ("low", "medium", "high" or None) and `compact_at` (tokens, at
+                most half the context window, or None).
 
         Raises:
             ValueError: A setting is unknown, or its value is one the agent would refuse.
         """
-        if (cost := settings.get("max_cost")) is not None and cost <= 0:
-            raise ValueError(f"max_cost must be positive, got {cost}")
-        rest = {name: value for name, value in settings.items() if name != "max_cost"}
-        if rest:
-            self._agent.configure(**rest)
-        if "max_cost" in settings:  # after configure: a setting it refuses leaves the limit as it was
-            self._agent.node.limit = settings["max_cost"]
+        self._agent.configure(**settings)
+
+    def set_limit(self, path: str, limit: float | None) -> None:
+        """Sets the most the node at `path` and everything below it may spend.
+
+        The limit holds until something replaces it. Resuming a subagent does: its limit becomes what it has spent
+        plus its profile's default, which can be lower than one set here.
+
+        Args:
+            path: The node's path, e.g. "main" or "main/1".
+            limit: USD, positive; None for no limit.
+
+        Raises:
+            ValueError: `limit` isn't positive.
+            UnknownNode: No node in the tree has `path`.
+        """
+        if limit is not None and limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        self._agent.node.find(path).limit = limit
 
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.
@@ -255,9 +263,3 @@ class Driver:
         self._emit(ApprovalResolved(id=approval.id, refusal=refusal))
         self._approval, self._refusal = None, refusal
         self._answered.set()
-
-    def _node(self, path: str) -> AgentNode:
-        node = next((n for n in self._agent.node.nodes() if n.path == path), None)
-        if node is None:
-            raise UnknownAgent(path)
-        return node

@@ -8,7 +8,6 @@ and turn results into text.
 
 from __future__ import annotations
 
-import itertools
 import threading
 import time
 from collections.abc import Callable
@@ -306,11 +305,7 @@ def agent_tree(agent: Agent) -> dict[str, Agent]:
     Args:
         agent: The top of the tree to list.
     """
-    tree = {agent.node.path: agent}
-    if agent.subagents:
-        for _, _, run in agent.subagents.snapshot():
-            tree |= agent_tree(run.agent)
-    return tree
+    return {node.path: node.agent for node in agent.node.agents() if node.agent is not None}
 
 
 class Subagents:
@@ -340,7 +335,6 @@ class Subagents:
         self.profiles = profiles
         self.node = node
         self.runs: dict[int, tuple[str, Run]] = {}
-        self._ids = itertools.count(1)  # only spawn uses it, on the parent's thread
         self._background: set[Run] = set()  # runs started in the background; never removed
         self._delivered: set[Run] = set()  # by Run, not id, since resume gives an id a new Run; never removed
         self._lock = threading.Lock()  # guards runs, _background and _delivered
@@ -385,9 +379,9 @@ class Subagents:
             raise ValueError(
                 f"{running} subagents are running, the most at once; collect one with subagent(run_id, wait=…) first"
             )
-        id = next(self._ids)  # taken before start: a start that fails skips its id
         limit = min(spec.max_cost if max_cost is None else max_cost, spec.cap)
-        child = self.node.child(limit, name=str(id), task=task, profile=profile)
+        child = self.node.add_agent(limit, task=task, profile=profile)
+        id = int(child.name)  # numbered before start: a start that fails skips its id
         run = spec.start(task, child)
         if run.agent.node is not child:  # otherwise its spend would escape this tree, its limit and the log
             run.cancel()

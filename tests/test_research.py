@@ -498,7 +498,7 @@ def test_the_lead_and_its_researchers_stream(tmp_path):
     notebook = new_notebook(tmp_path)
     client = TaskClient({})
     lead = research_lead_agent(notebook, AgentNode(1.0), client=client)
-    researcher = researcher_agent(notebook, lead.node.child(0.1, "1"), client=client)
+    researcher = researcher_agent(notebook, lead.node.add_agent(0.1), client=client)
     assert lead.stream and researcher.stream
 
 

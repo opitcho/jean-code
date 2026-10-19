@@ -10,7 +10,15 @@ import pytest
 
 from conftest import FakeClient, call, response, scripted, usage
 from jean_code.core.agent import Agent
-from jean_code.core.events import AgentAdded, Charged, Compaction, MessageAdded, TurnEnded, TurnStarted
+from jean_code.core.events import (
+    AgentAdded,
+    Charged,
+    Compaction,
+    GroupAdded,
+    MessageAdded,
+    TurnEnded,
+    TurnStarted,
+)
 from jean_code.core.llm import UserMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile, agent_tree
@@ -276,7 +284,7 @@ def test_a_foreground_subagent_rebuilds_under_its_path_with_its_profile():
     assert agent.run_turn("go") == "answered"
     check_replay(agent, events)
     added = events.of("main/1")[0]
-    child = agent.node.children[0].agent
+    child = agent_tree(agent)["main/1"]
     tools = scripted(child).requests[-1].get("tools", [])
     assert added == AgentAdded(
         path="main/1",
@@ -326,13 +334,14 @@ def test_a_nested_subagent_rebuilds_under_its_grandparent_root():
 def test_an_agent_built_on_any_child_node_is_seen():
     # Catches agents from something other than spawn (the engine, later) invisible to the root's listener.
     events = Recorder()
-    group = root(events).child(None, name="wf1", task="build it")
-    agent = Agent(client=FakeClient([response("planned")]), node=group.child(None, name="plan", profile="planner"))
+    group = root(events).add_group(None, task="build it", profile="pair")
+    agent = Agent(client=FakeClient([response("planned")]), node=group.add_agent(None, profile="planner"))
     agent.run_turn("plan it")
-    added = events[0]
+    assert events[0] == GroupAdded(path="main/1", profile="pair", task="build it", limit=None)
+    added = events[1]
     tools = scripted(agent).requests[-1].get("tools", [])
     assert added == AgentAdded(
-        path="main/wf1/plan",
+        path="main/1/1",
         profile="planner",
         task="",
         settings=agent.settings,
@@ -341,7 +350,7 @@ def test_an_agent_built_on_any_child_node_is_seen():
         needs_approval=[],
         skills=[],
     )
-    assert tuple(rebuild(events)["main/wf1/plan"]) == agent.messages
+    assert tuple(rebuild(events)["main/1/1"]) == agent.messages
     assert agent.node.agent is agent
 
 

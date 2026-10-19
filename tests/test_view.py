@@ -9,6 +9,7 @@ from jean_code.core.events import (
     Compaction,
     Delivered,
     Delta,
+    GroupAdded,
     JobEnded,
     JobStarted,
     LimitSet,
@@ -21,7 +22,7 @@ from jean_code.core.events import (
 )
 from jean_code.core.llm import AssistantMessage, UserMessage
 from jean_code.core.usage import ModelCall
-from jean_code.core.view import AgentView, TreeState, apply
+from jean_code.core.view import AgentView, GroupState, TreeState, apply, snapshot
 
 # ---------------------------------------------------------------- the reducer
 
@@ -71,14 +72,41 @@ def test_the_reducer_drops_a_draft_once_its_reply_lands():
     assert not state.agents["main"].running and state.agents["main"].end == "answered"
 
 
-def test_a_limit_change_reaches_its_agent_and_one_without_an_agent_is_ignored():
-    # Catches a raised budget the inspector never shows, or a crash on a grouping node's limit (the engine's, later).
+def test_a_limit_change_reaches_its_agent_or_group_and_one_with_no_state_is_ignored():
+    # Catches a raised budget the inspector never shows, or a crash on the limit of a spawn whose start failed.
     state = TreeState()
     apply(state, agent_added("main", limit=1.0))
+    apply(state, GroupAdded(path="main/1", profile="pair", task="compare", limit=0.5))
     assert state.agents["main"].limit == 1.0
     apply(state, LimitSet(path="main", limit=2.0))
-    apply(state, LimitSet(path="main/wf1", limit=0.5))
-    assert state.agents["main"].limit == 2.0 and list(state.agents) == ["main"]
+    apply(state, LimitSet(path="main/1", limit=0.7))
+    apply(state, LimitSet(path="main/2", limit=0.5))
+    assert state.agents["main"].limit == 2.0 and state.groups["main/1"].limit == 0.7
+    assert list(state.agents) == ["main"] and list(state.groups) == ["main/1"]
+
+
+def test_an_agents_call_counts_toward_its_group_and_the_root():
+    # Catches a group whose spend stays at zero, or a call counted toward a group it isn't under.
+    state = TreeState()
+    apply(state, agent_added("main"))
+    apply(state, GroupAdded(path="main/1", profile="pair", task="compare", limit=None))
+    apply(state, GroupAdded(path="main/2", profile="pair", task="other", limit=None))
+    apply(state, agent_added("main/1/1"))
+    apply(state, Charged(path="main/1/1", call=call_for("main/1/1", 0.25)))
+    assert state.groups["main/1"] == GroupState("main/1", "pair", "compare", None, spent=0.25)
+    assert state.agents["main"].spent == 0.25 and state.groups["main/2"].spent == 0
+
+
+def test_a_snapshot_keeps_its_groups_when_a_later_event_changes_them():
+    # Catches a client's copy whose group spend moves under it.
+    state = TreeState()
+    apply(state, agent_added("main"))
+    apply(state, GroupAdded(path="main/1", profile="pair", task="compare", limit=None))
+    apply(state, agent_added("main/1/1"))
+    copy = snapshot(state)
+    apply(state, Charged(path="main/1/1", call=call_for("main/1/1", 0.25)))
+    apply(state, LimitSet(path="main/1", limit=1.0))
+    assert copy.groups["main/1"] == GroupState("main/1", "pair", "compare", None)
 
 
 def test_an_agent_keeps_what_it_was_built_with():

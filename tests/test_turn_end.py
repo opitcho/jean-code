@@ -75,7 +75,7 @@ def tool_reply(name="add", cost=0.004, prompt=100, **args) -> dict:
 
 
 def cancelled_agent() -> Agent:
-    node = AgentNode().child(1.0, "1")
+    node = AgentNode().add_agent(1.0)
     node.cancel()
     return make_agent([response("never")], node=node)
 
@@ -173,7 +173,7 @@ def test_a_stopped_agent_stays_stopped_until_its_node_is_reopened():
 def test_a_stop_reaches_every_agent_below():
     # Catches a stop that ends only the agent's own turn and leaves its subagents running.
     agent = make_agent([response("hi")])
-    run_node = agent.node.child(1.0, "1")
+    run_node = agent.node.add_agent(1.0)
     agent.interrupt()
     assert run_node.cancelled
 
