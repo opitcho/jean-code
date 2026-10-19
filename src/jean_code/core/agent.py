@@ -249,7 +249,7 @@ class Agent:
                 skills=list(self.skills.catalog),
             )
         )
-        self.messages: tuple[Message, ...] = ()
+        self.messages: tuple[Message, ...] = () # Stored as tuple for immutability.
         if system:
             self._append(SystemMessage(content=system))
 

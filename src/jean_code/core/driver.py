@@ -5,6 +5,8 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import ClassVar
 
 from jean_code.core.agent import NOT_RUN, Agent
 from jean_code.core.events import (
@@ -12,6 +14,7 @@ from jean_code.core.events import (
     ApprovalRequested,
     ApprovalResolved,
     JobEnded,
+    JobKind,
     JobStarted,
     Queued,
     ViewEvent,
@@ -22,6 +25,24 @@ from jean_code.core.view import AgentView
 
 Approve = Callable[[str, dict], str | None]
 Build = Callable[[AgentNode, Approve], Agent]
+
+
+@dataclass(frozen=True)
+class _Turn:
+    """A turn on the user's message `text`."""
+
+    kind: ClassVar[JobKind] = "turn"
+    text: str
+
+
+@dataclass(frozen=True)
+class _Compaction:
+    """A compaction of the context, whatever its size."""
+
+    kind: ClassVar[JobKind] = "compact"
+
+
+_Job = _Turn | _Compaction
 
 
 class Busy(RuntimeError):
@@ -68,7 +89,7 @@ class Driver:
         self._lock = threading.Lock()  # guards the fields below; never held while an agent works
         self._busy = False
         self._job: threading.Thread | None = None
-        self._queued: str | None = None
+        self._queued: _Turn | None = None
         self._approval: Approval | None = None
         self._answered = threading.Event()
         self._refusal: str | None = None
@@ -94,12 +115,12 @@ class Driver:
             if self._busy:
                 if self._queued is not None:
                     raise Busy("a message already waits for the running job to stop")
-                self._queued = text
+                self._queued = _Turn(text)
                 self._emit(Queued(text=text))
                 self._stop_locked()
                 return
-            self._begin_locked("turn", text)
-        self._spawn("turn", text)
+            self._begin_locked(job := _Turn(text))
+        self._spawn(job)
 
     def compact(self) -> None:
         """Starts compacting the context, whatever its size.
@@ -110,8 +131,8 @@ class Driver:
         with self._lock:
             if self._busy:
                 raise Busy("a job is running; wait for it to end, or stop it")
-            self._begin_locked("compact", "")
-        self._spawn("compact", "")
+            self._begin_locked(job := _Compaction())
+        self._spawn(job)
 
     def cancel(self, path: str = "main") -> None:
         """Stops the agent at `path`, and every agent below it, before its next model call.
@@ -183,30 +204,34 @@ class Driver:
     def _emit(self, event: ViewEvent) -> None:
         self.view.listen(event)
 
-    def _begin_locked(self, kind, text: str) -> None:
+    def _begin_locked(self, job: _Job) -> None:
         self._busy = True
         # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
         self._agent.node.reopen()
-        self._emit(JobStarted(kind=kind, text=text))
+        self._emit(JobStarted(kind=job.kind, text=job.text if isinstance(job, _Turn) else ""))
 
-    def _spawn(self, kind, text: str) -> None:
-        self._job = threading.Thread(target=self._run, args=(kind, text), name=f"driver {kind}", daemon=True)
+    def _spawn(self, job: _Job) -> None:
+        self._job = threading.Thread(target=self._run, args=(job,), name=f"driver {job.kind}", daemon=True)
         self._job.start()
 
-    def _run(self, kind, text: str) -> None:
+    def _run(self, job: _Job) -> None:
         while True:
             result, error = None, None
             try:
-                result = self._agent.run_turn(text) if kind == "turn" else self._agent.compact(force=True)
+                match job:
+                    case _Turn(text=text):
+                        result = self._agent.run_turn(text)
+                    case _Compaction():
+                        result = self._agent.compact(force=True)
             except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
                 error = error_line(e)  # the agent recorded its stack as it left
             with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
                 self._busy = False
-                self._emit(JobEnded(kind=kind, result=result, error=error))
+                self._emit(JobEnded(kind=job.kind, result=result, error=error))
                 if self._queued is None:
                     return
-                kind, text, self._queued = "turn", self._queued, None
-                self._begin_locked(kind, text)
+                job, self._queued = self._queued, None
+                self._begin_locked(job)
 
     def _approve(self, name: str, arguments: dict) -> str | None:
         with self._lock:

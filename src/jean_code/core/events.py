@@ -14,6 +14,9 @@ from jean_code.core.usage import ModelCall
 # How a turn ended. The values are the text shown for it, and keys once stored: don't reword them.
 TurnEnd = Literal["answered", "budget spent", "cancelled", "context full", "out of tool rounds"]
 
+# What a driver's job is: a turn, or a compaction.
+JobKind = Literal["turn", "compact"]
+
 
 class Event(BaseModel):
     """Something an agent did, as it reports it.
@@ -285,7 +288,7 @@ class JobStarted(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     type: Literal["job_started"] = "job_started"
-    kind: Literal["turn", "compact"]
+    kind: JobKind
     text: str = ""
 
 
@@ -312,7 +315,7 @@ class JobEnded(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     type: Literal["job_ended"] = "job_ended"
-    kind: Literal["turn", "compact"]
+    kind: JobKind
     result: str | None = None
     error: str | None = None
 
