@@ -281,7 +281,7 @@ class Subscription:
     def __init__(self, view: AgentView, state: TreeState):
         self.view = view
         self.state = state
-        self.queue: queue.Queue[ViewEvent] = queue.Queue()
+        self.queue: queue.SimpleQueue[ViewEvent] = queue.SimpleQueue()
 
     def get(self, timeout: float | None = None) -> ViewEvent:
         """Returns the next event, waiting for it.
@@ -312,7 +312,7 @@ class Subscription:
 class AgentView:
     """The state of an agent tree, built from its events, for any number of readers.
 
-    Thread-safe: events may arrive from every agent's thread at once.
+    Thread-safe: events may arrive from every agent's thread at once, and `listen` may be called under any lock.
     """
 
     def __init__(self):
@@ -322,6 +322,9 @@ class AgentView:
 
     def listen(self, event: ViewEvent) -> None:
         """Folds `event` into the state and passes it to every subscriber.
+
+        Holds the view's lock only while it updates the state and queues the event for subscribers, and takes no other
+        lock, so it may be called while holding any other lock.
 
         Args:
             event: An agent's or a driver's event.

@@ -110,7 +110,7 @@ class AgentNode:
     def charge(self, call: ModelCall) -> None:
         """Records one model call at this node, and emits it as `Charged`.
 
-        The call also goes into the tree's `journal`. The event is emitted without holding the tree's lock.
+        The call also goes into the tree's `journal`.
 
         Args:
             call: The call, tagged with this node's path.
@@ -128,8 +128,8 @@ class AgentNode:
     def emit(self, event: AgentEvent) -> None:
         """Hands `event` to the root's listener, if there is one.
 
-        The listener runs on the calling thread, never under the tree's lock. It must not block and must not touch
-        any agent: it records the event and returns.
+        The listener runs on the calling thread, possibly while a lock is held, so it must take no lock but its own.
+        `AgentView.listen` takes only the view's.
 
         Args:
             event: What the agent did.

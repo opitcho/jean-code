@@ -4,6 +4,7 @@
 Each test names the bug it would catch.
 """
 
+import signal
 import threading
 
 from conftest import FakeClient, call, response, usage
@@ -193,6 +194,41 @@ def test_ctrl_d_at_the_approval_prompt_stops_the_turn(monkeypatch, capsys):
     repl(session)
     out = capsys.readouterr().out
     assert ran == [] and out.count(f"result> {NOT_RUN}") == 2 and "[cancelled]" in out
+
+
+def test_ctrl_c_mid_turn_stops_the_turn(capsys):
+    # Catches a Ctrl+C that never reaches the driver, or one whose handler waits on a lock its own thread holds.
+    release = threading.Event()
+
+    @tool
+    def hold() -> str:
+        """Wait until released."""
+        release.wait(TIMEOUT)
+        return "released"
+
+    session, built = make_session([response(tool_calls=[call("hold")]), response("never")], tools={"hold": hold})
+
+    def ignore(signum, frame):
+        pass
+
+    def press_ctrl_c():
+        wait_for(lambda: signal.getsignal(signal.SIGINT) is not ignore)  # the REPL's handler is in
+        signal.raise_signal(signal.SIGINT)
+        try:
+            wait_for(lambda: built[0].node.cancelled)
+        finally:
+            release.set()  # also when it never stops: the turn then answers, and the test fails instead of hanging
+
+    original = signal.signal(signal.SIGINT, ignore)  # a signal before the REPL's handler is in can't reach pytest
+    helper = threading.Thread(target=press_ctrl_c)
+    try:
+        helper.start()
+        ended = run(session, "go")
+    finally:
+        signal.signal(signal.SIGINT, original)
+        release.set()
+        helper.join(TIMEOUT)
+    assert ended.result == "cancelled" and "agent> never" not in capsys.readouterr().out
 
 
 def test_repl_logs_every_call_and_says_when_a_log_stops(monkeypatch, capsys, tmp_path):

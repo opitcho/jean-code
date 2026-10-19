@@ -249,7 +249,7 @@ class Agent:
                 skills=list(self.skills.catalog),
             )
         )
-        self.messages: tuple[Message, ...] = () # Stored as tuple for immutability.
+        self.messages: tuple[Message, ...] = ()  # Stored as tuple for immutability.
         if system:
             self._append(SystemMessage(content=system))
 
@@ -318,8 +318,7 @@ class Agent:
 
         A reply that has arrived still has its tool calls run to the end; a streamed reply still arriving is cut
         off, keeping its text and running none of its tool calls. The turn then ends "cancelled". The agent stays
-        stopped, also for its next turn, until its node is reopened. Safe to call from another thread or a signal
-        handler.
+        stopped, also for its next turn, until its node is reopened. Safe to call from another thread.
         """
         self.node.cancel()
 

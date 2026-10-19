@@ -22,6 +22,7 @@ from jean_code.core.events import (
     MessageAdded,
     TurnEnded,
     TurnStarted,
+    ViewEvent,
 )
 from jean_code.core.llm import AssistantMessage, Message, ToolMessage, openrouter
 from jean_code.core.node import AgentNode
@@ -166,13 +167,12 @@ def ask_approval(driver: Driver, approval: Approval) -> None:
         driver.answer(approval.id, denied("" if answer.lower() in {"", "n", "no"} else answer))
 
 
-def next_event(events: Subscription):
-    """Returns the next event, waiting in short steps so a Ctrl+C's handler can run."""
-    while True:
-        try:
-            return events.get(timeout=POLL_SECONDS)
-        except queue.Empty:
-            continue
+def next_event(events: Subscription) -> ViewEvent | None:
+    """Returns the next event, or None after `POLL_SECONDS` without one."""
+    try:
+        return events.get(timeout=POLL_SECONDS)
+    except queue.Empty:
+        return None
 
 
 def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
@@ -192,8 +192,11 @@ def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
     else:
         driver.send(line)
 
+    pressed = False
+
     def on_sigint(signum, frame):
-        driver.cancel()
+        nonlocal pressed
+        pressed = True  # nothing else: a handler that takes a lock can wait on its own thread
 
     compactions = 0
     out = Printer()
@@ -201,6 +204,11 @@ def run_and_print(driver: Driver, events: Subscription, line: str) -> JobEnded:
     try:
         while True:
             event = next_event(events)
+            if pressed:
+                pressed = False
+                driver.cancel()
+                if isinstance(event, ApprovalRequested):
+                    continue  # the cancel refused it: don't prompt for a call that's already answered
             match event:
                 case Delta(path="main"):
                     out.delta(event.kind, event.text)

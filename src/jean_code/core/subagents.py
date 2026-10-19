@@ -533,7 +533,7 @@ class Subagents:
             ids = self._pending_ids() if run_id is None else [i for i in self._pending_ids() if i == run_id]
             self._delivered.update(self.runs[i][1] for i in ids)
             claimed = [(i, *self.runs[i]) for i in ids]
-        self._deliver([run for _, _, run in claimed])  # outside the lock: the listener takes the view's lock
+        self._deliver([run for _, _, run in claimed])
         return claimed
 
     def _deliver(self, runs: list[Run]) -> None:
