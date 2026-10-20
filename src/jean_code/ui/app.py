@@ -400,7 +400,7 @@ def render_sidebar_top(state: TreeState) -> None:
             on_change=apply_settings,
             disabled=state.busy,
             help="Coding: a shell, web tools and helper subagents. Orchestrator: no shell; it runs expert subagents "
-            "(planner, pm, architect, engineer, auditor), each in its own sandbox. Starts a new chat.",
+            "(pm, architect, engineer, auditor), each in its own sandbox. Starts a new chat.",
         )
         if orchestrating():
             return  # no shell, so no sandbox question

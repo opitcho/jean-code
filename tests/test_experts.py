@@ -90,7 +90,7 @@ def test_the_build_skill_has_rules_for_every_step_it_audits():
     assert skills.catalog["build"].description
     steps = set(re.findall(r"`([A-Z]+)-\*`", skills.load_skill("build")))
     rules = skills.read_skill_file("build", "rules.md")
-    assert steps == {"PLAN", "PRD", "SPEC", "IMPL", "SWEEP"}
+    assert steps == {"PRD", "SPEC", "IMPL", "SWEEP"}
     for step in steps:
         assert re.search(rf"\*\*{step}-\d+\*\*", rules), step
 
@@ -105,7 +105,7 @@ def test_experts_have_room_for_a_whole_step(tmp_path):
 
 
 def test_the_orchestrator_has_room_for_a_whole_build():
-    # Catches the default 10 rounds: a build (4 experts, a sweep, and reruns after a failed sweep) stops halfway.
+    # Catches the default 10 rounds: a build (3 experts, a sweep, and reruns after a failed sweep) stops halfway.
     agent = orchestrator_agent("m", skills_dir=None)
     try:
         assert agent.settings.max_tool_rounds == 40

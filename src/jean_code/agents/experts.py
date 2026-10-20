@@ -1,10 +1,9 @@
 """The orchestrator, a root agent, and its experts.
 
-The experts are a planner, a product manager, an architect, an engineer and an auditor. The orchestrator has skills,
-the experts and the `research` subagent, and no other tools: no shell, so it routes the work and can't do it itself.
-Each expert is a role
-prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so files it writes there are
-shared with the other experts and with the user. The experts don't know about any particular pipeline: the brief
+The experts are a product manager, an architect, an engineer and an auditor. The orchestrator has skills, the experts
+and the `research` subagent, and no other tools: no shell, so it routes the work and can't do it itself. Each expert is
+a role prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so files it writes there
+are shared with the other experts and with the user. The experts don't know about any particular pipeline: the brief
 names what to read and what to write, and for the auditor which rules to check. A skill decides how to put them
 together (the `build` skill is one way). Every agent built here streams its replies.
 """
@@ -50,37 +49,34 @@ described in a paragraph needs pages, not chapters.
 - End your reply with the paths you wrote.
 """
 
-PLANNER_PROMPT = f"""\
-You are a planner. You turn a request into a plan someone else can write requirements from. You may search the web \
-to understand the domain or the options.
-
-A plan has these sections: Goal (one paragraph), Scope (in and out), Assumptions (each one that changes the scope), \
-Approach (the shape of the solution and the main choices, with why), and Risks. Scope (in) holds only what the \
-request asks for, or what it can't work without; anything else you'd add goes under Scope (out). A task described in \
-a paragraph gets a plan of under a page, with one line per assumption and per risk.
-
-{EXPERT_CONTRACT}"""
-
 PM_PROMPT = f"""\
-You are a product manager. You turn a plan into a PRD: what the product must do, not how.
+You are a product manager. You turn a request into a PRD: what the product must do and what it leaves out, not how \
+it's built.
 
-A PRD lists requirements numbered R1…Rn. Each one is a behaviour the user asked for, or one it can't work \
-without, with acceptance criteria someone could test without asking you anything. A plan's approach, assumptions and \
-risks explain how; they aren't requirements, and neither are the product's docs, tests or run instructions. \
-A behaviour's details (fields, limits, error cases) are acceptance criteria of its requirement, not requirements \
-of their own: a small API, CLI or app needs about 3 to 10 requirements. Add Non-goals for what you leave out.
+A PRD has these sections: Scope (in and out), Assumptions, and Requirements numbered R1…Rn. Scope (in) holds only \
+what the request asks for, or what it can't work without; anything else you'd add goes under Scope (out). An \
+assumption is a choice the request leaves open that narrows or fixes the scope, in one line. A requirement is a \
+behaviour the user asked for, or one it can't work without, with acceptance criteria a test could check without \
+asking you anything. A behaviour's details (fields, limits, error cases) are acceptance criteria of its requirement, \
+not requirements of their own: a small API, CLI or app needs about 3 to 10 requirements. A deliverable that isn't a \
+behaviour (a README, packaging, a test suite) is never a requirement: it goes under Scope (in) if the request asks \
+for it. A UI's criteria say what it shows and what it does with input, not how it looks.
 
 {EXPERT_CONTRACT}"""
 
 ARCHITECT_PROMPT = f"""\
-You are a software architect. You turn a PRD into a spec an engineer can build from without guessing.
+You are a software architect. You turn a PRD into a spec an engineer can build from without guessing. You may search \
+the web to choose a library or check how one works.
 
-A spec has: Stack, Layout (files and folders), Interfaces (function signatures, endpoints, schemas: concrete, not \
-described), Data model, and Tasks numbered T1…Tn. Each task cites the requirement ids it covers and names the test \
-that proves it. Every requirement is covered by at least one task. Choose the simplest design that meets the PRD: \
-the fewest files, functions and dependencies, so a small task fits in one module and one test file. Write it for the \
-engineer: interfaces in code blocks, one line per task, and nothing the PRD already says. A small task's spec fits on \
-a page or two, with a handful of tasks.
+A spec has: Stack (with a line of why for each choice the PRD leaves open), Layout (files and folders), Interfaces \
+(function signatures, endpoints, schemas: concrete, not described), Data model, and Tasks numbered T1…Tn. Each task \
+cites the requirement ids it covers and names the automated test that proves it. Every requirement is covered by at \
+least one task. Files that aren't behaviour (a README, packaging) are in the Layout, not in Tasks. A UI is tested \
+through its framework's test client (Streamlit's `AppTest`, a web framework's test client for the pages it serves); \
+put any logic a test can't reach that way behind functions or endpoints it can call. Choose the simplest design that \
+meets the PRD: the fewest files, functions and dependencies, so a small task fits in one module and one test file. \
+Write it for the engineer: interfaces in code blocks, one line per task, and nothing the PRD already says. A small \
+task's spec fits on a page or two, with a handful of tasks.
 
 {EXPERT_CONTRACT}"""
 
@@ -120,20 +116,14 @@ verdict file's path.
 """
 
 EXPERTS = {  # name → (listing line, role prompt, max_cost, max_cost_cap)
-    "planner": (
-        "turns a request into a plan: goal, scope, assumptions, approach, risks",
-        PLANNER_PROMPT,
-        0.25,
-        0.75,
-    ),
     "pm": (
-        "turns a plan into a PRD: numbered requirements with acceptance criteria",
+        "turns a request into a PRD: scope, assumptions, numbered requirements with acceptance criteria",
         PM_PROMPT,
         0.25,
         0.75,
     ),
     "architect": (
-        "turns a PRD into a spec: design, interfaces, tasks tied to requirement ids",
+        "turns a PRD into a spec: stack, interfaces, tasks tied to requirement ids and the tests that prove them",
         ARCHITECT_PROMPT,
         0.50,
         1.5,
@@ -172,7 +162,7 @@ def orchestrator_agent(
         model: OpenRouter model id, for it and its experts.
         network: Whether the experts' containers get a network.
         skills_dir: Folder of skills the model can load.
-        max_tool_rounds: As for `Agent`. Agent's default of 10 runs out during a build: 4 experts and a sweep,
+        max_tool_rounds: As for `Agent`. Agent's default of 10 runs out during a build: 3 experts and a sweep,
             then the reruns a failed sweep asks for.
         workspace: The folder the experts' containers mount at /workspace; research's run folders go in its
             `research/`.

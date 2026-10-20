@@ -1,13 +1,13 @@
 ---
 name: build
-description: Build a small piece of software end to end with expert subagents (plan, PRD, spec, implementation), then an auditor's sweep that checks every step against its rules. Use when the user wants something built from a description, not a quick edit to their code.
+description: Build a small piece of software end to end with expert subagents (PRD, spec, implementation), then an auditor's sweep that checks every step against its rules. Use when the user wants something built from a description, not a quick edit to their code.
 ---
 
 # Build
 
-You orchestrate. Experts do the work: `planner`, `pm`, `architect` and `engineer` build in turn, then an `auditor`
-sweeps the whole run and checks every step against its rules. They hand work over through files in one run
-folder. You route the work, read the verdict, and talk to the user.
+You orchestrate. Experts do the work: `pm`, `architect` and `engineer` build in turn, then an `auditor` sweeps the
+whole run and checks every step against its rules. They hand work over through files in one run folder. You route
+the work, read the verdict, and talk to the user.
 
 If the experts aren't listed under "## Subagents", you can't run a build: tell the user to start the
 orchestrator agent (`jean-code --agent orchestrator`, or "Orchestrator" in the app's sidebar), and stop.
@@ -25,8 +25,7 @@ where the experts see it (their shell starts in `/workspace`). On the user's mac
 
 ```
 builds/<slug>/
-  task.md        the task as the user agreed it (the planner saves it)
-  plan.md        planner
+  task.md        the task as the user agreed it (the pm saves it)
   prd.md         pm
   spec.md        architect
   impl/          engineer: the code, its tests, and NOTES.md
@@ -43,31 +42,30 @@ The task is the user's request and their answers, nothing more: add no feature, 
 line.
 
 ## 2. Run the steps
-Run the four steps in order, then the sweep. Spawn each expert blocking (no background) as soon as the one
+Run the three steps in order, then the sweep. Spawn each expert blocking (no background) as soon as the one
 before it has finished: there is no audit between steps.
 
 | Step | Expert | Reads | Writes | Rules the sweep checks |
 |---|---|---|---|---|
-| plan | planner | the task (in the brief) | `task.md`, `plan.md` | `PLAN-*` |
-| prd | pm | `task.md`, `plan.md` | `prd.md` | `PRD-*` |
+| prd | pm | the task (in the brief) | `task.md`, `prd.md` | `PRD-*` |
 | spec | architect | `task.md`, `prd.md` | `spec.md` | `SPEC-*` |
 | impl | engineer | `task.md`, `spec.md` | `impl/` | `IMPL-*` |
 | sweep | auditor | everything | `audit/sweep-<n>.md` | `SWEEP-*` |
 
 An expert's brief is these three lines:
 ```
-Step: prd
-Read: builds/books-api/task.md, builds/books-api/plan.md
-Write: builds/books-api/prd.md
+Step: spec
+Read: builds/books-api/task.md, builds/books-api/prd.md
+Write: builds/books-api/spec.md
 ```
-The planner's brief has the agreed task under `Task:`, and `Write: builds/<slug>/task.md (the task, verbatim),
-builds/<slug>/plan.md`.
+The pm's brief has the agreed task under `Task:`, and `Write: builds/<slug>/task.md (the task, verbatim),
+builds/<slug>/prd.md`.
 
 ## 3. The sweep
 Read the rules with `read_skill_file("build", "rules.md")`, then spawn the auditor:
 ```
 Audit step: sweep (attempt 1)
-Inputs: builds/books-api/ (task.md, plan.md, prd.md, spec.md, impl/)
+Inputs: builds/books-api/ (task.md, prd.md, spec.md, impl/)
 Output to check: the whole run folder
 Write the verdict to: builds/books-api/audit/sweep-1.md
 Run the tests once, the way impl/NOTES.md says, and use that run for every rule that needs it.
@@ -97,10 +95,10 @@ Report the sweep's verdict and how many sweeps it took, the run folder's path on
 run the result and its tests (the engineer's last reply says).
 
 ## 6. Change requests
-Every change starts at the plan, since every rule is checked against `task.md`. Resume the planner (or spawn it,
-if its run is gone) with: `The user asked for a change: <their words>. Add it to builds/<slug>/task.md under
-"## Changes", in their words, and update plan.md to match; change nothing else.` Then resume each later step's
-expert in order with `<the file before it> changed: update your file to match, change nothing else`. Then sweep
-(section 3) and report.
+Every change starts at the prd, since every rule is checked against `task.md`. Resume the pm (or spawn it, if its
+run is gone) with: `The user asked for a change: <their words>. Add it to builds/<slug>/task.md under "## Changes",
+in their words, and update prd.md to match; change nothing else.` Then resume each later step's expert in order
+with `<the file before it> changed: update your file to match, change nothing else`. Then sweep (section 3) and
+report.
 
 If the user edited a file themselves, rerun the steps after it, then sweep.

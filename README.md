@@ -37,7 +37,7 @@ docker build -t jean-code-sandbox sandbox/
 | Web | Searches the web and reads pages |
 | Subagents | Hands work to a web researcher, or a coding agent in its own sandbox |
 | Research reports | Runs researchers in the background and writes a cited report, each quote checked against the page it came from |
-| Expert builds | An orchestrator takes a project through plan, PRD, spec and implementation |
+| Expert builds | An orchestrator takes a project through a PRD, a spec and an implementation, then an auditor checks every step |
 | Skills | Learns a task from a folder in `skills/` |
 | Cost control | Shows what a session costs and stops at a limit you set |
 | Context compaction | Summarizes the middle of a long conversation once it fills the context, keeping the first and last turns; `/compact` does it on demand |
