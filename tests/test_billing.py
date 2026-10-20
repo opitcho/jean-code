@@ -138,7 +138,7 @@ def test_budget_is_checked_before_every_call():
 
 
 def test_spending_exactly_the_budget_stops():
-    # Catches `>=` changed to `>`. Sums of 0.004 are exact (.experiments/output/budget_plan_check.txt).
+    # Catches `>=` changed to `>`. Sums of 0.004 are exact.
     agent, client = make_agent([tool_reply() for _ in range(11)], max_cost=0.008)
     agent.run_turn("go")
     assert len(client.requests) == 2

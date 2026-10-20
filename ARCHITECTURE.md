@@ -1,6 +1,5 @@
 # Architecture notes
 
-
 - **Most classes take their collaborators through dependency injection**, so each subcomponent can be tested
   on its own with a fake in its place. For example, `Agent` takes its `client` (a fake model in the tests) and its
   `node` (its place in the work tree) as constructor arguments instead of building them itself.
@@ -20,12 +19,7 @@
 - **Parsing at the boundary.** Responses are parsed into typed messages as they come in (`core/llm.py`), so a
   malformed one raises `MalformedResponse` at once instead of failing later deep in the agent. Malformed tool
   arguments go back to the model as the tool's result, so it can retry.
-- **Error Tracebacks** - Tool calls or subagents, errors fed back into context for model driving to be able to adapt.
-  The model gets the error as one line; the full stack goes in the trace. Each agent records every exception its
-  code catches as an `ErrorCaught` event in its own `events.jsonl`: where it swallows one (a tool's error result, a
-  failed summary), or where one leaves it (`run_turn`, `compact`, `close`). Its callers record nothing.
-
-
-- **Two Approaches**:
-
-- Decoupling? --> What if harness fails?
+- **Errors go back to the model.** A failing tool call or subagent comes back to the model as its result, so it can
+  adapt. The model gets the error as one line; the full stack goes in the trace. Each agent records every exception
+  its code catches as an `ErrorCaught` event in its own `events.jsonl`: where it swallows one (a tool's error
+  result, a failed summary), or where one leaves it (`run_turn`, `compact`, `close`). Its callers record nothing.

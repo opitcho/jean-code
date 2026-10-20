@@ -29,7 +29,6 @@ POLL_SECONDS = 0.2  # how often a wait checks whether the parent was stopped
 FOLLOW_UP = "Follow-up from the agent that started you:\n\n"  # starts a resumed run's message: its note says one task
 
 
-# TODO: Customized tools per profile
 @dataclass(frozen=True)
 class Profile:
     """The spec of one kind of subagent: its purpose, its limits, and how to start one.

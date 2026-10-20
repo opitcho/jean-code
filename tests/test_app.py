@@ -15,6 +15,7 @@ from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
 from jean_code.core.events import Delta, MessageAdded
+from jean_code.core.llm import AssistantMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
@@ -285,9 +286,7 @@ def test_a_thought_streaming_in_opens_in_full_and_stays_open_when_it_lands():
         assert thought in markdowns(at)
         uids = [i.uid for i in session.view.state().agents["main"].items]
         session.view.listen(
-            MessageAdded(
-                path="main", message={"role": "assistant", "content": "ok", "reasoning": thought}, context_tokens=1
-            )
+            MessageAdded(path="main", message=AssistantMessage(content="ok", reasoning=thought), context_tokens=1)
         )
         at.run()
         assert session.view.state().agents["main"].items[-1].uid == max(uids) + 1

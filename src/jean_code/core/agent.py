@@ -453,7 +453,7 @@ class Agent:
 
         request = self._build_request(UserMessage(content=summary_prompt(replaced, tail, self.settings.keep_last)))
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
-        # block and misses the cache (.experiments/output/compaction_check_run1_tool_choice_none.txt).
+        # block and misses the cache.
         # A reply with tool calls counts as a failure instead.
         calls = self.node.entries
         booked = len(calls)

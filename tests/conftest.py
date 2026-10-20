@@ -14,7 +14,7 @@ from jean_code.core.events import AgentAdded, Settings
 from jean_code.core.llm import ChatRequest, Completion, StreamingClient, parse_completion, render_request
 from jean_code.tools import pages
 
-# A real usage payload and its response metadata, from `.experiments/output/usage_check.txt` (turn 2).
+# A real usage payload and its response metadata, from an OpenRouter reply.
 REAL_USAGE = {
     "prompt_tokens": 1433,
     "completion_tokens": 2,
@@ -35,7 +35,7 @@ REAL_META = {
     "model": "deepseek/deepseek-v4.1-flash",
     "created": 1789748403,
 }
-# A stored reply, verbatim: message 5 of workspace/research/20261014-222721-296382/agents/main-1-1.json.
+# A reply stored by a real research run, verbatim.
 REAL_ASSISTANT = {
     "role": "assistant",
     "reasoning": "Let me retry searches.",

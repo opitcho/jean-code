@@ -12,7 +12,7 @@ from jean_code.core import llm
 from jean_code.core.llm import ChatRequest, Completion, MalformedResponse, StreamingClient, TextDelta, render_message
 
 REQUEST = ChatRequest("m", (), (), None)
-# The chunks of a real streamed reply, from `.experiments/output/openrouter_stream_roundtrip.txt` (round 1).
+# The chunks of a real streamed reply from OpenRouter.
 META = {
     "id": "gen-1789747504-RyoGTjA4HffARiEWPE0t",
     "object": "chat.completion.chunk",
@@ -256,9 +256,9 @@ def pieces(text: str, rng: random.Random) -> list[str]:
 
 
 def as_chunks(response: dict, rng: random.Random) -> list[dict]:
-    """The chunks a provider could stream for a whole `response`, in the order DeepSeek sends them
-    (`.experiments/output/stream_wire.txt`): reasoning, answer, then each tool call's fragments in turn, with every
-    text cut at random points and the usage on the last choice or in a chunk of its own."""
+    """The chunks a provider could stream for a whole `response`, in the order DeepSeek sends them: reasoning,
+    answer, then each tool call's fragments in turn, with every text cut at random points and the usage on the last
+    choice or in a chunk of its own."""
     meta = {key: value for key, value in response.items() if key not in ("object", "choices", "usage")}
     choice = response["choices"][0]
     message = choice["message"]

@@ -1,9 +1,8 @@
 """One whole turn on a fixed trace: the model reasons and calls `add`, the tool runs, the model answers. Checks the
 agent's state at the end, all of it, against what the trace says it must be.
 
-The two replies are the real ones from `.experiments/output/openrouter_stream_roundtrip.txt` (round 1 and round 2A),
-in the shape a non-streamed response has them: one merged `reasoning_details` entry, `index` on each tool call and
-`refusal: null`.
+The two replies are real ones from OpenRouter, in the shape a non-streamed response has them: one merged
+`reasoning_details` entry, `index` on each tool call and `refusal: null`.
 """
 
 import pytest

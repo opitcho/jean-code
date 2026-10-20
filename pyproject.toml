@@ -1,7 +1,7 @@
 [project]
 name = "jean-code"
 version = "0.1.0"
-description = "A small coding agent with a shell, web tools, subagents and skills, with a terminal REPL and a Streamlit UI."
+description = "A fully fledged agent with subagents, tool calling, skills and event-stream tracing, with a terminal REPL and a Streamlit UI."
 authors = [
     { name = "opitcho", email = "oscar.pitcho@live.com" }
 ]
@@ -26,12 +26,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "ipykernel>=7.3.0",
-    "jupyter>=1.1.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
-    "tornado<6.5",
 ]
 
 [tool.pytest.ini_options]
@@ -55,7 +52,7 @@ select = [
     "S",       # bandit
     "T20",     # print outside the front-ends
     "PLE", "PLW",  # pylint errors and warnings
-    "D",       # docstrings, Google style (CLAUDE.md)
+    "D",       # docstrings, Google style
     "SLF001",  # private access, in ui/ only (see per-file-ignores): a client reads the view, not the driver's agent
 ]
 ignore = [
@@ -67,7 +64,7 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "D"]  # assert is how pytest checks; TEMPORARY D: docstring rework in progress
+"tests/**" = ["S101", "D"]  # assert is how pytest checks; test docstrings are free-form
 "tests/test_research.py" = ["E501"]  # verbatim quotes from real pages, split across literals
 "src/jean_code/ui/repl.py" = ["T20"]  # the terminal front-end prints
 "!src/jean_code/ui/**" = ["SLF001"]  # only clients are held to the driver's public surface

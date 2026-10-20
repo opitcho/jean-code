@@ -1,6 +1,7 @@
 # Jean-Code
 
-A minimal coding agent for educational purposes, in your terminal or your browser. Built on
+A fully fledged agent, in your terminal or your browser, with subagents, tool calling, skills, context compaction,
+cost limits and tracing of every agent through an event stream. Every model call goes through
 [OpenRouter](https://openrouter.ai), with DeepSeek V4.1 Flash by default.
 
 ![The Streamlit UI: a research turn's timeline (thinking, a skill load, web searches) and the reply, with the tree of research subagents in the sidebar](docs/screenshot.png)
@@ -17,6 +18,9 @@ uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
 # or the terminal
 uv run --env-file .env jean-code
+
+# the orchestrator, for expert builds ("Orchestrator" in the browser UI's sidebar)
+uv run --env-file .env jean-code --agent orchestrator
 ```
 
 For the Docker sandbox and the `general` subagent, build the image once:

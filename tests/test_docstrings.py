@@ -1,6 +1,6 @@
 """Checks the docstring rule ruff can't: a summary is one line of at most 80 chars.
 
-The rule is in CLAUDE.md. `@tool` docstrings are prompts, so they're left out.
+`@tool` docstrings are prompts, so they're left out.
 """
 
 import ast

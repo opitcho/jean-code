@@ -324,8 +324,7 @@ def test_fan_out_runs_in_parallel():
     parent.run_turn("fan out")
     assert [r.split(">\n")[1].split("\n")[0] for r in tool_results(parent)[3:]] == ["a done", "b done", "c done"]
     # The runs answer even when the barrier breaks (the tool error goes back to them as text), so the proof is
-    # inside: every `meet` returned. Run one after another, each gets "Error: BrokenBarrierError"
-    # (.experiments/output/subagents_fanout_control.txt).
+    # inside: every `meet` returned. Run one after another, each gets "Error: BrokenBarrierError".
     assert [tool_results(run.agent) for _, _, run in parent.subagents.snapshot()] == [["met"]] * 3
 
 

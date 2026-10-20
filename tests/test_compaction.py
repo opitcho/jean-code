@@ -268,8 +268,7 @@ def test_skipped_when_the_kept_turns_alone_are_over_the_threshold(monkeypatch):
 
 def test_an_estimator_that_runs_high_does_not_block_compaction(monkeypatch):
     # Catches the kept part judged by the raw estimate: the estimator errs high by design, so real sessions
-    # would skip compactions that help (seen in .experiments/output/repl_compaction_run.txt: ~2228 "kept"
-    # against a measured context of ~1.8k).
+    # would skip compactions that help (one REPL session estimated ~2228 tokens kept, against a measured ~1.8k).
     monkeypatch.setattr(agent_module, "estimate_tokens", lambda value: 5 * estimate_tokens(value))
     agent, _ = compacted_session()
     assert agent.compactions[-1]["status"] == "compacted"
@@ -286,8 +285,8 @@ def test_below_threshold_does_nothing_unless_forced():
 
 def test_after_compaction_the_old_measurement_is_scaled_down():
     # Catches the measurement not being reset (compaction in a loop), the summary call's 99,999-token prompt
-    # taken for the new context, or a raw estimate that reports the context growing
-    # (.experiments/output/repl_compaction_run3_raw_after.txt: "~2.1k -> ~2.7k", then 1.9k measured).
+    # taken for the new context, or a raw estimate that reports the context growing (one REPL session showed
+    # "~2.1k -> ~2.7k", then measured 1.9k).
     agent, client = compacted_session()
     record = agent.compactions[-1]
     tools = estimate_tokens(client.requests[-1]["tools"])
