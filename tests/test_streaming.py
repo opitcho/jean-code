@@ -63,16 +63,19 @@ def sse(*chunks: dict, keep_alives: int = 0) -> httpx.Response:
     return httpx.Response(200, text="".join(f"{event}\n\n" for event in events))
 
 
-def streaming_client(monkeypatch, *replies: httpx.Response, sent: list | None = None) -> StreamingClient:
-    """A StreamingClient whose HTTP calls return `replies` in order, with no backoff sleeps. Request bodies go to
-    `sent`."""
+def streaming_client(monkeypatch, *replies: httpx.Response | Exception, sent: list | None = None) -> StreamingClient:
+    """A StreamingClient whose HTTP calls return `replies` in order, or raise the ones that are exceptions, with no
+    backoff sleeps. Request bodies go to `sent`."""
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)
     queue = list(replies)
 
     def reply(request: httpx.Request) -> httpx.Response:
         if sent is not None:
             sent.append(json.loads(request.content))
-        return queue.pop(0)
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     client = StreamingClient("https://example.test/api", "key", extra={"provider": {"order": ["deepseek"]}})
     client.http = httpx.Client(transport=httpx.MockTransport(reply))
@@ -167,6 +170,15 @@ def test_a_rate_limited_stream_is_retried(monkeypatch):
     _, completion = split(client.stream(REQUEST))
     assert completion.generation_id == META["id"]
     assert len(sent) == 2
+
+
+def test_a_connection_that_fails_to_open_raises_at_once(monkeypatch):
+    # Catches the client retrying it too: those retries never reach the trace, and they multiply the agent's.
+    sent: list = []
+    client = streaming_client(monkeypatch, httpx.ConnectError("down"), sse(*TOOL_CALL_STREAM), sent=sent)
+    with pytest.raises(httpx.ConnectError):
+        list(client.stream(REQUEST))
+    assert len(sent) == 1
 
 
 def test_an_http_error_raises_with_its_body(monkeypatch):

@@ -5,6 +5,7 @@ Each test names the bug it would catch.
 
 import json
 
+import httpx
 import pytest
 
 from conftest import FakeClient, call, response, scripted
@@ -89,6 +90,49 @@ def test_a_failed_summary_is_recorded():
     [error] = errors(events)
     [compaction] = [e for e in events if isinstance(e, Compaction)]
     assert compaction.status == "failed: " + error.error
+
+
+DROP = httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_connection_that_fails_to_open_is_retried_and_recorded(monkeypatch, stream):
+    # Catches a one-second Wi-Fi drop ending the agent's turn, or a retry the trace never shows.
+    monkeypatch.setattr(agent_module, "NETWORK_RETRY_WAITS", (0, 0))
+    events = Events()
+    agent = Agent(client=FakeClient([DROP, DROP, response("done")]), node=AgentNode(listener=events), stream=stream)
+    assert agent.run_turn("go") == "answered"
+    assert [e.error for e in errors(events)] == [error_line(DROP)] * 2
+    assert all("ConnectError" in e.traceback and e.tool_call_id is None for e in errors(events))
+
+
+def test_a_connection_that_stays_down_ends_the_turn_once_the_retries_run_out(monkeypatch):
+    # Catches an endless retry: an agent that hangs without a word while the network is down.
+    monkeypatch.setattr(agent_module, "NETWORK_RETRY_WAITS", (0, 0))
+    events = Events()
+    client = FakeClient([DROP] * 4)
+    agent = Agent(client=client, node=AgentNode(listener=events))
+    with pytest.raises(httpx.ConnectError):
+        agent.run_turn("go")
+    assert len(client.requests) == 3
+    assert len(errors(events)) == 3  # two retried, and the last one where it leaves the agent
+
+
+def test_a_stop_while_waiting_to_retry_ends_the_turn_at_once(monkeypatch):
+    # Catches a cancel that sits out the whole backoff, or ends the turn as an error.
+    client = FakeClient([DROP, response("done")])
+    agent = Agent(client=client, node=AgentNode())
+    monkeypatch.setattr(agent_module.time, "sleep", lambda s: agent.node.cancel())
+    assert agent.run_turn("go") == "cancelled"
+    assert len(client.requests) == 1
+
+
+def test_a_connection_lost_mid_request_is_not_retried(monkeypatch):
+    # Catches a retry of a request the provider may already be answering, or whose reply was partly shown.
+    monkeypatch.setattr(agent_module, "NETWORK_RETRY_WAITS", (0, 0))
+    agent = Agent(client=FakeClient([httpx.ReadError("connection reset"), response("done")]), node=AgentNode())
+    with pytest.raises(httpx.ReadError):
+        agent.run_turn("go")
 
 
 # ---------------------------------------------------------------- where it leaves the agent

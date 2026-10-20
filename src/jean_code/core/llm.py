@@ -22,6 +22,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1"
 # Pinning turns off OpenRouter's sticky routing, which only matters while DeepSeek is down.
 OPENROUTER_ROUTING = {"provider": {"order": ["deepseek"], "allow_fallbacks": True, "require_parameters": True}}
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+# A connection that couldn't be opened (a failed DNS lookup, a Wi-Fi drop): nothing was sent, so resending is safe
+NETWORK_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
 def _null_as(empty: object) -> BeforeValidator:

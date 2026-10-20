@@ -105,7 +105,7 @@ def test_experts_have_room_for_a_whole_step(tmp_path):
 
 
 def test_the_orchestrator_has_room_for_a_whole_build():
-    # Catches the default 10 rounds: a build (5 steps, each spawned and audited) stops halfway.
+    # Catches the default 10 rounds: a build (4 experts, a sweep, and reruns after a failed sweep) stops halfway.
     agent = orchestrator_agent("m", skills_dir=None)
     try:
         assert agent.settings.max_tool_rounds == 40

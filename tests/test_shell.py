@@ -1,15 +1,18 @@
 """Tests for the shells being usable again after `close()`: a subagent's agent is closed after every turn, and a
-resumed one runs commands on the same shell. The Docker test starts a container, so it's skipped without Docker.
+resumed one runs commands on the same shell, in a new container. The Docker test starts a container, so it's skipped
+without Docker.
 
 Each test names the bug it would catch.
 """
 
+import io
 import shutil
 import subprocess
 import uuid
 
 import pytest
 
+from jean_code.tools import shell as shell_module
 from jean_code.tools.shell import DockerShell, LocalShell
 
 
@@ -55,3 +58,26 @@ def test_a_closed_docker_shell_starts_a_new_container(tmp_path):
         assert "second" in shell.job("1", wait=10)
     finally:
         shell.close()
+
+
+def test_a_new_sandbox_finds_the_package_caches_of_the_last(monkeypatch, tmp_path):
+    # Catches every new container downloading every package again: each run, and each resume, gets a new one.
+    started: list[list[str]] = []
+
+    class Container:
+        stdout = io.StringIO("ready\n")
+
+        def communicate(self):
+            return "", ""
+
+    def popen(command, **kwargs):
+        started.append(command)
+        return Container()
+
+    monkeypatch.setattr(shell_module.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(shell_module.subprocess, "Popen", popen)
+    shell = DockerShell(tmp_path)
+    shell.start()
+    shell.close()
+    [command] = started
+    assert "XDG_CACHE_HOME=/workspace/.cache" in command

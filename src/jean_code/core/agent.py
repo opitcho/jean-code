@@ -7,6 +7,7 @@ ends a turn early. `estimate_tokens` and `message_tokens` estimate prompt sizes.
 import itertools
 import json
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from jean_code.core.events import (
     TurnStarted,
 )
 from jean_code.core.llm import (
+    NETWORK_ERRORS,
     AssistantMessage,
     ChatBackend,
     ChatRequest,
@@ -53,6 +55,7 @@ from jean_code.core.tool_schema import is_tool, tool_schema
 from jean_code.core.usage import ModelCall
 
 log = logging.getLogger(__name__)
+NETWORK_RETRY_WAITS = (1, 2, 4, 8, 16)  # seconds before each retry of a model call that couldn't connect: ~30 s in all
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 CONTEXT_WINDOW = 1_048_576  # tokens, for DEFAULT_MODEL (OpenRouter's /models)
@@ -319,7 +322,8 @@ class Agent:
 
         Adds the user's message, with a command's output if it starts with `/name` and any background subagent
         results not yet delivered, then calls the model until it answers. Emits `TurnStarted`, then exactly one
-        `TurnEnded`, also when the turn raises; then an `ErrorCaught` comes just before it.
+        `TurnEnded`, also when the turn raises; then an `ErrorCaught` comes just before it. A model call that can't
+        open a connection is retried for about 30 seconds, and each failed try is emitted as `ErrorCaught`.
 
         Args:
             user_input: The user's message.
@@ -329,6 +333,8 @@ class Agent:
 
         Raises:
             MalformedResponse: A model response couldn't be used.
+            httpx.ConnectError: No connection to the model could be opened, even after retrying.
+            httpx.ConnectTimeout: The same, when opening a connection timed out.
         """
         self.node.emit(TurnStarted(path=self.node.path, text=user_input))
         end: TurnEnd | None = None
@@ -481,20 +487,47 @@ class Agent:
         """Calls the model; the only place the agent does.
 
         Books the call, and logs a warning if a reply that arrived whole reported no cost. A streamed reply is cut
-        off once the agent is stopped, and comes back with no `finish_reason` or usage.
+        off once the agent is stopped, and comes back with no `finish_reason` or usage. A call that can't open a
+        connection is recorded and tried again after each wait in `NETWORK_RETRY_WAITS`.
 
         Raises:
             MalformedResponse: The response couldn't be used. The call isn't booked.
-            TurnStopped: The agent was stopped before the reply's first chunk. Nothing is booked.
+            TurnStopped: The agent was stopped before the reply's first chunk, or while waiting to retry. Nothing is
+                booked.
+            httpx.ConnectError, httpx.ConnectTimeout: No connection could be opened, on the last try too.
         """
-        if self.stream and isinstance(self.client, StreamingBackend):  # __init__ refuses a stream without one
-            completion = self._stream(self.client, request, show=kind is None)
-        else:
-            completion = self.client.complete(request)
+        waits = iter(NETWORK_RETRY_WAITS)
+        while True:
+            try:
+                if self.stream and isinstance(self.client, StreamingBackend):  # __init__ refuses a stream without one
+                    completion = self._stream(self.client, request, show=kind is None)
+                else:
+                    completion = self.client.complete(request)
+                break
+            except NETWORK_ERRORS as e:
+                wait = next(waits, None)
+                if wait is None:
+                    raise
+                self.node.record_error(e)  # swallowed here: the next try may get through
+                self._wait(wait)
         call = self._book(completion, kind)
         if call.cost is None and completion.finish_reason is not None:  # a cut-off stream never gets its usage
             log.warning("model call %s reported no cost, so spend can't be tracked", call.generation_id)
         return completion
+
+    def _wait(self, seconds: float) -> None:
+        """Waits `seconds`, or until the agent is stopped.
+
+        Raises:
+            TurnStopped: The agent was stopped while it waited.
+        """
+        deadline = time.monotonic() + seconds
+        while not self.node.cancelled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.1))
+        raise TurnStopped("cancelled")
 
     def _stream(self, client: StreamingBackend, request: ChatRequest, show: bool) -> Completion:
         """Streams the reply, emitting its pieces as `Delta`s if `show`.

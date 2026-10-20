@@ -23,6 +23,8 @@ IMAGE = "jean-code-sandbox"
 MAX_TIMEOUT = 600  # the most seconds a `bash` call or a `job` wait may take
 MAX_OUTPUT_CHARS = 10000
 ENV = {"PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb", "DEBIAN_FRONTEND": "noninteractive"}
+# pip's and uv's caches outlive the container; uv copies, since the mounted cache can't be hard-linked into a venv
+SANDBOX_ENV = {"XDG_CACHE_HOME": "/workspace/.cache", "UV_LINK_MODE": "copy"}
 TIMEOUT_HINT = "For commands that take longer, rerun with background=True and check on them with job()."
 
 
@@ -275,8 +277,10 @@ class DockerShell(Shell):
     """A shell in a long-lived Docker container with only the workspace mounted.
 
     The container starts on the first command and lives until `close()`, so installed packages persist. It also
-    dies with this object or this process, even on a crash. It runs as the host user, so files it writes to the
-    workspace are yours. Commands run without approval by default: the sandbox is the safety net.
+    dies with this object or this process, even on a crash. pip's and uv's download caches are kept in the workspace,
+    in `.cache/`, so the next container installs the same packages without downloading them again. It runs as the
+    host user, so files it writes to the workspace are yours. Commands run without approval by default: the sandbox
+    is the safety net.
 
     Several can share one workspace (an agent and its subagents), each in its own container and with its own
     background jobs. The arguments it keeps are attributes of the same name.
@@ -331,7 +335,7 @@ class DockerShell(Shell):
             "--volume", f"{self.workdir}:/workspace", "--workdir", "/workspace",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", "2g", "--cpus", "2", "--pids-limit", "256",
-            *[arg for key, value in ENV.items() for arg in ("--env", f"{key}={value}")],
+            *[arg for key, value in (ENV | SANDBOX_ENV).items() for arg in ("--env", f"{key}={value}")],
             *(self._proxy_env(info.stdout) if self.network else ["--network", "none"]),
             IMAGE, "bash", "-c", "echo ready && exec cat > /dev/null",
         ]  # fmt: skip
