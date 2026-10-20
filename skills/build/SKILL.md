@@ -15,6 +15,9 @@ orchestrator agent (`jean-code --agent orchestrator`, or "Orchestrator" in the a
 **Never write a verdict yourself. Never write or edit an expert's files yourself: send the expert feedback
 instead.**
 
+**Every brief and follow-up is one of this skill's templates, filled in, and nothing else:** no extra asks, hints,
+context, or summaries of what an expert wrote. The experts read the files; anything you add becomes work they do.
+
 ## The run folder
 Pick a short slug for the task (e.g. `books-api`). The run folder is `builds/<slug>/` in every brief, which is
 where the experts see it (their shell starts in `/workspace`). On the user's machine it is
@@ -35,6 +38,10 @@ Ask the user, in one message, only what you can't infer and what would change th
 stack, what's in and out, how it will be run. Then write the task in a few lines, end your reply with it,
 and ask for a yes. Spawn nothing in that reply.
 
+The task is the user's request and their answers, nothing more: add no feature, guarantee, option or deliverable
+(a README, a test plan) they didn't ask for. Where they leave a choice to you, write the simplest option in one
+line.
+
 ## 2. Run the steps
 Run the four steps in order, then the sweep. Spawn each expert blocking (no background) as soon as the one
 before it has finished: there is no audit between steps.
@@ -47,7 +54,7 @@ before it has finished: there is no audit between steps.
 | impl | engineer | `task.md`, `spec.md` | `impl/` | `IMPL-*` |
 | sweep | auditor | everything | `audit/sweep-<n>.md` | `SWEEP-*` |
 
-Briefs name files, not their content. An expert's brief:
+An expert's brief is these three lines:
 ```
 Step: prd
 Read: builds/books-api/task.md, builds/books-api/plan.md
@@ -90,9 +97,10 @@ Report the sweep's verdict and how many sweeps it took, the run folder's path on
 run the result and its tests (the engineer's last reply says).
 
 ## 6. Change requests
-When the user asks for a change, pick the earliest step it affects: a new behaviour starts at prd, a design
-change at spec, a bug at impl. Say which step you picked. Resume that step's expert (or spawn it, if its run is
-gone) with the change, then resume each later step's expert with `<the file before it> changed: update your file
-to match, change nothing else`. Then sweep (section 3) and report.
+Every change starts at the plan, since every rule is checked against `task.md`. Resume the planner (or spawn it,
+if its run is gone) with: `The user asked for a change: <their words>. Add it to builds/<slug>/task.md under
+"## Changes", in their words, and update plan.md to match; change nothing else.` Then resume each later step's
+expert in order with `<the file before it> changed: update your file to match, change nothing else`. Then sweep
+(section 3) and report.
 
 If the user edited a file themselves, rerun the steps after it, then sweep.
