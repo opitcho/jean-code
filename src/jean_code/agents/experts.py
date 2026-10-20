@@ -1,7 +1,8 @@
 """The orchestrator, a root agent, and its experts.
 
-The experts are a planner, a product manager, an architect, an engineer and an auditor. The orchestrator has skills
-and the experts, and no other tools: no shell, so it routes the work and can't do it itself. Each expert is a role
+The experts are a planner, a product manager, an architect, an engineer and an auditor. The orchestrator has skills,
+the experts and the `research` subagent, and no other tools: no shell, so it routes the work and can't do it itself.
+Each expert is a role
 prompt on the `general` subagent's tools: its own sandbox container in `/workspace`, so files it writes there are
 shared with the other experts and with the user. The experts don't know about any particular pipeline: the brief
 names what to read and what to write, and for the auditor which rules to check. A skill decides how to put them
@@ -11,7 +12,8 @@ together (the `build` skill is one way). Every agent built here streams its repl
 from pathlib import Path
 
 from jean_code.agents.common import SUBAGENT_NOTE, shell_tools
-from jean_code.config import SKILLS_DIR
+from jean_code.agents.research import research_profile
+from jean_code.config import SKILLS_DIR, WORKSPACE_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Profile, agent_profile
@@ -23,15 +25,17 @@ the work.
 
 ## What you have
 - Skills: when a request matches one, load it before you start, and follow it.
-- The experts, listed under Subagents. Each one works in its own sandbox, in a folder shared with the user's \
-machine: `/workspace` for the experts, `workspace/` in the user's project.
+- The subagents listed under Subagents. `research` researches a question on the web and writes a cited report to \
+`workspace/research/`. The others are experts: each one works in its own sandbox, in a folder shared with the \
+user's machine: `/workspace` for the experts, `workspace/` in the user's project.
 - No shell and no file tools. You can't read, write or run anything yourself, so anything that needs it goes to an \
 expert. To show the user a file, give its path on their machine (`workspace/…`), or ask the expert who wrote it.
 - Nothing you run needs the user's approval.
 
 ## How to work
 - Keep replies short: what ran, what passed or failed, and what's next. Give paths, not file contents.
-- A question that needs no expert, answer directly.
+- A question that needs looking up, comparing or surveying goes to `research`, as the research skill says. Answer \
+directly only what you can answer without it.
 """
 
 # Generic roles: the brief names the files to read and write, so nothing here names a pipeline, a folder or a step.
@@ -138,12 +142,14 @@ def orchestrator_agent(
     network: bool = True,
     skills_dir: str | Path | None = SKILLS_DIR,
     max_tool_rounds: int = 40,
+    *,
+    workspace: str | Path = WORKSPACE_DIR,
     **kwargs,
 ) -> Agent:
-    """Returns the orchestrator: skills and the experts, and no other tools.
+    """Returns the orchestrator: skills, the experts and `research`; no other tools.
 
     Nothing it calls needs approval, so it needs no `approve` and no sandbox setting. `agent.close()` stops its
-    experts, which removes their containers.
+    subagents, which removes the experts' containers.
 
     Args:
         model: OpenRouter model id, for it and its experts.
@@ -151,6 +157,8 @@ def orchestrator_agent(
         skills_dir: Folder of skills the model can load.
         max_tool_rounds: As for `Agent`. Agent's default of 10 runs out halfway through a build: 5 steps, each
             spawned and audited.
+        workspace: The folder the experts' containers mount at /workspace; research's run folders go in its
+            `research/`.
         **kwargs: Passed on to `Agent`, except `stream`.
     """
     return Agent(
@@ -158,14 +166,19 @@ def orchestrator_agent(
         system_prompt=ORCHESTRATOR_PROMPT,
         tools={},
         skills_dir=skills_dir,
-        subagent_profiles=expert_profiles(model, network),
+        subagent_profiles={
+            **expert_profiles(model, network, workspace=workspace),
+            "research": research_profile(model, workspace=workspace),
+        },
         max_tool_rounds=max_tool_rounds,
         stream=True,
         **kwargs,
     )
 
 
-def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = True) -> Agent:
+def expert_agent(
+    role_prompt: str, model: str, node: AgentNode, network: bool = True, *, workspace: str | Path
+) -> Agent:
     """Returns an expert: `general_agent`'s tools, in its own sandbox container.
 
     It has `role_prompt` and no skills.
@@ -175,9 +188,10 @@ def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = 
         model: OpenRouter model id.
         node: Its node in the orchestrator's tree.
         network: Whether its container gets a network.
+        workspace: The folder its container mounts at /workspace.
     """
     # its own container; the sandbox is why its bash needs no approval
-    tools = shell_tools(sandbox=True, network=network)
+    tools = shell_tools(sandbox=True, network=network, workspace=workspace)
     # max_tool_rounds=40: the default 10 runs out on an engineer writing a project and running its tests.
     return Agent(
         model,
@@ -190,18 +204,19 @@ def expert_agent(role_prompt: str, model: str, node: AgentNode, network: bool = 
     )
 
 
-def expert_profiles(model: str = DEFAULT_MODEL, network: bool = True) -> dict[str, Profile]:
+def expert_profiles(model: str = DEFAULT_MODEL, network: bool = True, *, workspace: str | Path) -> dict[str, Profile]:
     """Returns one profile per entry of `EXPERTS`, on `model`.
 
     Args:
         model: OpenRouter model id.
         network: Whether the experts' containers get a network.
+        workspace: The folder the experts' containers mount at /workspace.
     """
     return {
         # prompt=prompt binds each prompt now: a closure would see only the loop's last one
         name: agent_profile(
             description,
-            lambda task, node, prompt=prompt: expert_agent(prompt, model, node, network),
+            lambda task, node, prompt=prompt: expert_agent(prompt, model, node, network, workspace=workspace),
             max_cost=max_cost,
             max_cost_cap=cap,
         )

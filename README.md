@@ -3,7 +3,7 @@
 A minimal coding agent for educational purposes, in your terminal or your browser. Built on
 [OpenRouter](https://openrouter.ai), with DeepSeek V4.1 Flash by default.
 
-![The Streamlit UI: the timeline of a turn, with a tool call open in the inspector and two subagents in the sidebar](docs/screenshot.png)
+![The Streamlit UI: a research turn's timeline (thinking, a skill load, web searches) and the reply, with the tree of research subagents in the sidebar](docs/screenshot.png)
 
 ## Getting started
 
@@ -32,8 +32,12 @@ docker build -t jean-code-sandbox sandbox/
 | Shell | Runs commands on your machine with your approval, or in a Docker sandbox without asking |
 | Web | Searches the web and reads pages |
 | Subagents | Hands work to a web researcher, or a coding agent in its own sandbox |
-| Research reports | Runs researchers in the background and writes a cited report |
+| Research reports | Runs researchers in the background and writes a cited report, each quote checked against the page it came from |
 | Expert builds | An orchestrator takes a project through plan, PRD, spec and implementation |
 | Skills | Learns a task from a folder in `skills/` |
 | Cost control | Shows what a session costs and stops at a limit you set |
+| Context compaction | Summarizes the middle of a long conversation once it fills the context, keeping the first and last turns; `/compact` does it on demand |
+| Interruption | Handles user interruption, and supports model steering |
+| Error recovery | A failing tool, a malformed call or a crashed subagent comes back to the model as a result, so it can adapt instead of the turn ending |
 | Live view | Shows every thought, tool call and result, for every agent |
+| Complete tracing | Writes every agent's events to `logs/`, one file per agent nested like the tree, with each error's full traceback; a trace replays into exactly what the UI showed |

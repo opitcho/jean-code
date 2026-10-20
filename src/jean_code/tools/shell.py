@@ -2,7 +2,7 @@
 
 Commands are non-interactive (no TTY, stdin closed) and stateless: each call is a fresh `bash -c` in the working
 directory, so `cd` and `export` don't carry over but files do. `LocalShell` runs them on the host, with no
-sandboxing; `DockerShell` runs them in a container, in the mounted `workspace/` folder.
+sandboxing; `DockerShell` runs them in a container, in the workspace folder it mounts.
 """
 
 import os
@@ -16,7 +16,6 @@ import uuid
 import weakref
 from pathlib import Path
 
-from jean_code.config import WORKSPACE_DIR
 from jean_code.core.tool_schema import tool
 
 JOBS_DIR = ".jobs"
@@ -292,7 +291,7 @@ class DockerShell(Shell):
 
     requires_approval = False
 
-    def __init__(self, workdir: str | Path = WORKSPACE_DIR, network: bool = True):
+    def __init__(self, workdir: str | Path, network: bool = True):
         # One per shell, relative to the workspace: every shell numbers its jobs from 1
         self._jobs_folder = f"{JOBS_DIR}/{uuid.uuid4().hex[:8]}"
         super().__init__(workdir, Path(workdir) / self._jobs_folder)

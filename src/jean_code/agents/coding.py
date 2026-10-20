@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jean_code.agents.common import SUBAGENT_NOTE, shell_tools
 from jean_code.agents.research import research_profile
-from jean_code.config import SKILLS_DIR
+from jean_code.config import SKILLS_DIR, WORKSPACE_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Profile, agent_profile
@@ -58,6 +58,8 @@ def coding_agent(
     sandbox: bool = False,
     network: bool = True,
     skills_dir: str | Path | None = SKILLS_DIR,
+    *,
+    workspace: str | Path = WORKSPACE_DIR,
     **kwargs,
 ) -> Agent:
     """Returns a coding agent, with a shell, web tools and subagents.
@@ -71,9 +73,11 @@ def coding_agent(
         sandbox: Run `bash` in a Docker container instead of on the host.
         network: Whether containers get a network.
         skills_dir: Folder of skills the model can load.
+        workspace: The folder sandbox containers mount at /workspace; research's run folders go in its `research/`.
+            It applies without `sandbox` too: `general` still mounts it, and research still writes in it.
         **kwargs: Passed on to `Agent`, except `stream`.
     """
-    tools = shell_tools(sandbox, network)
+    tools = shell_tools(sandbox, network, workspace=workspace)
     return Agent(
         model,
         system_prompt=f"{CODING_PROMPT}\n\n{tools.describe}".strip(),
@@ -81,7 +85,7 @@ def coding_agent(
         needs_approval=tools.needs_approval,
         cleanup=tools.cleanup,
         skills_dir=skills_dir,
-        subagent_profiles=subagent_profiles(model, network, skills_dir),
+        subagent_profiles=subagent_profiles(model, network, skills_dir, workspace=workspace),
         stream=True,
         **kwargs,
     )
@@ -104,7 +108,12 @@ def searcher_agent(model: str, node: AgentNode) -> Agent:
 
 
 def general_agent(
-    model: str, node: AgentNode, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
+    model: str,
+    node: AgentNode,
+    network: bool = True,
+    skills_dir: str | Path | None = SKILLS_DIR,
+    *,
+    workspace: str | Path,
 ) -> Agent:
     """Returns the `general` subagent: the coding agent's tools in a sandbox container.
 
@@ -115,9 +124,10 @@ def general_agent(
         node: Its node in the parent's tree.
         network: Whether its container gets a network.
         skills_dir: Folder of skills the model can load.
+        workspace: The folder its container mounts at /workspace.
     """
     # its own container; the sandbox is why its bash needs no approval
-    tools = shell_tools(sandbox=True, network=network)
+    tools = shell_tools(sandbox=True, network=network, workspace=workspace)
     return Agent(
         model,
         system_prompt=f"{CODING_PROMPT}\n{SUBAGENT_NOTE}\n{tools.describe}",
@@ -130,20 +140,25 @@ def general_agent(
 
 
 def subagent_profiles(
-    model: str = DEFAULT_MODEL, network: bool = True, skills_dir: str | Path | None = SKILLS_DIR
+    model: str = DEFAULT_MODEL,
+    network: bool = True,
+    skills_dir: str | Path | None = SKILLS_DIR,
+    *,
+    workspace: str | Path,
 ) -> dict[str, Profile]:
     """Returns the coding agent's subagent profiles, on its model.
 
     - `searcher`: web tools only, answers one question with sources. Cheap, and safe anywhere.
     - `general`: a copy of the coding agent without subagents of its own, whose shell always runs in the Docker
-      sandbox (its own container, in `workspace/`), so it needs no approval, even when the parent runs on the host.
+      sandbox (its own container, on `workspace`), so it needs no approval, even when the parent runs on the host.
     - `research`: a research lead and its researchers, which write a cited report to a run folder in
-      `workspace/research/`.
+      `workspace`'s `research/`.
 
     Args:
         model: OpenRouter model id.
         network: Whether the `general` subagent's container gets a network.
         skills_dir: Folder of skills the `general` subagent can load.
+        workspace: The folder `general`'s container mounts at /workspace.
     """
     return {
         "searcher": agent_profile(
@@ -151,9 +166,9 @@ def subagent_profiles(
         ),
         "general": agent_profile(
             GENERAL_DESCRIPTION,
-            lambda task, node: general_agent(model, node, network, skills_dir),
+            lambda task, node: general_agent(model, node, network, skills_dir, workspace=workspace),
             max_cost=0.50,
             max_cost_cap=2.0,
         ),
-        "research": research_profile(model),
+        "research": research_profile(model, workspace=workspace),
     }

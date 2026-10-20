@@ -7,7 +7,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if not (ROOT / "pyproject.toml").is_file():
     raise RuntimeError(f"jean-code runs from its repo checkout (an editable install); ROOT={ROOT}")
 SKILLS_DIR = ROOT / "skills"
-WORKSPACE_DIR = ROOT / "workspace"  # the sandbox's /workspace
-RESEARCH_DIR = WORKSPACE_DIR / "research"  # research run folders; the sandbox sees them at /workspace/research
+WORKSPACE_DIR = ROOT / "workspace"  # the UIs' workspace: the sandbox's /workspace, with research's runs in research/
 USAGE_LOG = ROOT / "logs" / "usage.jsonl"
 PROCESS_LOGS_DIR = ROOT / "logs" / "processes"  # one folder per process, for agents' logs

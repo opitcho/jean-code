@@ -34,20 +34,23 @@ def test_the_coding_agent_offers_its_subagents():
         agent.close()
 
 
-def test_subagents_have_no_subagents_of_their_own():
+def test_subagents_have_no_subagents_of_their_own(tmp_path):
     # Catches unbounded recursion: a general subagent that can spawn more general subagents.
-    for build in (lambda b: searcher_agent("m", b), lambda b: general_agent("m", b, skills_dir=None)):
+    for build in (
+        lambda b: searcher_agent("m", b),
+        lambda b: general_agent("m", b, skills_dir=None, workspace=tmp_path),
+    ):
         agent = build(AgentNode(1.0))
         assert agent.subagents is None
         agent.close()
 
 
-def test_the_coding_agent_and_its_subagents_stream():
+def test_the_coding_agent_and_its_subagents_stream(tmp_path):
     # Catches a subagent whose reply lands whole: nothing shows while it works, and a stop can't cut it off.
     builds = (
         lambda b: coding_agent(skills_dir=None, approve=yes, node=b),
         lambda b: searcher_agent("m", b),
-        lambda b: general_agent("m", b, skills_dir=None),
+        lambda b: general_agent("m", b, skills_dir=None, workspace=tmp_path),
     )
     for build in builds:
         agent = build(AgentNode(1.0))
@@ -55,10 +58,10 @@ def test_the_coding_agent_and_its_subagents_stream():
         agent.close()
 
 
-def test_the_general_subagent_runs_bash_in_docker_without_approval():
+def test_the_general_subagent_runs_bash_in_docker_without_approval(tmp_path):
     # Catches a general subagent that Run.start refuses (host bash needs approval) or that runs on the host.
     node = AgentNode().add_agent(0.5)
-    agent = general_agent("m", node, skills_dir=None)
+    agent = general_agent("m", node, skills_dir=None, workspace=tmp_path)
     try:
         assert agent.needs_approval == set() and "bash" in agent.tool_map
         bash = agent.tool_map["bash"]
@@ -69,10 +72,30 @@ def test_the_general_subagent_runs_bash_in_docker_without_approval():
         agent.close()
 
 
-def test_profile_limits():
-    profiles = subagent_profiles("m")
+def test_profile_limits(tmp_path):
+    profiles = subagent_profiles("m", workspace=tmp_path)
     assert (profiles["searcher"].max_cost, profiles["searcher"].cap) == (0.05, 0.25)
     assert (profiles["general"].max_cost, profiles["general"].cap) == (0.50, 2.0)
+
+
+def test_the_coding_agents_sandboxes_use_its_workspace(tmp_path):
+    # Catches its own sandbox or `general`'s mounting another folder, or research writing where they can't read it.
+    agent = coding_agent(sandbox=True, skills_dir=None, workspace=tmp_path)
+    try:
+        bash = agent.tool_map["bash"]
+        assert isinstance(bash, MethodType) and isinstance(shell := bash.__self__, DockerShell)
+        assert shell.workdir == tmp_path.resolve()
+        for profile in agent.subagents.profiles.values():  # what spawn starts from
+            node = AgentNode(1.0)
+            node.cancel()  # makes no call: the run stops at once
+            run = profile.start("t", node)
+            assert run.wait(5)
+            if bash := run.agent.tool_map.get("bash"):
+                assert isinstance(bash, MethodType) and isinstance(shell := bash.__self__, DockerShell)
+                assert shell.workdir == tmp_path.resolve()
+        assert len(list((tmp_path / "research").iterdir())) == 1
+    finally:
+        agent.close()
 
 
 def test_a_searcher_run_starts():

@@ -6,6 +6,7 @@ cached.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from jean_code.tools.shell import DockerShell, LocalShell
 from jean_code.tools.web import fetch_page, web_search
@@ -37,7 +38,7 @@ class Toolset:
     describe: str
 
 
-def shell_tools(sandbox: bool = True, network: bool = True) -> Toolset:
+def shell_tools(sandbox: bool = True, network: bool = True, *, workspace: str | Path) -> Toolset:
     """Returns `bash` and `job` on a shell, plus `web_search` and `fetch_page`.
 
     `bash` needs approval only on the host.
@@ -45,8 +46,9 @@ def shell_tools(sandbox: bool = True, network: bool = True) -> Toolset:
     Args:
         sandbox: Run the shell in its own Docker container instead of on the host.
         network: Whether the container gets a network.
+        workspace: The folder the container mounts at /workspace; unused on the host.
     """
-    shell = DockerShell(network=network) if sandbox else LocalShell()
+    shell = DockerShell(workspace, network) if sandbox else LocalShell()
     return Toolset(
         tools={"bash": shell.bash, "job": shell.job, "web_search": web_search, "fetch_page": fetch_page},
         needs_approval={"bash"} if shell.requires_approval else set(),

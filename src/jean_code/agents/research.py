@@ -8,7 +8,6 @@ gives a lead researchers that write into its notebook. Every agent built here st
 from dataclasses import asdict
 from pathlib import Path
 
-from jean_code.config import RESEARCH_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.llm import StreamingBackend, render_message
 from jean_code.core.node import AgentNode
@@ -163,17 +162,18 @@ def researcher_profile(
 
 
 def research_profile(
-    model: str = DEFAULT_MODEL, client: StreamingBackend | None = None, runs_dir: str | Path = RESEARCH_DIR
+    model: str = DEFAULT_MODEL, client: StreamingBackend | None = None, *, workspace: str | Path
 ) -> Profile:
     """Returns the research profile: a fresh folder and a lead for each run.
 
-    Outside an agent, e.g. for an eval, a run is `research_profile(runs_dir=…).start(brief, AgentNode(…))`.
+    Outside an agent, e.g. for an eval, a run is `research_profile(workspace=…).start(brief, AgentNode(…))`.
 
     Args:
         model: OpenRouter model id, for the lead and its researchers.
         client: Where requests are sent; OpenRouter by default.
-        runs_dir: Where the run folders go.
+        workspace: The folder sandboxed agents see as /workspace; the run folders go in its `research/`.
     """
+    runs_dir = Path(workspace).resolve() / "research"  # resolved, so the `Report:` path it hands back is absolute
 
     def start(task: str, node: AgentNode) -> Run:
         notebook = Notebook.create(runs_dir, brief=task, path=node.path, model=model)
