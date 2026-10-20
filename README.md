@@ -18,9 +18,6 @@ uv run --env-file .env streamlit run src/jean_code/ui/app.py
 
 # or the terminal
 uv run --env-file .env jean-code
-
-# the orchestrator, for expert builds ("Orchestrator" in the browser UI's sidebar)
-uv run --env-file .env jean-code --agent orchestrator
 ```
 
 For the Docker sandbox and the `general` subagent, build the image once:
