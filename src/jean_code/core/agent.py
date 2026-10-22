@@ -156,7 +156,6 @@ class Agent:
         node: Its place in the agent tree: `node` if given, else the root of a new tree.
         subagents: The kinds of subagent it may start, and their runs; None if `subagent_profiles` is empty.
         messages: The transcript, oldest first, with each reply as the provider sent it.
-        compactions: One record per compaction attempt that got past the checks.
 
     Raises:
         ValueError: An argument is out of range; `max_cost` and `node` are both given; some tools need approval
@@ -224,7 +223,6 @@ class Agent:
             keep_last=keep_last,
             context_window=context_window,
         )
-        self.compactions: list[dict] = []
         self._measured: tuple[int, int] | None = None  # (len(messages), tokens) after the last measured call
 
         # Runs exist only once the model calls spawn.
@@ -415,32 +413,27 @@ class Agent:
         region = middle(messages, head_end(messages), self.settings.keep_last)
         if region is None:
             return "nothing to compact"
-        start, end = region
-        record = {"status": None, "removed": end - start, "tokens_before": tokens_before}
-        self.compactions.append(record)
-        try:
-            return self._compact(record, messages, region, force)
-        finally:
-            if record["status"]:  # a raise past the summary call leaves no status, and no event
-                self.node.emit(
-                    Compaction(
-                        path=self.node.path,
-                        status=record["status"],
-                        start=start,
-                        removed=record["removed"],
-                        summary=record.get("summary"),
-                        tokens_before=tokens_before,
-                        tokens_after=record.get("tokens_after"),
-                        cost=record["call"].cost if record.get("call") else None,
-                        context_tokens=self.context_tokens,
-                    )
-                )
+        event = self._compact(messages, region, tokens_before, force)
+        self.node.emit(event)
+        return event.status
 
-    def _compact(self, record: dict, messages: tuple[Message, ...], region: tuple[int, int], force: bool) -> str:
-        """Runs a recorded compaction attempt; sets `record["status"]` and returns it."""
+    def _compact(
+        self, messages: tuple[Message, ...], region: tuple[int, int], tokens_before: int, force: bool
+    ) -> Compaction:
+        """Makes one compaction attempt on `region` and returns its event."""
         start, end = region
         head, replaced, tail = messages[:start], messages[start:end], messages[end:]
-        tokens_before = record["tokens_before"]
+
+        def ended(status: str, **found) -> Compaction:
+            return Compaction(
+                path=self.node.path,
+                status=status,
+                start=start,
+                removed=end - start,
+                tokens_before=tokens_before,
+                context_tokens=self.context_tokens,
+                **found,
+            )
 
         # Check that compacting can bring the context under compact_at.
         schemas = estimate_tokens(self._tool_schemas())
@@ -448,40 +441,30 @@ class Agent:
         kept = round(tokens_before * kept_estimate / (kept_estimate + sum(message_tokens(m) for m in replaced)))
         compact_at = self.settings.compact_at
         if not force and compact_at is not None and kept >= compact_at:
-            record["status"] = f"skipped: the kept turns alone take ~{kept} tokens, over compact_at"
-            return record["status"]
+            return ended(f"skipped: the kept turns alone take ~{kept} tokens, over compact_at")
 
         request = self._build_request(UserMessage(content=summary_prompt(replaced, tail, self.settings.keep_last)))
         # No `tool_choice: "none"`: DeepSeek then renders the prompt without tools, which drops every reasoning
         # block and misses the cache.
         # A reply with tool calls counts as a failure instead.
-        calls = self.node.entries
-        booked = len(calls)
         try:
             completion = self._call(request, kind="compaction")
         except TurnStopped:  # stopped before the summary's first chunk
-            record["status"] = "failed: interrupted"
-            return record["status"]
+            return ended("failed: interrupted")
         except Exception as e:  # noqa: BLE001 - a failed summary leaves the transcript as it was
-            record["status"] = f"failed: {self.node.record_error(e)}"
-            return record["status"]
-        finally:
-            record["call"] = calls[-1] if len(calls) > booked else None  # booked even when it failed
+            return ended(f"failed: {self.node.record_error(e)}")
+        cost = completion.usage.cost if completion.usage else None  # paid for even if the summary is unusable
         if failure := summary_failure(completion, self.node.cancelled):
-            record["status"] = failure
-            return failure
+            return ended(failure, cost=cost)
 
-        summary = completion.message.content.strip()
-        record["summary"] = UserMessage(content=SUMMARY_MESSAGE.format(summary=summary))
-        self.messages = (*head, record["summary"], *tail)
+        summary = UserMessage(content=SUMMARY_MESSAGE.format(summary=completion.message.content.strip()))
+        self.messages = (*head, summary, *tail)
         # The old measurement described the longer list. Scale it by the estimates instead of taking the raw
         # estimate, which runs high; the next call measures the real size.
-        new_estimate = kept_estimate + message_tokens(record["summary"])
+        new_estimate = kept_estimate + message_tokens(summary)
         old_estimate = kept_estimate + sum(message_tokens(m) for m in replaced)
         self._measured = (len(self.messages), round(tokens_before * new_estimate / old_estimate))
-        record["tokens_after"] = self.context_tokens
-        record["status"] = "compacted"
-        return record["status"]
+        return ended("compacted", summary=summary, tokens_after=self.context_tokens, cost=cost)
 
     def _call(self, request: ChatRequest, kind: str | None = None) -> Completion:
         """Calls the model; the only place the agent does.

@@ -17,7 +17,7 @@ from jean_code.core.llm import MalformedResponse, ToolMessage, render_request
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
-from test_compaction import BIG, SMALL, is_summary_request, run_small_turns, summary
+from test_compaction import BIG, SMALL, compactions, is_summary_request, run_small_turns, summary
 from test_compaction import make_agent as compacting_agent
 from test_driver import next_of
 from test_events import Recorder as Events
@@ -241,7 +241,7 @@ def test_a_stop_records_nothing():
 
     agent.client = InterruptingSummary([response("reply 5", usage=BIG), summary()])
     agent.run_turn("turn 5")
-    assert agent.compactions[-1]["status"] == "failed: interrupted"
+    assert compactions(agent)[-1].status == "failed: interrupted"
     assert errors(events) == []
 
 

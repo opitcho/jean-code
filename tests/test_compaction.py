@@ -24,8 +24,11 @@ from jean_code.core.compaction import (
     head_end,
     is_synthetic,
 )
+from jean_code.core.events import Compaction
 from jean_code.core.llm import AssistantMessage, Message, ToolMessage, render_request
+from jean_code.core.node import AgentNode
 from jean_code.core.tool_schema import tool
+from test_events import Recorder as Events
 
 
 @tool
@@ -68,7 +71,16 @@ def make_agent(responses, **kwargs) -> tuple[Agent, FakeClient]:
         "keep_last": 2,
         **kwargs,
     }
+    if "node" not in kwargs:  # a root that keeps every event, for `compactions`
+        kwargs["node"] = AgentNode(kwargs.pop("max_cost", None), listener=Events())
     return Agent(client=client, **kwargs), client
+
+
+def compactions(agent: Agent) -> list[Compaction]:
+    """The agent's compaction attempts, from the events its tree's listener kept."""
+    events = agent.node.root.listener
+    assert isinstance(events, Events)
+    return [e for e in events if isinstance(e, Compaction) and e.path == agent.node.path]
 
 
 def run_small_turns(agent: Agent, n: int, start: int = 1, bulky: int = 3) -> None:
@@ -177,7 +189,7 @@ def test_tool_calls_stay_with_their_results():
         summary(),
     ]
     agent.run_turn("turn 5")
-    assert agent.compactions[-1]["status"] == "compacted"
+    assert compactions(agent)[-1].status == "compacted"
     assert_valid(agent.messages)
     assert sum(m.role == "tool" for m in agent.messages) == 3 + 1  # turn 4's three results and turn 5's one
 
@@ -213,7 +225,7 @@ def test_not_after_an_interrupt():
     client = Interrupting([response("reply 5", usage=BIG), summary()])
     agent.client = client
     agent.run_turn("turn 5")
-    assert len(client.requests) == 1 and agent.compactions == []
+    assert len(client.requests) == 1 and compactions(agent) == []
 
 
 def test_interrupt_during_the_summary_call_cancels_it():
@@ -235,7 +247,7 @@ def test_interrupt_during_the_summary_call_cancels_it():
         "turn 5",
         "reply 5",
     ]
-    assert agent.compactions[-1]["status"] == "failed: interrupted"
+    assert compactions(agent)[-1].status == "failed: interrupted"
 
 
 @pytest.mark.parametrize("turns", [2, 3, 4])
@@ -262,7 +274,7 @@ def test_skipped_when_the_kept_turns_alone_are_over_the_threshold(monkeypatch):
     monkeypatch.setattr(agent_module, "estimate_tokens", lambda value: 200)  # head + tail alone ~ 2000
     client.responses += [response("reply 5", usage=BIG)]
     agent.run_turn("turn 5")
-    assert agent.compactions[-1]["status"].startswith("skipped")
+    assert compactions(agent)[-1].status.startswith("skipped")
     assert not any(map(is_summary_request, client.requests))
 
 
@@ -271,14 +283,14 @@ def test_an_estimator_that_runs_high_does_not_block_compaction(monkeypatch):
     # would skip compactions that help (one REPL session estimated ~2228 tokens kept, against a measured ~1.8k).
     monkeypatch.setattr(agent_module, "estimate_tokens", lambda value: 5 * estimate_tokens(value))
     agent, _ = compacted_session()
-    assert agent.compactions[-1]["status"] == "compacted"
+    assert compactions(agent)[-1].status == "compacted"
 
 
 def test_below_threshold_does_nothing_unless_forced():
     # Catches /compact doing nothing, or automatic compaction below the threshold.
     agent, client = make_agent([])
     run_small_turns(agent, 5)
-    assert agent.compactions == [] and agent.compact() == "below threshold"
+    assert compactions(agent) == [] and agent.compact() == "below threshold"
     client.responses.append(summary())
     assert agent.compact(force=True) == "compacted"
 
@@ -288,12 +300,12 @@ def test_after_compaction_the_old_measurement_is_scaled_down():
     # taken for the new context, or a raw estimate that reports the context growing (one REPL session showed
     # "~2.1k -> ~2.7k", then measured 1.9k).
     agent, client = compacted_session()
-    record = agent.compactions[-1]
+    record = compactions(agent)[-1]
     tools = estimate_tokens(client.requests[-1]["tools"])
     new = tools + sum(message_tokens(m) for m in agent.messages)
     before = client.requests[-1]["messages"][:-1]  # the summary request: the old transcript, then the instruction
     old = tools + sum(estimate_tokens(m) for m in before)
-    assert agent.context_tokens == record["tokens_after"] == round(record["tokens_before"] * new / old)
+    assert agent.context_tokens == record.tokens_after == round(record.tokens_before * new / old)
     assert agent.settings.compact_at is not None and agent.context_tokens < agent.settings.compact_at
 
 
@@ -317,7 +329,8 @@ def test_a_failed_summary_changes_nothing(reply, reason):
     client.responses += [response("reply 5", usage=BIG), reply]
     agent.run_turn("turn 5")
     before = agent.messages
-    assert agent.compactions[-1]["status"].startswith("failed") and reason in agent.compactions[-1]["status"]
+    status = compactions(agent)[-1].status
+    assert status.startswith("failed") and reason in status
     assert agent.messages is before and [m.content for m in before][-2:] == ["turn 5", "reply 5"]
 
 
@@ -333,7 +346,7 @@ def test_second_compaction_folds_the_first_summary_in():
     synthetic = [m.content for m in agent.messages if is_synthetic(m)]
     assert len(synthetic) == 2 and "SECOND" in synthetic[1] and "SUMMARY TEXT" not in synthetic[1]
     assert [m.content for m in agent.messages[7:]] == ["turn 7", "reply 7", "turn 8", "reply 8"]
-    assert [c["status"] for c in agent.compactions] == ["compacted", "compacted"]
+    assert [c.status for c in compactions(agent)] == ["compacted", "compacted"]
 
 
 # ---------------------------------------------------------------- budget, hard limit

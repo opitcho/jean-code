@@ -225,9 +225,9 @@ def test_a_forced_compaction_rebuilds_through_the_splice():
     assert agent.compact(force=True) == "compacted"
     check_replay(agent, events)
     compaction = events[-1]
-    assert isinstance(compaction, Compaction) and compaction.summary is agent.compactions[-1]["summary"]
-    assert compaction.tokens_after == agent.compactions[-1]["tokens_after"]
-    assert compaction.cost == agent.compactions[-1]["call"].cost == 0.002
+    assert isinstance(compaction, Compaction) and compaction.summary is agent.messages[compaction.start]
+    assert compaction.tokens_after == agent.context_tokens
+    assert compaction.cost == 0.002
 
 
 def test_an_automatic_compaction_rebuilds():
@@ -239,7 +239,7 @@ def test_an_automatic_compaction_rebuilds():
         response("SUMMARY", usage=usage(prompt=99_999, completion=300, cost=0.002)),
     ]
     agent.run_turn("turn 5")
-    assert agent.compactions[-1]["status"] == "compacted"
+    assert [e.status for e in events if isinstance(e, Compaction)] == ["compacted"]
     check_replay(agent, events)
 
 
