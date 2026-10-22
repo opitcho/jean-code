@@ -11,6 +11,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import jean_code
+import jean_code.config
+import jean_code.logs
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import Agent
 from jean_code.core.driver import Driver
@@ -19,6 +21,7 @@ from jean_code.core.llm import AssistantMessage
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
+from jean_code.logs import ProcessLogs
 
 APP = Path(jean_code.__file__).parent / "ui" / "app.py"
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -329,3 +332,23 @@ def test_compact_that_changes_nothing_says_so():
     at.run()
     toasts += [t.value for t in at.toast]
     assert toasts.count("[compaction nothing to compact]") == 1
+
+
+@pytest.mark.parametrize("kind, tools", [("Chat", set()), ("Web search", {"web_search", "fetch_page"})])
+def test_the_agent_select_builds_the_agent_it_names(kind, tools, monkeypatch, tmp_path):
+    # Catches a kind the select offers that the build doesn't know, which would silently build the coding agent.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")  # builds a client; nothing here sends a request
+    monkeypatch.setattr(jean_code.logs, "process_logs", ProcessLogs(tmp_path))  # the new chat's trace
+    monkeypatch.setattr(jean_code.config, "USAGE_LOG", tmp_path / "usage.jsonl")
+    session, _ = make_session([])
+    at = app(session)
+    at.session_state["built"] = ("Coding", False)  # what the app takes the scripted session for
+    at.selectbox(key="agent_kind").set_value(kind).run()
+    driver = at.session_state["driver"]
+    try:
+        no_errors(at)
+        assert {t["function"]["name"] for t in driver.view.state().agents["main"].tools} == tools
+        assert not [t for t in at.toggle if t.key == "sandbox"]  # no shell, so no sandbox toggle
+    finally:
+        driver.close()
+        at.session_state["recorder"].close()

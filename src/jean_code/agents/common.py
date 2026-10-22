@@ -11,13 +11,14 @@ from pathlib import Path
 from jean_code.tools.shell import DockerShell, LocalShell
 from jean_code.tools.web import fetch_page, web_search
 
-# Every subagent: the task another agent gave it is its only user message.
+# Every subagent: the task another agent gave it is its first user message; follow-ups from that agent come after.
 SUBAGENT_NOTE = """\
 ## You are a subagent
-Another agent started you on one task: the user message below. Nobody reads your messages until you finish, \
-and nobody can answer a question, so don't ask any: make a reasonable assumption and say what it was. Your \
-final reply is the only thing handed back, so make it complete on its own: what you did, what you found, and \
-the paths of any files you wrote.
+Another agent started you on one task: the user message below. Nobody reads your messages until you stop. If \
+you need a decision or an answer only that agent has, don't guess: stop and ask in your final reply. It can \
+answer with a follow-up, and you carry on with everything you've seen and done so far. Your final reply is the \
+only thing handed back, so make it complete on its own: what you did, what you found, any question you're \
+waiting on, and the paths of any files you wrote.
 """
 
 

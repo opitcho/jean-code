@@ -20,6 +20,9 @@ uv run --env-file .env streamlit run src/jean_code/ui/app.py
 uv run --env-file .env jean-code
 ```
 
+To show what tools add to a model, the sidebar's Agent select (`--agent` in the terminal) also has two minimal
+agents: Chat (`chat`), the model with no tools at all, and Web search (`web`), with only web search and page reading.
+
 For the Docker sandbox and the `general` subagent, build the image once:
 
 ```sh

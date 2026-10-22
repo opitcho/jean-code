@@ -289,7 +289,8 @@ def subagents_prompt(profiles: dict[str, Profile]) -> str:
         "## Subagents",
         "A subagent is a separate agent you start with spawn to work on one task. It sees only the task you give "
         "it, so put everything it needs in the task. Its final reply comes back to you as the result. Once it has "
-        "stopped, however it stopped, you can send it a follow-up with resume; it keeps everything it saw and did.",
+        "stopped, however it stopped, you can send it a follow-up with resume; it keeps everything it saw and did. "
+        "If it stopped to ask you something, answer it that way.",
         "",
     ]
     lines += [f"- {name}: {profile.description}" for name, profile in profiles.items()]

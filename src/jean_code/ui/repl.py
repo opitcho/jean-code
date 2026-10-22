@@ -1,6 +1,6 @@
-"""Terminal chat with the coding agent or the orchestrator.
+"""Terminal chat with the coding agent, the orchestrator, or a chat or web agent.
 
-Run with: uv run --env-file .env jean-code [--sandbox] [--agent orchestrator]
+Run with: uv run --env-file .env jean-code [--sandbox] [--agent orchestrator|chat|web]
 """
 
 import argparse
@@ -8,6 +8,7 @@ import queue
 import signal
 from collections.abc import Callable
 
+from jean_code.agents.basic import chat_agent, web_agent
 from jean_code.agents.coding import coding_agent
 from jean_code.agents.experts import orchestrator_agent
 from jean_code.config import USAGE_LOG
@@ -272,12 +273,13 @@ def print_cost(driver: Driver, credits: Callable[[], dict] | None) -> None:
 
 def main() -> None:
     """Parses the command line, builds the agent, and chats until the user exits."""
-    parser = argparse.ArgumentParser(description="Chat with a coding agent that has a shell, or with the orchestrator.")
+    parser = argparse.ArgumentParser(description="Chat with a coding agent that has a shell, or another agent.")
     parser.add_argument(
         "--agent",
-        choices=("coding", "orchestrator"),
+        choices=("coding", "orchestrator", "chat", "web"),
         default="coding",
-        help="coding: a shell, web tools and helpers; orchestrator: no shell, it runs expert subagents",
+        help="coding: a shell, web tools and helpers; orchestrator: no shell, it runs expert subagents; "
+        "chat: the model alone, no tools; web: web search and page reading only",
     )
     parser.add_argument("--sandbox", action="store_true", help="coding agent: run commands in a Docker container")
     parser.add_argument(
@@ -293,8 +295,8 @@ def main() -> None:
         help="compact the context after a turn that ends over this many tokens",
     )
     cli = parser.parse_args()
-    if cli.agent == "orchestrator" and cli.sandbox:
-        parser.error("--sandbox is for the coding agent: the orchestrator has no shell")
+    if cli.agent != "coding" and cli.sandbox:
+        parser.error(f"--sandbox is for the coding agent: the {cli.agent} agent has no shell")
     if cli.max_cost is not None and cli.max_cost <= 0:
         parser.error(f"--max-cost must be positive, got {cli.max_cost}")
 
@@ -302,6 +304,10 @@ def main() -> None:
         common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node}
         if cli.agent == "orchestrator":  # nothing it calls needs approval
             return orchestrator_agent(cli.model, network=not cli.no_network, **common)
+        if cli.agent == "chat":
+            return chat_agent(cli.model, **common)
+        if cli.agent == "web":
+            return web_agent(cli.model, **common)
         return coding_agent(cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approve, **common)
 
     view = AgentView()
@@ -312,7 +318,7 @@ def main() -> None:
         except ValueError as e:  # a setting the agent refuses, e.g. --compact-at over half the context window
             parser.error(str(e))
         try:
-            repl(driver, recorder, openrouter().credits)  # both agent kinds run on OpenRouter
+            repl(driver, recorder, openrouter().credits)  # every agent kind runs on OpenRouter
         finally:
             agents = driver.view.state().agents
             running = sum(a.running for path, a in agents.items() if path != "main")

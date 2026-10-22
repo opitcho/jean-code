@@ -16,6 +16,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from jean_code.agents.basic import chat_agent, web_agent
 from jean_code.agents.coding import coding_agent
 from jean_code.agents.experts import orchestrator_agent
 from jean_code.config import USAGE_LOG
@@ -31,7 +32,7 @@ from jean_code.logs import Recorder, process_logs
 from jean_code.ui.repl import compaction_line
 
 MAIN = "main"  # the main agent's path
-AGENT_KINDS = ("Coding", "Orchestrator")  # the sidebar's Agent select; the orchestrator has no shell
+AGENT_KINDS = ("Coding", "Orchestrator", "Chat", "Web search")  # the sidebar's Agent select; only Coding has a shell
 REASONING_LEVELS = ("off", "low", "medium", "high")  # "off" sends no reasoning setting
 POLL_SECONDS = 0.5
 CSS_PATH = Path(__file__).with_name("app.css")
@@ -234,9 +235,9 @@ def reset_view() -> None:
     st.session_state.last_job_seen = None
 
 
-def orchestrating() -> bool:
-    """Returns whether the sidebar's Agent select is on the orchestrator."""
-    return st.session_state.get("agent_kind", AGENT_KINDS[0]) == "Orchestrator"
+def agent_kind() -> str:
+    """Returns the sidebar's Agent select: one of `AGENT_KINDS`."""
+    return st.session_state.get("agent_kind", AGENT_KINDS[0])
 
 
 def reasoning_effort() -> str | None:
@@ -248,17 +249,21 @@ def reasoning_effort() -> str | None:
     return None if level == "off" else level
 
 
-def choice() -> tuple[bool, bool]:
-    """Returns what the sidebar picks to build: (orchestrator, Docker sandbox)."""
-    return orchestrating(), st.session_state.get("sandbox", False)
+def choice() -> tuple[str, bool]:
+    """Returns what the sidebar picks to build: (agent kind, Docker sandbox)."""
+    return agent_kind(), st.session_state.get("sandbox", False)
 
 
 def build_agent(node: AgentNode, approve: Approve) -> Agent:
     """Builds the agent the sidebar picks, on `node`; it streams its replies."""
     common = {"reasoning": reasoning_effort(), "node": node}
-    orchestrator, sandbox = choice()
-    if orchestrator:  # nothing it calls needs approval
+    kind, sandbox = choice()
+    if kind == "Orchestrator":  # nothing it calls needs approval
         return orchestrator_agent(DEFAULT_MODEL, **common)
+    if kind == "Chat":
+        return chat_agent(DEFAULT_MODEL, **common)
+    if kind == "Web search":
+        return web_agent(DEFAULT_MODEL, **common)
     return coding_agent(DEFAULT_MODEL, sandbox=sandbox, approve=approve, **common)
 
 
@@ -400,9 +405,10 @@ def render_sidebar_top(state: TreeState) -> None:
             on_change=apply_settings,
             disabled=state.busy,
             help="Coding: a shell, web tools and helper subagents. Orchestrator: no shell; it runs expert subagents "
-            "(pm, architect, engineer, auditor), each in its own sandbox. Starts a new chat.",
+            "(pm, architect, engineer, auditor), each in its own sandbox. Chat: the model alone, with no tools. "
+            "Web search: web search and page reading only. Starts a new chat.",
         )
-        if orchestrating():
+        if agent_kind() != "Coding":
             return  # no shell, so no sandbox question
         st.toggle(
             "Run bash in Docker sandbox",
@@ -416,7 +422,7 @@ def render_sidebar_top(state: TreeState) -> None:
 
 def render_sidebar(state: TreeState) -> None:
     """Draws the rest of the sidebar: shell, skills, model, reasoning, budget, agents."""
-    if orchestrating():
+    if agent_kind() != "Coding":
         note = None  # no shell
     elif choice()[1]:
         note = "<b>Docker sandbox</b> — commands run without asking"
