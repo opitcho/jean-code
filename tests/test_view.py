@@ -10,11 +10,8 @@ from jean_code.core.events import (
     Delivered,
     Delta,
     GroupAdded,
-    JobEnded,
-    JobStarted,
     LimitSet,
     MessageAdded,
-    Queued,
     RunEnded,
     SkillLoaded,
     TurnEnded,
@@ -132,17 +129,6 @@ def test_waiting_counts_ended_results_not_yet_delivered_per_parent():
     assert state.waiting("main") == 0
     apply(state, RunEnded(path="main/1", status="done"))  # a resumed run ended again
     assert state.waiting("main") == 1 and state.agents["main/1"].outcome.status == "done"
-
-
-def test_a_queued_message_shows_until_its_job_starts():
-    # Catches a waiting message that vanishes while the stopped job winds down, or one that's shown forever.
-    state = TreeState()
-    apply(state, JobStarted(kind="turn", text="go"))
-    apply(state, Queued(text="instead"))
-    apply(state, JobEnded(kind="turn", result="cancelled"))
-    assert state.queued == "instead" and not state.busy
-    apply(state, JobStarted(kind="turn", text="instead"))
-    assert state.queued is None and state.busy
 
 
 def test_a_subscriber_sees_each_event_after_its_snapshot_once():

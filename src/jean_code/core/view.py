@@ -26,7 +26,6 @@ from jean_code.core.events import (
     JobStarted,
     LimitSet,
     MessageAdded,
-    Queued,
     RunEnded,
     Settings,
     SkillLoaded,
@@ -142,7 +141,6 @@ class TreeState:
         busy: Whether the driver runs a job.
         approval: The tool call waiting for the user, if any.
         last_job: How the last job ended.
-        queued: The message waiting for the running job to stop, if any.
         calls: Every model call in the tree, in charge order.
     """
 
@@ -151,7 +149,6 @@ class TreeState:
     busy: bool = False
     approval: Approval | None = None
     last_job: JobEnded | None = None
-    queued: str | None = None
     calls: list[ModelCall] = field(default_factory=list)
 
     def waiting(self, path: str) -> int:
@@ -233,9 +230,7 @@ def apply(state: TreeState, event: ViewEvent) -> None:
                 if event.path == path or event.path.startswith(path + "/"):
                     node.spent += event.call.cost or 0
         case JobStarted():
-            state.busy, state.queued = True, None
-        case Queued():
-            state.queued = event.text
+            state.busy = True
         case JobEnded():
             state.busy, state.last_job = False, event
         case ApprovalRequested():

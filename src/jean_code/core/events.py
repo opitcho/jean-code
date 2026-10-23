@@ -310,18 +310,6 @@ class JobStarted(BaseModel):
     text: str = ""
 
 
-class Queued(BaseModel):
-    """A message came in while a job ran; its turn starts once the job has stopped.
-
-    Attributes:
-        text: The user's message.
-    """
-
-    model_config = ConfigDict(frozen=True)
-    type: Literal["queued"] = "queued"
-    text: str
-
-
 class JobEnded(BaseModel):
     """A driver's job is over, and the driver is idle.
 
@@ -380,7 +368,6 @@ ViewEvent = Annotated[
     | Delivered
     | Charged
     | JobStarted
-    | Queued
     | JobEnded
     | ApprovalRequested
     | ApprovalResolved,

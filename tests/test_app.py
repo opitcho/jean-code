@@ -246,6 +246,8 @@ def test_a_message_while_busy_waits_on_a_card_then_runs():
         assert at.chat_input[0].proto.disabled and at.chat_input[0].proto.placeholder == "Stopping…"
     finally:
         release.set()
+    idle(session)
+    at.run()  # the poll that sees the stopped job has ended sends the message
     eventually(lambda: (job := session.view.state().last_job) is not None and job.result == "answered")
     at.run()
     assert not any("stopping…" in m for m in markdowns(at))

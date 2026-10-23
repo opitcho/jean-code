@@ -13,7 +13,7 @@ import pytest
 from conftest import FakeClient, call, response, usage
 from jean_code.core.agent import NOT_RUN, Agent
 from jean_code.core.driver import Busy, Driver
-from jean_code.core.events import ApprovalRequested, ApprovalResolved, Configured, JobEnded, JobStarted, Queued
+from jean_code.core.events import ApprovalRequested, ApprovalResolved, Configured, JobEnded, JobStarted
 from jean_code.core.node import AgentNode, UnknownNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
@@ -135,85 +135,20 @@ def test_a_turn_is_wrapped_in_job_events_and_its_messages_land_in_the_state():
     assert main.end == "answered" and not main.running and not driver.view.state().busy
 
 
-def gated(agent: Agent, gate: threading.Event) -> None:
-    """Adds a `/gate` command that holds the turn before its first model call until `gate` is set."""
-
-    def hold() -> str:
-        gate.wait(TIMEOUT)
-        return ""
-
-    agent.commands["gate"] = hold
-
-
-def test_send_while_busy_stops_the_job_and_runs_the_message_next():
-    # Catches a message refused or lost while the agent works, or a queued turn hit by the stop that queued it.
-    gate = threading.Event()
-    driver, build = make_driver([response("instead, done")])
-    gated(build.agent, gate)
-    with driver.view.subscribe() as (_, events):
-        driver.send("/gate go")
-        driver.send("do this instead")
-        assert driver.view.state().queued == "do this instead"
-        gate.set()
-        jobs = [next_of(events, (JobStarted, Queued, JobEnded)) for _ in range(5)]
-    assert jobs == [
-        JobStarted(kind="turn", text="/gate go"),
-        Queued(text="do this instead"),
-        JobEnded(kind="turn", result="cancelled"),
-        JobStarted(kind="turn", text="do this instead"),
-        JobEnded(kind="turn", result="answered"),
-    ]
-    assert len(build.agent.client.requests) == 1  # type: ignore[attr-defined]
-    assert driver.view.state().queued is None and not driver.view.state().busy
-
-
-def test_a_second_message_while_one_waits_is_busy_and_compact_always_is():
-    # Catches a second redirect overwriting the first message, or a compaction started on a running agent.
+def test_send_and_compact_while_busy_are_refused_and_leave_the_job_alone():
+    # Catches a second job started on a running agent, or a refused command that stops the job that runs.
     release = threading.Event()
     driver = Driver(held_builder(release))
     with driver.view.subscribe() as (_, events):
         driver.send("go")
         with pytest.raises(Busy):
-            driver.compact()
-        driver.send("first")
+            driver.send("instead")
         with pytest.raises(Busy):
-            driver.send("second")
+            driver.compact()
         release.set()
-        assert next_of(events, JobStarted, timeout=TIMEOUT) == JobStarted(kind="turn", text="go")
-        assert next_of(events, JobStarted) == JobStarted(kind="turn", text="first")
-        next_of(events, JobEnded)
-
-
-def test_a_message_while_an_approval_waits_refuses_it_and_runs_next():
-    # Catches a redirect that leaves the turn waiting on an approval nobody will answer.
-    driver, build = make_driver(
-        [response(tool_calls=[call("rm", path="x")]), response("ok, not deleting")], needs_approval={"rm"}
-    )
-    with driver.view.subscribe() as (_, events):
-        driver.send("delete x")
-        approval = next_of(events, ApprovalRequested).approval
-        driver.send("no, keep it")
-        assert next_of(events, ApprovalResolved) == ApprovalResolved(id=approval.id, refusal=NOT_RUN)
-        assert next_of(events, JobEnded).result == "cancelled"
-        assert next_of(events, JobEnded).result == "answered"
-    assert build.agent.messages[-1].content == "ok, not deleting"
-
-
-def test_close_drops_a_waiting_message():
-    # Catches a queued turn started on an agent that's being closed.
-    gate = threading.Event()
-    driver, build = make_driver([response("never")])
-    gated(build.agent, gate)
-    with driver.view.subscribe() as (_, events):
-        driver.send("/gate go")
-        driver.send("queued")
-        closing = threading.Thread(target=driver.close, daemon=True)
-        closing.start()
-        gate.set()
-        closing.join(TIMEOUT)
-        assert next_of(events, JobEnded).result == "cancelled"
-        assert not [e for e in drain(events) if isinstance(e, JobStarted)]
-    assert build.agent.client.requests == []  # type: ignore[attr-defined]
+        jobs = [next_of(events, (JobStarted, JobEnded)) for _ in range(2)]
+    assert jobs == [JobStarted(kind="turn", text="go"), JobEnded(kind="turn", result="answered")]
+    assert not driver.view.state().busy
 
 
 def test_send_the_moment_the_job_ends_is_never_busy():

@@ -16,7 +16,6 @@ from jean_code.core.events import (
     JobEnded,
     JobKind,
     JobStarted,
-    Queued,
     ViewEvent,
     error_line,
 )
@@ -46,10 +45,7 @@ _Job = _Turn | _Compaction
 
 
 class Busy(RuntimeError):
-    """The driver can't take this command now.
-
-    A job runs, or for a message, another message already waits for the running job to stop.
-    """
+    """A job is running, so the driver can't start another."""
 
 
 def denied(reason: str = "") -> str:
@@ -64,11 +60,10 @@ def denied(reason: str = "") -> str:
 class Driver:
     """One agent tree, run off the caller's thread, one job at a time.
 
-    Each job (a turn or a compaction) runs on a thread of its own; a message sent while one runs stops it, and its
-    turn runs next on the same thread. The driver makes the tree's root node, with `view` listening to it, and has
-    `build` put the agent on it. Its own events (jobs, approvals) go to `view` as
-    well, so `view` is everything a client reads. Commands are thread-safe and return at once; what they cause
-    arrives as events.
+    Each job (a turn or a compaction) runs on a thread of its own. The driver makes the tree's root node, with `view`
+    listening to it, and has `build` put the agent on it. Its own events (jobs, approvals) go to `view` as well, so
+    `view` is everything a client reads. Commands are thread-safe and return at once; what they cause arrives as
+    events.
 
     Args:
         build: Builds the agent on the node it's given, with the `approve` function it's given.
@@ -85,7 +80,6 @@ class Driver:
         self._lock = threading.Lock()  # guards the fields below; never held while an agent works
         self._busy = False
         self._job: threading.Thread | None = None
-        self._queued: _Turn | None = None
         self._approval: Approval | None = None
         self._answered = threading.Event()
         self._refusal: str | None = None
@@ -96,27 +90,15 @@ class Driver:
     # ---------------------------------------------------------------- commands
 
     def send(self, text: str) -> None:
-        """Starts a turn on `text`, or redirects the running job to it.
-
-        While a job runs, it's stopped as `cancel()` stops the root, and the turn on `text` starts once it has
-        ended.
+        """Starts a turn on `text`.
 
         Args:
             text: The user's message.
 
         Raises:
-            Busy: A job is running, and a message already waits for it to stop.
+            Busy: A job is running.
         """
-        with self._lock:
-            if self._busy:
-                if self._queued is not None:
-                    raise Busy("a message already waits for the running job to stop")
-                self._queued = _Turn(text)
-                self._emit(Queued(text=text))
-                self._stop_locked()
-                return
-            self._begin_locked(job := _Turn(text))
-        self._spawn(job)
+        self._start(_Turn(text))
 
     def compact(self) -> None:
         """Starts compacting the context, whatever its size.
@@ -124,11 +106,7 @@ class Driver:
         Raises:
             Busy: A job is running.
         """
-        with self._lock:
-            if self._busy:
-                raise Busy("a job is running; wait for it to end, or stop it")
-            self._begin_locked(job := _Compaction())
-        self._spawn(job)
+        self._start(_Compaction())
 
     def cancel(self, path: str = "main") -> None:
         """Stops every agent at or below the node at `path` before its next model call.
@@ -197,10 +175,9 @@ class Driver:
     def close(self) -> None:
         """Stops whatever runs, waits for it, and releases what the agents' tools hold.
 
-        It can be called at any time. A message waiting for the job to stop is dropped.
+        It can be called at any time.
         """
         with self._lock:
-            self._queued = None
             self._stop_locked()
         if self._job is not None:
             self._job.join()
@@ -213,37 +190,32 @@ class Driver:
         """Passes one of the driver's own events to the view."""
         self.view.listen(event)
 
-    def _begin_locked(self, job: _Job) -> None:
-        """Sets busy, reopens the root and emits `JobStarted`; the caller holds the lock."""
-        self._busy = True
-        # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
-        self._agent.node.reopen()
-        self._emit(JobStarted(kind=job.kind, text=job.text if isinstance(job, _Turn) else ""))
-
-    def _spawn(self, job: _Job) -> None:
-        """Starts `job` on a thread of its own and returns at once."""
-        self._job = threading.Thread(target=self._run, args=(job,), name=f"driver {job.kind}", daemon=True)
-        self._job.start()
+    def _start(self, job: _Job) -> None:
+        """Starts `job` on a thread of its own and returns at once, unless a job runs."""
+        with self._lock:
+            if self._busy:
+                raise Busy("a job is running; wait for it to end, or stop it")
+            self._busy = True
+            # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
+            self._agent.node.reopen()
+            self._emit(JobStarted(kind=job.kind, text=job.text if isinstance(job, _Turn) else ""))
+            self._job = threading.Thread(target=self._run, args=(job,), name=f"driver {job.kind}", daemon=True)
+            self._job.start()
 
     def _run(self, job: _Job) -> None:
-        """Runs `job`, then any turn queued behind it, emitting `JobEnded` after each."""
-        while True:
-            result, error = None, None
-            try:
-                match job:
-                    case _Turn(text=text):
-                        result = self._agent.run_turn(text)
-                    case _Compaction():
-                        result = self._agent.compact(force=True)
-            except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
-                error = error_line(e)  # the agent recorded its stack as it left
-            with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
-                self._busy = False
-                self._emit(JobEnded(kind=job.kind, result=result, error=error))
-                if self._queued is None:
-                    return
-                job, self._queued = self._queued, None
-                self._begin_locked(job)
+        """Runs `job`, then emits `JobEnded`."""
+        result, error = None, None
+        try:
+            match job:
+                case _Turn(text=text):
+                    result = self._agent.run_turn(text)
+                case _Compaction():
+                    result = self._agent.compact(force=True)
+        except Exception as e:  # noqa: BLE001 - reported in JobEnded; the driver stays usable
+            error = error_line(e)  # the agent recorded its stack as it left
+        with self._lock:  # busy clears in the same step JobEnded is seen, so a client can send again at once
+            self._busy = False
+            self._emit(JobEnded(kind=job.kind, result=result, error=error))
 
     def _approve(self, name: str, arguments: dict) -> str | None:
         """Asks the client to approve a tool call, and waits for the answer."""

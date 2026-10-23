@@ -233,6 +233,7 @@ def reset_view() -> None:
     st.session_state.view = MAIN  # the agent picker's value
     st.session_state.compactions_seen = 0
     st.session_state.last_job_seen = None
+    st.session_state.queued = None  # the message waiting for the running job to stop
 
 
 def agent_kind() -> str:
@@ -903,6 +904,9 @@ if "driver" not in st.session_state:
     st.session_state.driver = new_driver()
 if "open" not in st.session_state:
     reset_view()
+if (queued := st.session_state.queued) is not None and not driver().view.state().busy:
+    st.session_state.queued = None
+    driver().send(queued)  # the job it stopped has ended
 state = driver().view.state()
 render_sidebar_top(state)
 render_sidebar(state)
@@ -938,7 +942,7 @@ def live_view() -> None:
     with chat_col:
         if path != MAIN:
             st.html(eyebrow(f"CHAT · {agent_label(state, path).strip().replace('**', '')}"))
-        queued = state.queued if path == MAIN else None
+        queued = st.session_state.queued if path == MAIN else None
         render_chat(agent, entries, running, approval, queued)
         if path != MAIN:
             st.chat_input("Subagents take no messages: pick the main agent to chat", disabled=True)
@@ -957,8 +961,11 @@ def live_view() -> None:
                     driver().answer(approval.id, denied(prompt))
                 elif prompt.strip() == "/compact":  # a UI command: never sent to the model as a message
                     driver().compact()
+                elif state.busy:  # stop the job; the message is sent on the first rerun after it ends
+                    st.session_state.queued = prompt
+                    driver().cancel()
                 else:
-                    driver().send(prompt)  # while busy: stops the turn, and this message's turn runs next
+                    driver().send(prompt)
             except Busy:
                 st.toast("The agent is busy: stop it, or wait for it to finish.", icon=":material/hourglass_top:")
             st.rerun()
