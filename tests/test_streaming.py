@@ -232,6 +232,41 @@ def whole(message: dict, finish_reason: str) -> dict:
     return {**REAL_META, "object": "chat.completion", "choices": [choice], "usage": REAL_USAGE}
 
 
+def fake_clock(monkeypatch) -> list[float]:
+    """Replaces `time.monotonic` with a clock that reads the returned list's one value; set it to move time."""
+    now = [0.0]
+    monkeypatch.setattr(llm.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_a_streamed_reply_is_timed_from_sending_to_its_first_chunk_and_its_end(monkeypatch):
+    # Catches a keep-alive taken for the first token, or a duration that stops before the reply ends.
+    now = fake_clock(monkeypatch)
+    arrivals = [(1.0, ": OPENROUTER PROCESSING")]
+    arrivals += [(2.0 + i, f"data: {json.dumps(c)}") for i, c in enumerate(TOOL_CALL_STREAM)]
+    arrivals += [(30.0, "data: [DONE]")]
+
+    def body():  # each event arrives at its time on the fake clock
+        for at, event in arrivals:
+            now[0] = at
+            yield f"{event}\n\n".encode()
+
+    _, completion = split(streaming_client(monkeypatch, httpx.Response(200, content=body())).stream(REQUEST))
+    assert (completion.ttft, completion.duration) == (2.0, 30.0)
+
+
+def test_a_whole_reply_is_timed_without_a_first_chunk(monkeypatch):
+    # Catches a call that wasn't streamed reporting a time to first token it never measured.
+    now = fake_clock(monkeypatch)
+
+    def body():  # the whole reply arrives at 2.5 s on the fake clock
+        now[0] = 2.5
+        yield json.dumps(whole(REAL_ASSISTANT, "tool_calls")).encode()
+
+    completion = streaming_client(monkeypatch, httpx.Response(200, content=body())).complete(REQUEST)
+    assert (completion.ttft, completion.duration) == (None, 2.5)
+
+
 ANSWER = "The tool returned 6912."
 WHOLE_RESPONSES = {
     "parallel tool calls": whole(REAL_ASSISTANT, "tool_calls"),
@@ -292,8 +327,9 @@ def as_chunks(response: dict, rng: random.Random) -> list[dict]:
 
 def compared(completion: Completion) -> dict:
     """A completion's fields, with the message as it is sent back: a whole reply's `refusal: null` isn't sent, so it
-    doesn't count."""
-    return {**vars(completion), "message": render_message(completion.message)}
+    doesn't count. The timing is left out: it measures the wire, not the reply."""
+    fields = {**vars(completion), "message": render_message(completion.message)}
+    return {key: value for key, value in fields.items() if key not in ("ttft", "duration")}
 
 
 @pytest.mark.parametrize("seed", range(100))

@@ -11,7 +11,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
 import httpx
@@ -168,6 +168,10 @@ class Completion:
         model: The model that answered.
         created: When it was created, in Unix seconds.
         usage: What the provider says it served and charged.
+        ttft: Seconds from sending the request (its first try, if it was retried) to the reply's first chunk; None
+            if the reply wasn't streamed or wasn't timed.
+        duration: Seconds from sending the request (its first try, if it was retried) to the reply's end, or to the
+            stop that cut it off; None if it wasn't timed.
     """
 
     message: AssistantMessage
@@ -177,6 +181,8 @@ class Completion:
     model: str
     created: int
     usage: Usage | None
+    ttft: float | None = None
+    duration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -505,6 +511,7 @@ class ChatClient:
             MalformedResponse: The response can't be used.
             RuntimeError: The endpoint returned an HTTP error, or reported a model error.
         """
+        started = time.monotonic()
         response = self._send({**self.extra, **render_request(request)})
         response.read()
         try:
@@ -513,7 +520,7 @@ class ChatClient:
             raise MalformedResponse(f"response body is not JSON: {e}") from e
         if isinstance(data, dict) and "error" in data:  # OpenRouter can report a provider error with status 200
             raise RuntimeError(f"model error: {data['error']}")
-        return parse_completion(data)
+        return replace(parse_completion(data), duration=time.monotonic() - started)
 
     def _send(self, body: dict) -> httpx.Response:
         """POSTs a chat completion and returns the response with its body unread.
@@ -572,6 +579,7 @@ class StreamingClient(ChatClient):
         """
         chunks: list[_Chunk] = []
         stopped = False
+        started, first = time.monotonic(), None
         response = self._send({**self.extra, **render_request(request), "stream": True})
         try:
             for line in response.iter_lines():
@@ -581,6 +589,8 @@ class StreamingClient(ChatClient):
                 # Blank separators, ": OPENROUTER PROCESSING" keep-alives and the end marker carry no chunk
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
+                if first is None:  # as it arrives, before parsing: the provider's time, not ours
+                    first = time.monotonic()
                 chunk = _parse_chunk(line)
                 chunks.append(chunk)
                 for choice in chunk.choices:
@@ -590,8 +600,10 @@ class StreamingClient(ChatClient):
                         yield TextDelta("content", choice.delta.content)
         finally:
             response.close()
+        ended = time.monotonic()
         if chunks or not stopped:  # a stop before the first chunk leaves nothing to yield
-            yield _join_chunks(chunks)
+            ttft = None if first is None else first - started
+            yield replace(_join_chunks(chunks), ttft=ttft, duration=ended - started)
 
 
 def openrouter(api_key: str | None = None) -> StreamingClient:

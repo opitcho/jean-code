@@ -267,7 +267,7 @@ def breakdown(state: TreeState) -> list[dict]:
 
 
 def snapshot(state: TreeState) -> TreeState:
-    """Returns a copy of `state` that later events don't change.
+    """Returns a copy of `state` that lateDeltar events don't change.
 
     Args:
         state: The state to copy.

@@ -210,19 +210,23 @@ class Driver:
     # ---------------------------------------------------------------- internals
 
     def _emit(self, event: ViewEvent) -> None:
+        """Passes one of the driver's own events to the view."""
         self.view.listen(event)
 
     def _begin_locked(self, job: _Job) -> None:
+        """Sets busy, reopens the root and emits `JobStarted`; the caller holds the lock."""
         self._busy = True
         # Under the lock a stop takes: a stop lands before this (it was for the last job) or after (it holds).
         self._agent.node.reopen()
         self._emit(JobStarted(kind=job.kind, text=job.text if isinstance(job, _Turn) else ""))
 
     def _spawn(self, job: _Job) -> None:
+        """Starts `job` on a thread of its own and returns at once."""
         self._job = threading.Thread(target=self._run, args=(job,), name=f"driver {job.kind}", daemon=True)
         self._job.start()
 
     def _run(self, job: _Job) -> None:
+        """Runs `job`, then any turn queued behind it, emitting `JobEnded` after each."""
         while True:
             result, error = None, None
             try:
@@ -242,6 +246,7 @@ class Driver:
                 self._begin_locked(job)
 
     def _approve(self, name: str, arguments: dict) -> str | None:
+        """Asks the client to approve a tool call, and waits for the answer."""
         with self._lock:
             # A stop that came before this question can't answer it, so it's answered here.
             if self._agent.node.cancelled:
@@ -254,12 +259,14 @@ class Driver:
         return self._refusal
 
     def _stop_locked(self) -> None:
+        """Stops the tree and refuses any waiting approval; the caller holds the lock."""
         self._agent.interrupt()
         # A stop alone doesn't wake a turn that waits for the user, so a waiting approval is refused too.
         if self._approval is not None:
             self._resolve_locked(self._approval, NOT_RUN)
 
     def _resolve_locked(self, approval: Approval, refusal: str | None) -> None:
+        """Answers `approval` and wakes the turn waiting on it; the caller holds the lock."""
         self._emit(ApprovalResolved(id=approval.id, refusal=refusal))
         self._approval, self._refusal = None, refusal
         self._answered.set()

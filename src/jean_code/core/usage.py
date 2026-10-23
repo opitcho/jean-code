@@ -30,6 +30,8 @@ class ModelCall:
         reasoning_tokens: Reply tokens spent reasoning.
         kind: "compaction" for summary calls; None for the others.
         finish_reason: Why the model stopped, as sent; None for a cut-off stream.
+        ttft: As `Completion.ttft`.
+        duration: As `Completion.duration`.
     """
 
     generation_id: str
@@ -44,6 +46,8 @@ class ModelCall:
     reasoning_tokens: int = 0
     kind: str | None = None
     finish_reason: str | None = None
+    ttft: float | None = None
+    duration: float | None = None
 
     @classmethod
     def from_completion(cls, completion: Completion, path: str, kind: str | None = None) -> "ModelCall":
@@ -68,6 +72,8 @@ class ModelCall:
             reasoning_tokens=(usage.completion_tokens_details or TokenDetails()).reasoning_tokens or 0,
             kind=kind,
             finish_reason=completion.finish_reason,
+            ttft=completion.ttft,
+            duration=completion.duration,
         )
 
     @property
@@ -78,8 +84,9 @@ class ModelCall:
     def log_line(self) -> str:
         """Returns the call as the usage log's JSON line.
 
-        The keys, order and values are the ones the log has always had, so old and new lines sum together. `kind`
-        and `budget` (the path) are left out when empty.
+        The keys the log has always had keep their order and values, so old and new lines sum together. `kind` and
+        `budget` (the path) are left out when empty, and `ttft` and `duration` (seconds, to the millisecond) when
+        the call wasn't timed.
         """
         line = {
             "time": self.time,
@@ -94,6 +101,8 @@ class ModelCall:
         }
         # The path keeps its old key, "budget", so old and new lines still sum together.
         line |= {key: value for key, value in (("kind", self.kind), ("budget", self.path)) if value}
+        timing = (("ttft", self.ttft), ("duration", self.duration))
+        line |= {key: round(value, 3) for key, value in timing if value is not None}
         return json.dumps(line)
 
 

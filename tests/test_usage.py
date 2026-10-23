@@ -3,6 +3,9 @@
 Each test names the bug it would catch.
 """
 
+import json
+from dataclasses import replace
+
 import pytest
 
 from conftest import REAL_META, REAL_USAGE, response, usage
@@ -41,6 +44,16 @@ def test_finish_reason_is_kept_but_not_logged(utc):
     # Catches a reply cut off at "length" looking like an answer in a trace, or a new key in logs/usage.jsonl.
     assert real_call().finish_reason == "stop"
     assert '"finish_reason"' not in real_call().log_line()
+
+
+def test_timing_is_booked_and_logged_only_when_measured(utc):
+    # Catches the throughput data missing from logs/usage.jsonl, or `"ttft": null` on every call that wasn't timed.
+    completion = parse_completion({**response(), **REAL_META, "usage": REAL_USAGE})
+    timed = ModelCall.from_completion(replace(completion, ttft=0.61234, duration=2.5), path="main")
+    assert (timed.ttft, timed.duration) == (0.61234, 2.5)
+    line = json.loads(timed.log_line())
+    assert (line["ttft"], line["duration"]) == (0.612, 2.5)
+    assert '"ttft"' not in real_call().log_line() and '"duration"' not in real_call().log_line()
 
 
 def test_kind_is_logged_only_when_set(utc):
