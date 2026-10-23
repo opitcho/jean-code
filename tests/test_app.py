@@ -198,6 +198,39 @@ def test_a_subagent_appears_in_the_picker_with_how_its_turn_ended():
     assert "answer to t" in markdowns(at)
 
 
+def test_an_agent_in_a_foreground_spawn_waits_on_its_subagent_instead_of_thinking():
+    # Catches a parent shown as running and thinking while all it does is wait for its subagent.
+    release = threading.Event()
+
+    @tool
+    def hold() -> str:
+        """Wait until released."""
+        release.wait(TIMEOUT)
+        return "released"
+
+    def build(task: str, node: AgentNode) -> Agent:
+        script = [response(tool_calls=[call("hold")]), response("child done")]
+        return Agent(client=FakeClient(script), tools={"hold": hold}, node=node)
+
+    session, _ = make_session(
+        [response(tool_calls=[call("spawn", profile="echo", task="t")]), response("done")],
+        subagent_profiles={"echo": agent_profile("answers", build, 1.0)},
+    )
+    at = app(session)
+    at.chat_input[0].set_value("go").run()
+    eventually(lambda: (child := session.view.state().agents.get("main/1")) is not None and child.running)
+    at.run()
+    no_errors(at)
+    try:
+        main, child = at.radio(key="view").proto.captions
+        assert main.startswith(":blue[●] waiting on subagent")
+        assert child.startswith(":green[●] running")
+        assert not any("thinking…" in h for h in htmls(at))
+    finally:
+        release.set()
+        idle(session)
+
+
 def held_session(release: threading.Event, *script) -> Driver:
     """A driver whose first turn holds in a tool call until `release` is set."""
 

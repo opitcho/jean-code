@@ -50,9 +50,11 @@ KINDS = {
     "summary": ("SUMMARY", "≡", "#2DD4BF"),
 }
 REASONING_TAIL = 400  # characters of a streaming thought its closed row shows: its latest ones
+SUBAGENT_TOOLS = ("spawn", "subagent", "resume")  # the agent's own tools that wait for a subagent
 # status -> (color in the agent picker, dot and pill classes in the header). A turn's other stops use "stopped".
 STATUSES = {
     "running": ("green", "run", "status-run"),
+    "waiting on subagent": ("blue", "sub", "status-sub"),
     "awaiting approval": ("orange", "wait", "status-wait"),
     "idle": ("gray", "", ""),
     "answered": ("violet", "done", ""),
@@ -189,17 +191,29 @@ def is_running(state: TreeState, path: str) -> bool:
     return state.agents[path].running
 
 
+def call_in_flight(agent: AgentState) -> llm.ToolCall | None:
+    """Returns the tool call the agent's turn is running now, if it's in one."""
+    messages = agent.messages()
+    replies = [n for n, m in enumerate(messages) if isinstance(m, llm.AssistantMessage)]
+    if not replies:
+        return None
+    calls = messages[replies[-1]].tool_calls
+    done = len(messages) - replies[-1] - 1  # a reply's calls run in order, each result appended after the last
+    return calls[done] if done < len(calls) else None
+
+
 def status_of(state: TreeState, path: str) -> tuple[str, str | None]:
     """Returns the agent's status, and a failure's error as its detail.
 
-    The status is "running", "awaiting approval", how its last turn ended ("answered", a stop reason, "failed"),
-    or else "idle".
+    The status is "running", "waiting on subagent" (in a spawn, subagent or resume call), "awaiting approval", how
+    its last turn ended ("answered", a stop reason, "failed"), or else "idle".
     """
     agent = state.agents[path]
     if path == MAIN and state.approval is not None:
         return "awaiting approval", None
     if is_running(state, path):
-        return "running", None
+        call = call_in_flight(agent)
+        return ("waiting on subagent" if call and call.function.name in SUBAGENT_TOOLS else "running"), None
     if agent.error:
         return "failed", agent.error
     return (agent.end or "idle"), None
@@ -212,10 +226,10 @@ def style(status: str) -> tuple[str, str, str]:
 def signature(state: TreeState) -> tuple:
     """Returns what the sidebar and the input show, to tell when they're stale.
 
-    That's each agent and whether it runs, whether the session is busy or waits for approval, and how many results
+    That's each agent and its status, whether the session is busy or waits for approval, and how many results
     wait. A change means a full rerun, so they catch up.
     """
-    agents = tuple((path, a.running) for path, a in state.agents.items())
+    agents = tuple((path, status_of(state, path)[0]) for path in state.agents)
     return agents, state.busy, state.approval is not None, state.waiting(MAIN)
 
 
@@ -678,8 +692,8 @@ def render_chat(agent: AgentState, entries: list[Item], running: bool, pending, 
     """Draws the agent's chat, every message it has had in order.
 
     A call shows on one row with its result. Compacted messages are dimmed, with a divider where the context
-    starts again. After the last message comes the reply streaming in while the agent runs, or the call waiting
-    for approval; then a message waiting for the agent to stop.
+    starts again. After the last message comes the reply streaming in while the agent waits on the model, or the
+    call waiting for approval; then a message waiting for the agent to stop.
     """
     names = call_names(entries)
     results = {e.message.tool_call_id: e for e in entries if isinstance(e.message, llm.ToolMessage)}
@@ -701,7 +715,7 @@ def render_chat(agent: AgentState, entries: list[Item], running: bool, pending, 
                     continue  # drawn on its call's row
                 render_item(agent, e, results, live if e is last_calls else "no result")
 
-            if running:
+            if running and (agent.draft or call_in_flight(agent) is None):  # a running call's row says so itself
                 render_draft(agent)
             elif pending is not None:
                 render_approval(pending)

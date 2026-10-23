@@ -51,14 +51,18 @@ header[data-testid="stHeader"] { background: transparent; }
   100% { box-shadow:0 0 0 8px transparent; } }
 @keyframes ping-wait { 0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--wait) 55%, transparent); }
   100% { box-shadow:0 0 0 8px transparent; } }
+.dot.sub { background:var(--sky); animation: ping-sub 1.8s infinite; }
+@keyframes ping-sub { 0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--sky) 55%, transparent); }
+  100% { box-shadow:0 0 0 8px transparent; } }
 .pill.status-run { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 35%, var(--line)); }
 .pill.status-wait { color:var(--wait); border-color:color-mix(in srgb, var(--wait) 40%, var(--line)); }
+.pill.status-sub { color:var(--sky); border-color:color-mix(in srgb, var(--sky) 40%, var(--line)); }
 .dot.done { background:var(--accent); }
 .dot.stop { background:var(--warn); }
 .dot.fail { background:var(--err); }
 .pill.status-stop { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .pill.status-fail { color:var(--err); border-color:color-mix(in srgb, var(--err) 40%, var(--line)); }
-.pill.status-run b, .pill.status-wait b { color:inherit; }
+.pill.status-run b, .pill.status-wait b, .pill.status-sub b { color:inherit; }
 
 .kv { display:grid; grid-template-columns: max-content minmax(0,1fr); border:1px solid var(--line);
   border-radius:var(--radius); overflow:hidden; }
