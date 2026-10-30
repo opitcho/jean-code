@@ -7,7 +7,8 @@ from types import MethodType
 
 import pytest
 
-from jean_code.agents.coding import coding_agent, general_agent, searcher_agent, subagent_profiles
+from jean_code.agents.coding import GENERAL_DESCRIPTION, coding_agent, general_agent, searcher_agent, subagent_profiles
+from jean_code.config import WORKSPACE_DIR
 from jean_code.core.node import AgentNode
 from jean_code.core.subagents import Run
 from jean_code.tools.shell import DockerShell
@@ -96,6 +97,17 @@ def test_the_coding_agents_sandboxes_use_its_workspace(tmp_path):
         assert len(list((tmp_path / "research").iterdir())) == 1
     finally:
         agent.close()
+
+
+def test_the_general_listing_names_a_custom_workspace(tmp_path):
+    # Catches the model pointing the user at the repo's workspace/, or a reworded prompt no longer being replaced.
+    description = subagent_profiles("m", workspace=tmp_path)["general"].description
+    assert f"in /workspace ({tmp_path.resolve()} on the user's machine);" in description
+
+
+def test_the_default_workspace_keeps_the_general_listing_as_written():
+    # Catches a prompt change reaching every run that didn't ask for a folder.
+    assert subagent_profiles("m", workspace=WORKSPACE_DIR)["general"].description == GENERAL_DESCRIPTION
 
 
 def test_a_searcher_run_starts():

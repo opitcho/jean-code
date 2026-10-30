@@ -1,5 +1,6 @@
 """Tests for what the REPL prints (spend, stops, subagents, compaction) and how it answers approvals, driven through a
-`Driver` built on a scripted agent. Logging itself is tested through `AgentNode` in `test_budget.py`.
+`Driver` built on a scripted agent. Logging itself is tested through `AgentNode` in `test_budget.py`. `--workspace` is
+tested through `main()`, up to its first prompt.
 
 Each test names the bug it would catch.
 """
@@ -7,7 +8,10 @@ Each test names the bug it would catch.
 import signal
 import threading
 
+import pytest
+
 from conftest import FakeClient, call, response, usage
+from jean_code.config import WORKSPACE_DIR
 from jean_code.core.agent import NOT_RUN, Agent
 from jean_code.core.driver import Driver
 from jean_code.core.events import JobEnded
@@ -15,8 +19,8 @@ from jean_code.core.node import AgentNode
 from jean_code.core.subagents import agent_profile
 from jean_code.core.tool_schema import tool
 from jean_code.core.view import AgentView
-from jean_code.logs import Recorder
-from jean_code.ui.repl import Printer, print_cost, repl, run_and_print
+from jean_code.logs import ProcessLogs, Recorder
+from jean_code.ui.repl import Printer, main, print_cost, repl, run_and_print
 from test_events import wait_for
 
 TIMEOUT = 5  # seconds any wait in these tests may take before it counts as a hang
@@ -385,3 +389,78 @@ def test_print_cost_breaks_down_a_tree(capsys):
     print_cost(session, credits=None)
     out = capsys.readouterr().out
     assert "main/1" in out and "path" in out.splitlines()[1]
+
+
+# ---------------------------------------------------------------- --workspace
+
+
+def run_main(monkeypatch, tmp_path, *flags) -> dict:
+    """Runs `main()` to its first prompt, and returns the agent's keyword arguments."""
+    built = {}
+
+    def fake_agent(model, **kwargs):
+        built.update(kwargs)
+        return Agent(client=FakeClient([]), node=kwargs["node"])
+
+    monkeypatch.setattr("jean_code.ui.repl.coding_agent", fake_agent)
+    monkeypatch.setattr("jean_code.ui.repl.orchestrator_agent", fake_agent)
+    monkeypatch.setattr("jean_code.ui.repl.USAGE_LOG", tmp_path / "usage.jsonl")
+    monkeypatch.setattr("jean_code.ui.repl.process_logs", ProcessLogs(tmp_path / "logs"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")  # builds a client; nothing here sends a request
+    monkeypatch.setattr("builtins.input", scripted_input([]))
+    monkeypatch.setattr("sys.argv", ["jean-code", *flags])
+    main()
+    return built
+
+
+@pytest.mark.parametrize("agent", ["coding", "orchestrator"])
+def test_workspace_reaches_the_agent_as_an_absolute_path(agent, monkeypatch, tmp_path):
+    # Catches a relative path reaching `docker --volume`, which reads it as the name of a volume.
+    (tmp_path / "project").mkdir()
+    monkeypatch.chdir(tmp_path)
+    built = run_main(monkeypatch, tmp_path, "--agent", agent, "--workspace", "project")
+    assert built["workspace"] == (tmp_path / "project").resolve()
+
+
+def test_workspace_expands_a_tilde_the_shell_left_alone(monkeypatch, tmp_path):
+    # Catches `--workspace=~/project`, which no shell expands, being read as a folder named "~".
+    (tmp_path / "project").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert run_main(monkeypatch, tmp_path, "--workspace=~/project")["workspace"] == (tmp_path / "project").resolve()
+
+
+@pytest.mark.parametrize("name", ["typo", "a_file"])
+def test_a_workspace_that_isnt_a_folder_is_rejected(name, monkeypatch, tmp_path, capsys):
+    # Catches a typo mounting a new empty folder: the shell creates what's missing, so nothing else would complain.
+    (tmp_path / "a_file").write_text("")
+    workspace = (tmp_path / name).resolve()
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--workspace", str(workspace))
+    assert f"--workspace must be an existing folder, got {workspace}" in capsys.readouterr().err
+    assert not (tmp_path / "typo").exists()
+
+
+@pytest.mark.parametrize("agent", ["chat", "web"])
+def test_workspace_is_rejected_for_an_agent_without_a_shell(agent, monkeypatch, tmp_path, capsys):
+    # Catches a flag that silently does nothing.
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--agent", agent, "--workspace", str(tmp_path))
+    assert f"the {agent} agent has no shell" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("agent", ["chat", "web"])
+def test_an_agent_without_a_shell_starts_without_the_flag(agent, monkeypatch, tmp_path):
+    # Catches the default being mistaken for a --workspace the user passed.
+    run_main(monkeypatch, tmp_path, "--agent", agent)
+
+
+def test_the_default_workspace_is_workspace_dir(monkeypatch, tmp_path):
+    # Catches the sandbox mounting anything else when nobody asked for it.
+    assert run_main(monkeypatch, tmp_path)["workspace"] == WORKSPACE_DIR
+
+
+def test_the_default_workspace_may_not_exist_yet(monkeypatch, tmp_path):
+    # Catches a fresh checkout, which has no git-ignored workspace/, being refused like a typo.
+    fresh = tmp_path / "workspace"
+    monkeypatch.setattr("jean_code.ui.repl.WORKSPACE_DIR", fresh)
+    assert run_main(monkeypatch, tmp_path)["workspace"] == fresh

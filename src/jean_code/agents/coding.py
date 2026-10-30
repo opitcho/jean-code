@@ -158,14 +158,21 @@ def subagent_profiles(
         model: OpenRouter model id.
         network: Whether the `general` subagent's container gets a network.
         skills_dir: Folder of skills the `general` subagent can load.
-        workspace: The folder `general`'s container mounts at /workspace.
+        workspace: The folder `general`'s container mounts at /workspace. `general`'s listing line names it by its
+            real path, unless it's `WORKSPACE_DIR`.
     """
+    description = GENERAL_DESCRIPTION
+    if workspace != WORKSPACE_DIR:  # "the user's directory" may be this very folder, so that part goes too
+        description = description.replace(
+            "the project's workspace/ folder, not the user's directory",
+            f"{Path(workspace).resolve()} on the user's machine",
+        )
     return {
         "searcher": agent_profile(
             SEARCHER_DESCRIPTION, lambda task, node: searcher_agent(model, node), max_cost=0.05, max_cost_cap=0.25
         ),
         "general": agent_profile(
-            GENERAL_DESCRIPTION,
+            description,
             lambda task, node: general_agent(model, node, network, skills_dir, workspace=workspace),
             max_cost=0.50,
             max_cost_cap=2.0,

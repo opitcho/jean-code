@@ -1,7 +1,7 @@
 """Shared by the agent modules: the subagent note, and the shell-plus-web toolset.
 
-Prompts across `agents/` are static text only (no timestamps or other per-call data), so the prompt prefix stays
-cached.
+Prompts across `agents/` are fixed for an agent's life (no timestamps or other per-call data), so the prompt prefix
+stays cached.
 """
 
 from collections.abc import Callable

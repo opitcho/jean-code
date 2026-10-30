@@ -165,12 +165,15 @@ def orchestrator_agent(
         max_tool_rounds: As for `Agent`. Agent's default of 10 runs out during a build: 3 experts and a sweep,
             then the reruns a failed sweep asks for.
         workspace: The folder the experts' containers mount at /workspace; research's run folders go in its
-            `research/`.
+            `research/`. The prompt gives the user paths in it by its real path, unless it's `WORKSPACE_DIR`.
         **kwargs: Passed on to `Agent`, except `stream`.
     """
+    prompt = ORCHESTRATOR_PROMPT
+    if workspace != WORKSPACE_DIR:
+        prompt = prompt.replace("`workspace/", f"`{Path(workspace).resolve()}/")
     return Agent(
         model,
-        system_prompt=ORCHESTRATOR_PROMPT,
+        system_prompt=prompt,
         tools={},
         skills_dir=skills_dir,
         subagent_profiles={

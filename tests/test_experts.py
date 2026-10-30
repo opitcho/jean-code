@@ -9,7 +9,7 @@ from types import MethodType
 import pytest
 
 from jean_code.agents.coding import subagent_profiles
-from jean_code.agents.experts import EXPERTS, expert_agent, orchestrator_agent
+from jean_code.agents.experts import EXPERTS, ORCHESTRATOR_PROMPT, expert_agent, orchestrator_agent
 from jean_code.config import SKILLS_DIR
 from jean_code.core.node import AgentNode
 from jean_code.core.skills import Skills
@@ -126,5 +126,25 @@ def test_the_orchestrators_subagents_use_its_workspace(tmp_path):
                 assert isinstance(bash, MethodType) and isinstance(shell := bash.__self__, DockerShell)
                 assert shell.workdir == tmp_path.resolve()
         assert len(list((tmp_path / "research").iterdir())) == 1
+    finally:
+        agent.close()
+
+
+def test_the_orchestrator_prompt_names_a_custom_workspace(tmp_path):
+    # Catches the model giving the user `workspace/…` paths, or a reworded prompt no longer being replaced.
+    agent = orchestrator_agent("m", skills_dir=None, workspace=tmp_path)
+    try:
+        prompt = agent.messages[0].content
+        assert "`workspace/" not in prompt
+        assert f"`{tmp_path.resolve()}/research/`" in prompt and f"(`{tmp_path.resolve()}/…`)" in prompt
+    finally:
+        agent.close()
+
+
+def test_the_default_workspace_keeps_the_orchestrator_prompt_as_written():
+    # Catches a prompt change reaching every run that didn't ask for a folder.
+    agent = orchestrator_agent("m", skills_dir=None)
+    try:
+        assert agent.messages[0].content.startswith(ORCHESTRATOR_PROMPT)
     finally:
         agent.close()

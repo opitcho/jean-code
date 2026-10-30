@@ -1,17 +1,18 @@
 """Terminal chat with the coding agent, the orchestrator, or a chat or web agent.
 
-Run with: uv run --env-file .env jean-code [--sandbox] [--agent orchestrator|chat|web]
+Run with: uv run --env-file .env jean-code [--sandbox] [--workspace FOLDER] [--agent orchestrator|chat|web]
 """
 
 import argparse
 import queue
 import signal
 from collections.abc import Callable
+from pathlib import Path
 
 from jean_code.agents.basic import chat_agent, web_agent
 from jean_code.agents.coding import coding_agent
 from jean_code.agents.experts import orchestrator_agent
-from jean_code.config import USAGE_LOG
+from jean_code.config import USAGE_LOG, WORKSPACE_DIR
 from jean_code.core.agent import DEFAULT_MODEL, Agent
 from jean_code.core.driver import Approve, Driver, denied
 from jean_code.core.events import (
@@ -285,6 +286,12 @@ def main() -> None:
     parser.add_argument(
         "--no-network", action="store_true", help="no network in the containers (--sandbox, or the experts')"
     )
+    parser.add_argument(
+        "--workspace",
+        type=lambda path: Path(path).expanduser().resolve(),  # a shell leaves `--workspace=~/x` unexpanded
+        default=WORKSPACE_DIR,
+        help="coding and orchestrator agents: the existing folder their sandboxes mount at /workspace",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenRouter model id")
     parser.add_argument("--reasoning", default="medium", choices=("low", "medium", "high"), help="reasoning effort")
     parser.add_argument("--max-cost", type=float, default=None, help="stop once the session has spent this many USD")
@@ -299,16 +306,28 @@ def main() -> None:
         parser.error(f"--sandbox is for the coding agent: the {cli.agent} agent has no shell")
     if cli.max_cost is not None and cli.max_cost <= 0:
         parser.error(f"--max-cost must be positive, got {cli.max_cost}")
+    if cli.workspace != WORKSPACE_DIR:  # the default may not exist yet: it's git-ignored, and DockerShell creates it
+        if cli.agent in ("chat", "web"):
+            parser.error(f"--workspace is for the coding and orchestrator agents: the {cli.agent} agent has no shell")
+        if not cli.workspace.is_dir():  # DockerShell would create it, so a typo would mount a new empty folder
+            parser.error(f"--workspace must be an existing folder, got {cli.workspace}")
 
     def build(node: AgentNode, approve: Approve) -> Agent:
         common = {"reasoning": cli.reasoning, "compact_at": cli.compact_at, "node": node}
         if cli.agent == "orchestrator":  # nothing it calls needs approval
-            return orchestrator_agent(cli.model, network=not cli.no_network, **common)
+            return orchestrator_agent(cli.model, network=not cli.no_network, workspace=cli.workspace, **common)
         if cli.agent == "chat":
             return chat_agent(cli.model, **common)
         if cli.agent == "web":
             return web_agent(cli.model, **common)
-        return coding_agent(cli.model, sandbox=cli.sandbox, network=not cli.no_network, approve=approve, **common)
+        return coding_agent(
+            cli.model,
+            sandbox=cli.sandbox,
+            network=not cli.no_network,
+            workspace=cli.workspace,
+            approve=approve,
+            **common,
+        )
 
     view = AgentView()
     recorder = Recorder(view, process_logs.new_tree(), USAGE_LOG)  # before the agent: it gets every event
