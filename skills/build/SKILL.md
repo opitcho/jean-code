@@ -21,7 +21,7 @@ context, or summaries of what an expert wrote. The experts read the files; anyth
 ## The run folder
 Pick a short slug for the task (e.g. `books-api`). The run folder is `builds/<slug>/` in every brief, which is
 where the experts see it (their shell starts in `/workspace`). On the user's machine it is
-`workspace/builds/<slug>/`. If you start a second build with the same slug in this conversation, add `-2`.
+`builds/<slug>/` in the shared folder. If you start a second build with the same slug in this conversation, add `-2`.
 
 ```
 builds/<slug>/
